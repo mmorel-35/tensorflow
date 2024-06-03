@@ -1,0 +1,50 @@
+module(
+    name = "tensorflow",
+    version = "",
+    repo_name = "org_tensorflow",
+)
+
+bazel_dep(
+    name = "bazel_skylib",
+    version = "1.5.0",
+)
+bazel_dep(
+    name = "rules_java",
+    version = "5.3.5",
+)
+bazel_dep(
+    name = "rules_python",
+    version = "0.26.0",
+)
+
+PYTHON_VERSIONS = [
+    "3.9",
+    "3.10",
+    "3.11",
+    "3.12",
+]
+
+python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+
+[
+    python.toolchain(
+        is_default = python_version == "3.11",
+        python_version = python_version,
+    )
+    for python_version in PYTHON_VERSIONS
+]
+
+pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
+
+[
+    pip.parse(
+        hub_name = "pypi",
+        python_version = python_version,
+        requirements_lock = "//:requirements" + python_version.replace(".", "_") + ".txt",
+    )
+    for python_version in PYTHON_VERSIONS
+]
+
+use_repo(pip, "pypi")
+
+# -- bazel_dep definitions -- #
