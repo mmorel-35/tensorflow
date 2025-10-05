@@ -35,3 +35,7 @@ maven.install(
     fetch_sources = True,
 )
 use_repo(maven, "maven")
+
+# Non-module dependencies (local vendored repos)
+non_module_deps = use_extension("//tensorflow:extensions.bzl", "non_module_deps")
+use_repo(non_module_deps, "local_xla", "local_tsl")

@@ -129,6 +129,32 @@
   },
   "selectedYankedVersions": {},
   "moduleExtensions": {
+    "//tensorflow:extensions.bzl%non_module_deps": {
+      "general": {
+        "bzlTransitiveDigest": "cyloSEs/JfBc2KlLkAhc8vMUwEJOxZmI5nW2JR7x+88=",
+        "usagesDigest": "gUWzbvt+IQckDFXruv0mSu0qcwuCflIEe5zoPWzZ6+4=",
+        "recordedFileInputs": {},
+        "recordedDirentsInputs": {},
+        "envVariables": {},
+        "generatedRepoSpecs": {
+          "local_xla": {
+            "bzlFile": "@@//third_party:repo.bzl",
+            "ruleClassName": "tf_vendored",
+            "attributes": {
+              "path": "third_party/xla"
+            }
+          },
+          "local_tsl": {
+            "bzlFile": "@@//third_party:repo.bzl",
+            "ruleClassName": "tf_vendored",
+            "attributes": {
+              "path": "third_party/xla/third_party/tsl"
+            }
+          }
+        },
+        "recordedRepoMappingEntries": []
+      }
+    },
     "@@apple_support~//crosstool:setup.bzl%apple_cc_configure_extension": {
       "general": {
         "bzlTransitiveDigest": "PjIds3feoYE8SGbbIq2SFTZy3zmxeO2tQevJZNDo7iY=",
