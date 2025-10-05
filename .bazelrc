@@ -161,9 +161,10 @@ common --incompatible_enforce_config_setting_visibility
 # common --incompatible_config_setting_private_default_visibility
 
 # TODO: Enable Bzlmod
-# Bzlmod is now enabled by default
-# To use WORKSPACE instead, add --noenable_bzlmod to your build command
-common --enable_bzlmod
+# Bzlmod support is available but still experimental for TensorFlow
+# To use bzlmod, add --enable_bzlmod to your build command
+# Default: use WORKSPACE for now
+common --noenable_bzlmod
 
 common --incompatible_enable_cc_toolchain_resolution
 common --repo_env USE_HERMETIC_CC_TOOLCHAIN=1

@@ -1,30 +1,42 @@
 # Bzlmod Support in TensorFlow
 
-TensorFlow now supports Bazel's new module system (bzlmod) alongside the traditional WORKSPACE setup.
+TensorFlow now has experimental support for Bazel's new module system (bzlmod) alongside the traditional WORKSPACE setup.
+
+## Status: Experimental
+
+Bzlmod support in TensorFlow is currently **experimental**. The WORKSPACE-based build system remains the default and recommended approach for production builds.
 
 ## Requirements
 
-- Bazel version 7.6.1 or higher (but not 8.x)
+- Bazel version 7.6.1 (specifically, not 8.x)
 
-## Using Bzlmod (Default)
+## Using WORKSPACE (Default and Recommended)
 
-As of this update, bzlmod is enabled by default in `.bazelrc`. You can build TensorFlow using the standard Bazel commands:
+The traditional WORKSPACE system is still the default and most stable option:
 
 ```bash
 bazel build //tensorflow/...
 ```
 
-## Using WORKSPACE (Legacy)
+## Using Bzlmod (Experimental)
 
-If you need to use the traditional WORKSPACE system instead of bzlmod, you can disable bzlmod by adding the flag to your build command:
+To try the experimental bzlmod support, enable it with a flag:
 
 ```bash
-bazel build --noenable_bzlmod //tensorflow/...
+bazel build --enable_bzlmod //tensorflow/...
 ```
 
-Or you can add `common --noenable_bzlmod` to your local `.bazelrc.user` file.
+**Note:** Full bzlmod support requires all dependencies to be available as Bazel modules. TensorFlow has many dependencies that are not yet available in the Bazel Central Registry (BCR), so bzlmod mode may not work for all build targets.
 
-## Module Dependencies
+## Current Limitations
+
+As of now, bzlmod support in TensorFlow is experimental due to:
+
+1. **Missing Dependencies**: Many TensorFlow dependencies are not yet available as Bazel modules in the BCR
+2. **Custom Repository Rules**: TensorFlow uses custom repository rules (like `tf_vendored`) that require WORKSPACE
+3. **Transitive Dependencies**: Complex dependency chains that haven't been fully migrated to bzlmod
+
+The MODULE.bazel file provides a foundation for future migration, declaring core dependencies that are available in the BCR.
 
 The MODULE.bazel file includes the following key dependencies synchronized with WORKSPACE versions:
 
@@ -66,13 +78,24 @@ Both WORKSPACE and MODULE.bazel are maintained in parallel to ensure:
 - New builds can take advantage of bzlmod's improved dependency resolution
 - Dependencies are kept synchronized between both systems
 
+## Future Work
+
+To achieve full bzlmod support, the following work is needed:
+
+1. Wait for more TensorFlow dependencies to become available in the BCR
+2. Create Bazel module extensions for custom repository rules
+3. Migrate complex third-party dependencies to use modules
+4. Test and validate all build targets with bzlmod enabled
+
+The current MODULE.bazel provides a starting point for this gradual migration.
+
 ## Troubleshooting
 
 If you encounter issues with bzlmod:
 
-1. Ensure you're using Bazel 7.6.1 (check with `bazel version`)
-2. Try cleaning the build: `bazel clean --expunge`
-3. Try using WORKSPACE mode: `bazel build --noenable_bzlmod //tensorflow/...`
-4. Check the MODULE.bazel.lock file is up to date: `bazel mod deps`
+1. Use WORKSPACE mode (default): `bazel build //tensorflow/...`
+2. Ensure you're using Bazel 7.6.1 (check with `bazel version`)
+3. Try cleaning the build: `bazel clean --expunge`
+4. Report issues with bzlmod builds to help improve support
 
-For issues specific to WORKSPACE mode, use the `--noenable_bzlmod` flag as described above.
+For stable builds, continue using the WORKSPACE-based system (which is the default).
