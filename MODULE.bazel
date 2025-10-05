@@ -1,0 +1,53 @@
+# TensorFlow Bazel Module (bzlmod support)
+module(
+    name = "org_tensorflow",
+    version = "2.18.0",
+    repo_name = "org_tensorflow",
+)
+
+# Core Bazel dependencies
+bazel_dep(name = "bazel_skylib", version = "1.7.1")
+bazel_dep(name = "rules_license", version = "1.0.0")
+bazel_dep(name = "rules_pkg", version = "1.0.1")
+bazel_dep(name = "bazel_features", version = "1.25.0")
+bazel_dep(name = "platforms", version = "0.0.11")
+
+# Build rules
+bazel_dep(name = "rules_cc", version = "0.2.9")
+bazel_dep(name = "rules_python", version = "1.6.3")
+bazel_dep(name = "rules_jvm_external", version = "6.8")
+bazel_dep(name = "rules_proto", version = "7.1.0")
+bazel_dep(name = "rules_shell", version = "0.4.1")
+bazel_dep(name = "protobuf", version = "32.1")
+bazel_dep(name = "apple_support", version = "1.23.1")
+
+# Third-party dependencies available in BCR
+bazel_dep(name = "abseil-cpp", version = "20240116.1")
+bazel_dep(name = "googletest", version = "1.17.0")
+bazel_dep(name = "re2", version = "2024-07-02")
+bazel_dep(name = "zlib", version = "1.3.1.bcr.7")
+bazel_dep(name = "boringssl", version = "0.20251002.0")
+bazel_dep(name = "nlohmann_json", version = "3.11.3")
+
+# Maven dependencies
+maven = use_extension("@rules_jvm_external//:extensions.bzl", "maven")
+maven.install(
+    artifacts = [
+        "com.google.code.findbugs:jsr305:3.0.2",
+        "com.google.code.gson:gson:2.8.9",
+        "com.google.errorprone:error_prone_annotations:2.11.0",
+        "com.google.guava:guava:31.1-jre",
+        "com.google.protobuf:protobuf-java:3.21.9",
+        "junit:junit:4.13.2",
+        "org.checkerframework:checker-qual:3.12.0",
+    ],
+    repositories = [
+        "https://repo1.maven.org/maven2",
+    ],
+    fetch_sources = True,
+)
+use_repo(maven, "maven")
+
+# Non-module dependencies (local vendored repos)
+non_module_deps = use_extension("//tensorflow:extensions.bzl", "non_module_deps")
+use_repo(non_module_deps, "local_xla", "local_tsl")
