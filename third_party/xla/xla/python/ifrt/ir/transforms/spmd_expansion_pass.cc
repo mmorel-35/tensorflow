@@ -14,7 +14,6 @@ limitations under the License.
 ==============================================================================*/
 
 #include <cstdint>
-#include <memory>
 #include <optional>
 #include <string>
 
@@ -23,29 +22,27 @@ limitations under the License.
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
-#include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
-#include "mlir/IR/BuiltinOps.h"  // from @llvm-project
-#include "mlir/IR/MLIRContext.h"  // from @llvm-project
-#include "mlir/IR/OpDefinition.h"  // from @llvm-project
-#include "mlir/IR/SymbolTable.h"  // from @llvm-project
-#include "mlir/IR/TypeUtilities.h"  // from @llvm-project
-#include "mlir/IR/Value.h"  // from @llvm-project
-#include "mlir/IR/Visitors.h"  // from @llvm-project
-#include "mlir/Pass/Pass.h"  // from @llvm-project
-#include "mlir/Support/LLVM.h"  // from @llvm-project
-#include "mlir/Support/LogicalResult.h"  // from @llvm-project
-#include "xla/python/ifrt/ir/ifrt_dialect.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/OpDefinition.h"
+#include "mlir/IR/SymbolTable.h"
+#include "mlir/IR/TypeUtilities.h"
+#include "mlir/IR/Value.h"
+#include "mlir/IR/Visitors.h"
+#include "mlir/Support/LLVM.h"
+#include "mlir/Support/LogicalResult.h"
+#include "xla/python/ifrt/ir/constants.h"
 #include "xla/python/ifrt/ir/ifrt_interfaces.h"
-#include "xla/python/ifrt/ir/transforms/constants.h"
 #include "xla/python/ifrt/ir/transforms/passes.h"
 
 namespace xla::ifrt {
 
-namespace {
-
 #define GEN_PASS_DEF_SPMDEXPANSIONPASS
 #include "xla/python/ifrt/ir/transforms/passes.h.inc"
+
+namespace {
 
 // Returns FuncOps called by `op`.
 std::optional<llvm::SmallVector<mlir::func::FuncOp>> MaybeFindFunctions(
@@ -108,11 +105,15 @@ TopologicalIterator::TopologicalIterator(mlir::func::FuncOp main_func)
 }
 
 mlir::Operation* TopologicalIterator::next() {
-  if (!hasNext()) return nullptr;
+  if (!hasNext()) {
+    return nullptr;
+  }
 
   auto* op = ops_to_visit_.pop_back_val();
   auto* next_op = op->getNextNode();
-  if (next_op) ops_to_visit_.push_back(next_op);
+  if (next_op) {
+    ops_to_visit_.push_back(next_op);
+  }
 
   // If this is a function call op, push the first op of the function body so
   // that the function body is converted before the call site.
@@ -131,9 +132,11 @@ mlir::Operation* TopologicalIterator::next() {
 
   // If we have reached the end of a function body, remove the function from
   // our active set.
-  if (!next_op && !funcs_visited_in_call_stack_.empty())
-    if (auto func = op->getParentOfType<mlir::func::FuncOp>())
+  if (!next_op && !funcs_visited_in_call_stack_.empty()) {
+    if (auto func = op->getParentOfType<mlir::func::FuncOp>()) {
       funcs_visited_in_call_stack_.erase(func.getName());
+    }
+  }
 
   // If the op contains regions, push the first op of the region to stack.
   for (auto& region : op->getRegions()) {
@@ -208,15 +211,7 @@ class SpmdExpansionPass
 
  private:
   mlir::LogicalResult spmdExpand(mlir::func::FuncOp func_op);
-
-  mlir::LogicalResult AnnotateCallees(
-      mlir::func::FuncOp func_op, mlir::SymbolTableCollection& symbol_table);
 };
-
-mlir::LogicalResult SpmdExpansionPass::AnnotateCallees(
-    mlir::func::FuncOp func_op, mlir::SymbolTableCollection& symbol_table) {
-  return mlir::success();
-}
 
 // Given SPMD expanded `function_operands` to `function`, update the function
 // signature to reflect the local shape of `function_operands`.
@@ -227,7 +222,9 @@ mlir::LogicalResult UpdateFunctionWithLocalInputShapes(
     const int index = operand.getOperandNumber();
     auto arg_type =
         mlir::dyn_cast<mlir::RankedTensorType>(operand.get().getType());
-    if (!arg_type) continue;
+    if (!arg_type) {
+      continue;
+    }
 
     llvm::ArrayRef<int64_t> arg_local_shape = arg_type.getShape();
     mlir::RankedTensorType new_arg_type =
@@ -249,9 +246,10 @@ mlir::LogicalResult SpmdExpansionPass::spmdExpand(mlir::func::FuncOp func_op) {
         MaybeFindFunctions(op);
     if (funcs.has_value()) {
       for (auto& func : *funcs) {
-        if (mlir::failed(
-                UpdateFunctionWithLocalInputShapes(op->getOpOperands(), func)))
+        if (mlir::failed(UpdateFunctionWithLocalInputShapes(op->getOpOperands(),
+                                                            func))) {
           return mlir::failure();
+        }
       }
     }
 
@@ -280,15 +278,15 @@ mlir::LogicalResult SpmdExpansionPass::spmdExpand(mlir::func::FuncOp func_op) {
 void SpmdExpansionPass::runOnOperation() {
   mlir::ModuleOp module_op = getOperation();
   // Skip single-device case.
-  auto devices = module_op->getAttrOfType<xla::ifrt::IfrtDevicesAttr>(
-      kIfrtDevicesAttrName);
-  if (devices == nullptr) {
+  auto num_devices =
+      module_op->getAttrOfType<mlir::IntegerAttr>(kIfrtNumDevicesAttrName);
+  if (num_devices == nullptr) {
     module_op->emitOpError()
         << "`" << module_op.getName()->str() << "` requires `"
-        << kIfrtDevicesAttrName << "` attribute.";
+        << kIfrtNumDevicesAttrName << "` attribute.";
     return signalPassFailure();
   }
-  if (devices.getIds().size() == 1) {
+  if (num_devices.getInt() == 1) {
     return;
   }
 
@@ -311,9 +309,4 @@ void SpmdExpansionPass::runOnOperation() {
 }
 
 }  // namespace
-
-std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>> CreateSpmdExpansionPass() {
-  return std::make_unique<SpmdExpansionPass>();
-}
-
 }  // namespace xla::ifrt

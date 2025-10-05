@@ -29,10 +29,10 @@ limitations under the License.
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "xla/client/lib/comparators.h"
-#include "xla/client/xla_builder.h"
-#include "xla/client/xla_computation.h"
 #include "xla/comparison_util.h"
+#include "xla/hlo/builder/lib/comparators.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "xla/hlo/builder/xla_computation.h"
 #include "xla/hlo/ir/hlo_casting_utils.h"
 #include "xla/hlo/ir/hlo_clone_context.h"
 #include "xla/hlo/ir/hlo_computation.h"
@@ -40,19 +40,21 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/hlo/ir/hlo_sharding.h"
+#include "xla/hlo/parser/hlo_lexer.h"
 #include "xla/hlo/utils/hlo_sharding_util.h"
 #include "xla/literal_util.h"
 #include "xla/service/custom_call_sharding_helper.h"
-#include "xla/service/hlo_lexer.h"
+#include "xla/service/hlo_creation_utils.h"
 #include "xla/service/hlo_module_config.h"
-#include "xla/service/host_memory_offload_annotations.h"
+#include "xla/service/memory_annotations.h"
 #include "xla/service/spmd/spmd_partitioner.h"
 #include "xla/service/spmd/spmd_partitioner_util.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
 #include "xla/status_macros.h"
+#include "xla/tsl/platform/statusor.h"
 #include "xla/util.h"
-#include "tsl/platform/statusor.h"
+#include "xla/xla_data.pb.h"
 
 namespace xla {
 namespace spmd {
@@ -206,13 +208,8 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCallTopK(
   XlaComputation comparator = CreateScalarComparisonComputation(
       "compare-value-and-index", {input->shape().element_type(), S32}, {Gt, Lt},
       &b);
-  TF_ASSIGN_OR_RETURN(ProgramShape program_shape, comparator.GetProgramShape());
-  HloModuleConfig config(program_shape);
-  TF_ASSIGN_OR_RETURN(auto new_module,
-                      HloModule::CreateFromProto(comparator.proto(), config));
-  HloCloneContext context(module_);
-  auto compare_computation =
-      module_->DeepCloneComputation(new_module->entry_computation(), &context);
+  TF_ASSIGN_OR_RETURN(HloComputation * compare_computation,
+                      XlaComputationToHloComputation(comparator, module_));
   // Each partition needs to do TopK separately, thus the base shape for sort
   // becomes [ceil(batch_size / batch_dim_partition), k * shard_count].
   const Shape sort_shape = ShapeUtil::MakeTupleShape(
@@ -281,7 +278,7 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCallSPMDInternal_RotateRight(
 
   amount %= full_size;
   if (amount == 0) {
-    SetPartitionedHlo(hlo, input);
+    SetPartitionedHlo(hlo, std::move(input));
     return absl::OkStatus();
   }
 
@@ -307,7 +304,7 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCallSPMDInternal_RotateRight(
       HloInstruction* halo = input.hlo();
       if (halo_size != shard_size) {
         halo_shape.set_dimensions(dim, halo_size);
-        std::vector<int64_t> slice_starts(hlo->shape().rank(), 0);
+        std::vector<int64_t> slice_starts(hlo->shape().dimensions().size(), 0);
         slice_starts[dim] = offset_in_shard;
         std::vector<int64_t> slice_limits(
             input.hlo()->shape().dimensions().begin(),
@@ -315,7 +312,7 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCallSPMDInternal_RotateRight(
         slice_limits[dim] = offset_in_shard + halo_size;
         halo = b_.AddInstruction(HloInstruction::CreateSlice(
             halo_shape, halo, slice_starts, slice_limits,
-            std::vector<int64_t>(halo_shape.rank(), 1)));
+            std::vector<int64_t>(halo_shape.dimensions().size(), 1)));
       }
       if (shard_distance != 0) {
         std::vector<std::pair<int64_t, int64_t>> pairs;
@@ -460,12 +457,16 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCall(HloInstruction* hlo) {
   }
 
   if (hlo->custom_call_target() ==
-      host_memory_offload_annotations::kMoveToHostCustomCallTarget) {
+      memory_annotations::kMoveToHostCustomCallTarget) {
     return HandleElementwise(hlo);
   }
 
   if (hlo->custom_call_target() ==
-      host_memory_offload_annotations::kMoveToDeviceCustomCallTarget) {
+          memory_annotations::kMoveToDeviceCustomCallTarget ||
+      hlo->custom_call_target() ==
+          memory_annotations::kPinToDeviceCustomCallTarget ||
+      hlo->custom_call_target() ==
+          memory_annotations::kPinToDeviceSramCustomCallTarget) {
     // Use the operand's sharding to shard the move-to-device op. This avoids
     // inserting any resharding before the custom call so that the
     // host-offloader pass can pattern match the offloading sequences correctly.
@@ -478,6 +479,39 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCall(HloInstruction* hlo) {
                                           MakePartitioningState())
                                .Reshard(hlo->sharding()));
     return absl::OkStatus();
+  }
+
+  // Block-scaled dot with MX operands.
+  if (hlo->custom_call_target() == "__op$block_scaled_dot") {
+    // Evaluate the dimension numbers of the block-scaled dot.
+    int dimensions_size = hlo->operand(0)->shape().dimensions_size();
+    TF_RET_CHECK(dimensions_size == 2 || dimensions_size == 3);
+    DotDimensionNumbers dimension_numbers;
+    dimension_numbers.add_lhs_contracting_dimensions(dimensions_size - 1);
+    dimension_numbers.add_rhs_contracting_dimensions(dimensions_size - 1);
+    if (dimensions_size == 3) {
+      dimension_numbers.add_lhs_batch_dimensions(0);
+      dimension_numbers.add_rhs_batch_dimensions(0);
+    }
+
+    HloCustomCallInstruction* block_scaled_dot =
+        Cast<HloCustomCallInstruction>(hlo);
+    CreateShardedScaledDotFunctor create_sharded_scaled_dot_functor(
+        block_scaled_dot, dimension_numbers);
+
+    // Create a regular dot with equivalent operand and output shape to compute
+    // the mapping for HandleDotHelper.
+    PrecisionConfig precision_config;
+    precision_config.mutable_operand_precision()->Resize(
+        2, PrecisionConfig::DEFAULT);
+    std::unique_ptr<HloInstruction> dot = HloInstruction::CreateDot(
+        hlo->shape(), hlo->mutable_operand(0), hlo->mutable_operand(1),
+        dimension_numbers, precision_config);
+    dot_as_convolution_util::DotConvolutionDimsInfo mapping =
+        dot_as_convolution_util::ParseDotGeneralFromDot(dot.get());
+
+    return HandleDotHelper<CreateShardedScaledDotFunctor>(
+        hlo, mapping, create_sharded_scaled_dot_functor);
   }
 
   return DefaultAction(hlo);

@@ -21,14 +21,14 @@ limitations under the License.
 #include <type_traits>
 #include <vector>
 
+#include <gtest/gtest.h>
+#include "absl/types/span.h"
+#include "benchmark/benchmark.h"
 #include "xla/stream_executor/device_memory.h"
-#include "xla/stream_executor/kernel_spec.h"
 #include "xla/stream_executor/platform.h"
 #include "xla/stream_executor/platform_manager.h"
 #include "xla/stream_executor/stream_executor.h"
-#include "xla/stream_executor/typed_kernel_factory.h"
-#include "tsl/platform/test.h"
-#include "tsl/platform/test_benchmark.h"
+#include "xla/tsl/platform/statusor.h"
 
 namespace stream_executor {
 
@@ -66,19 +66,16 @@ static_assert(
     std::is_same_v<ArgsStorage<DeviceMemoryBase*, const DeviceMemoryBase*>,
                    std::tuple<const void*, const void*>>);
 
-static std::unique_ptr<StreamExecutor> NewStreamExecutor() {
+static StreamExecutor* NewStreamExecutor() {
   Platform* platform = PlatformManager::PlatformWithName("Host").value();
-  StreamExecutorConfig config(/*ordinal=*/0);
-  return platform->GetUncachedExecutor(config).value();
+  return platform->ExecutorForDevice(/*ordinal=*/0).value();
 }
 
 TEST(KernelTest, PackDeviceMemoryArguments) {
-  auto executor = NewStreamExecutor();
-
   DeviceMemoryBase a(reinterpret_cast<void*>(0x12345678));
   DeviceMemoryBase b(reinterpret_cast<void*>(0x87654321));
 
-  auto args = PackKernelArgs({a, b}, 0).value();
+  auto args = PackKernelArgs<DeviceMemoryBase>({a, b}, 0).value();
   ASSERT_EQ(args->number_of_arguments(), 2);
 
   auto packed = args->argument_addresses();
@@ -121,12 +118,20 @@ TEST(KernelTest, PackTupleArguments) {
   ASSERT_EQ(f64, 3.0);
 }
 
-TEST(KernelTest, FailToCreateTypedKernelFromEmptySpec) {
-  MultiKernelLoaderSpec empty_spec(/*arity=*/0);
-
-  auto executor = NewStreamExecutor();
-  auto kernel = TypedKernelFactory<>::Create(executor.get(), empty_spec);
-  EXPECT_FALSE(kernel.ok());
+TEST(KernelTest, PackArgumentsWithInt64) {
+  std::vector<KernelArgument> args;
+  DeviceMemoryBase somemem(reinterpret_cast<void*>(0x12345678));
+  int64_t someint64 = 1234;
+  args.emplace_back(somemem);
+  args.emplace_back(someint64);
+  TF_ASSERT_OK_AND_ASSIGN(auto packed_args_ptr, PackKernelArgs<KernelArgument>(
+                                                    args, KernelMetadata()));
+  ASSERT_EQ(packed_args_ptr->number_of_arguments(), 2);
+  ASSERT_EQ(packed_args_ptr->number_of_shared_bytes(), 0);
+  const auto packed = packed_args_ptr->argument_addresses();
+  ASSERT_EQ(packed.size(), 2);
+  ASSERT_EQ(*reinterpret_cast<const void* const*>(packed[0]), somemem.opaque());
+  ASSERT_EQ(*reinterpret_cast<const int64_t*>(packed[1]), someint64);
 }
 
 //===----------------------------------------------------------------------===//
@@ -140,7 +145,7 @@ static void BM_PackDeviceMemoryArgs(benchmark::State& state) {
   }
 
   for (auto s : state) {
-    auto packed = PackKernelArgs(args, 0);
+    auto packed = PackKernelArgs<DeviceMemoryBase>(args, 0);
     benchmark::DoNotOptimize(packed);
   }
 }

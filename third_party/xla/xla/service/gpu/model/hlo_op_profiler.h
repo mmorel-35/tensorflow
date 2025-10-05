@@ -16,10 +16,13 @@ limitations under the License.
 #ifndef XLA_SERVICE_GPU_MODEL_HLO_OP_PROFILER_H_
 #define XLA_SERVICE_GPU_MODEL_HLO_OP_PROFILER_H_
 
+#include <cstdint>
 #include <memory>
+#include <unordered_set>
 
 #include "absl/status/statusor.h"
 #include "absl/time/time.h"
+#include "absl/types/span.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/service/gpu/model/hlo_op_profile.pb.h"
@@ -31,6 +34,29 @@ namespace xla {
 namespace gpu {
 
 class HloOpProfiler {
+ public:
+  class KernelTracer {
+   public:
+    virtual ~KernelTracer() = default;
+    virtual uint64_t getMedianKernelTimeNs() && = 0;
+  };
+
+  explicit HloOpProfiler(HloRunner& runner);
+
+  static std::unique_ptr<KernelTracer> GetKernelTracer();
+
+  static absl::Span<const HloOpcode> AllSupportedOps();
+
+  static const std::unordered_set<HloOpcode>& Unsupported();
+
+  static const std::unordered_set<HloOpcode>& TooFastToMeasure();
+
+  static absl::Span<const PrimitiveType> AllSupportedDtypes();
+
+  absl::StatusOr<HloInstructionProfile> MeasureClockCyclesPerOp(
+      HloOpcode op, PrimitiveType data_type);
+
+ private:
   static std::unique_ptr<HloModule> MakeModuleForMeasurements(
       HloOpcode op, PrimitiveType data_type, int chain_length);
 
@@ -38,12 +64,6 @@ class HloOpProfiler {
                                                         PrimitiveType data_type,
                                                         int chain_length);
 
- public:
-  explicit HloOpProfiler(HloRunner& runner);
-  absl::StatusOr<HloInstructionProfile> MeasureClockCyclesPerOp(
-      HloOpcode op, PrimitiveType data_type);
-
- private:
   HloRunner& runner_;
   const se::DeviceDescription& dev_info_;
   absl::Duration min_duration_;

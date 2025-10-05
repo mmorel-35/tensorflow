@@ -13,8 +13,10 @@ package(
     default_visibility = [
         "//learning/brain/tfrt/aot:__subpackages__",
         "//learning/brain/tfrt/tf_tpu:__subpackages__",
+        "//platforms/darwinn/contrib/waymo:__subpackages__",
         "//tensorflow/cc/saved_model/image_format:__subpackages__",
         "//tensorflow/tools/proto_splitter:__subpackages__",
+        "//waymo/ml/compiler/frontend:__subpackages__",
     ],
     licenses = ["notice"],
 )
@@ -97,9 +99,9 @@ tf_cc_test(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:cord",
         "@com_google_googletest//:gtest_main",
-        "@local_tsl//tsl/lib/core:status_test_util",
         "@local_tsl//tsl/platform:protobuf",
         "@local_tsl//tsl/platform:status_matchers",
+        "@local_xla//xla/tsl/lib/core:status_test_util",
         "@riegeli//riegeli/base:initializer",
         "@riegeli//riegeli/bytes:cord_reader",
         "@riegeli//riegeli/bytes:fd_reader",
@@ -116,6 +118,7 @@ cc_library(
     hdrs = ["util.h"],
     visibility = [
         "//learning/brain/tfrt/aot:__subpackages__",
+        "//platforms/darwinn/contrib/waymo:__subpackages__",
         "//tensorflow/cc/saved_model:__subpackages__",
         "//tensorflow/cc/saved_model/image_format:__subpackages__",
         "//tensorflow/tools/proto_splitter:__subpackages__",
@@ -137,6 +140,7 @@ cc_library(
         "@riegeli//riegeli/base:initializer",
         "@riegeli//riegeli/base:types",
         "@riegeli//riegeli/bytes:fd_reader",
+        "@riegeli//riegeli/bytes:string_reader",
         "@riegeli//riegeli/records:record_reader",
     ] + if_oss([
         "//tensorflow/tools/proto_splitter:protos_impl",
@@ -163,11 +167,11 @@ tf_cc_test(
         "//tensorflow/tools/proto_splitter/testdata:test_message_proto_cc",
         "@com_google_absl//absl/status",
         "@com_google_googletest//:gtest_main",
-        "@local_tsl//tsl/lib/core:status_test_util",
         "@local_tsl//tsl/platform:protobuf",
         "@local_tsl//tsl/platform:status",
         "@local_tsl//tsl/platform:status_matchers",
         "@local_tsl//tsl/platform:statusor",
+        "@local_xla//xla/tsl/lib/core:status_test_util",
     ] + if_oss([
         "//tensorflow/tools/proto_splitter:protos_impl",
     ]),
@@ -179,11 +183,11 @@ cc_library(
     hdrs = ["graph_def_splitter.h"],
     deps = [
         ":composable_splitter",
+        ":composable_splitter_base",
         ":large_node_splitter",
         ":max_size",
         ":repeated_field_splitter",
         ":size_splitter",
-        ":split",
         ":util",
         "//tensorflow/core:framework",
         "//tensorflow/core:protos_all_cc",
@@ -210,20 +214,18 @@ cc_library(
 
 cc_library(
     name = "repeated_field_splitter",
-    srcs = ["repeated_field_splitter.cc"],
     hdrs = ["repeated_field_splitter.h"],
     deps = [
         ":composable_splitter",
         ":max_size",
         ":size_splitter",
-        ":split",
         ":util",
         "//tensorflow/core:protos_all_cc",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
-        "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/platform:protobuf",
-        "@local_tsl//tsl/platform:statusor",
+        "@local_xla//xla/tsl/platform:errors",
+        "@local_xla//xla/tsl/platform:statusor",
     ],
 )
 
@@ -309,18 +311,15 @@ tf_cc_test(
 
 cc_library(
     name = "large_node_splitter",
-    srcs = ["large_node_splitter.cc"],
     hdrs = ["large_node_splitter.h"],
     deps = [
         ":composable_splitter",
+        ":composable_splitter_base",
         ":max_size",
         ":size_splitter",
         ":util",
-        "//tensorflow/core:protos_all_cc",
-        "@com_google_absl//absl/memory",
         "@com_google_absl//absl/status:statusor",
         "@local_tsl//tsl/platform:errors",
-        "@local_tsl//tsl/platform:protobuf",
     ],
 )
 

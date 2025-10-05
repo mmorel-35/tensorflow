@@ -13,45 +13,54 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include "xla/stream_executor/stream.h"
+
+#include <cstdint>
 #include <memory>
 
+#include <gtest/gtest.h>
 #include "absl/log/check.h"
 #include "xla/stream_executor/platform.h"
 #include "xla/stream_executor/platform_manager.h"
 #include "xla/stream_executor/stream_executor.h"
-#include "tsl/platform/statusor.h"
-#include "tsl/platform/test.h"
+#include "xla/tsl/platform/statusor.h"
+#include "xla/tsl/platform/test.h"
 
 namespace stream_executor {
 namespace {
 
+struct TestResource : public Stream::Resource {
+  TestResource() = default;
+  explicit TestResource(int32_t value) : value(value) {}
+  int32_t value = 0;
+};
+
 class StreamTest : public ::testing::Test {
  protected:
-  std::unique_ptr<StreamExecutor> NewStreamExecutor() {
+  StreamExecutor* NewStreamExecutor() {
     Platform* platform = PlatformManager::PlatformWithName("Host").value();
-    StreamExecutorConfig config(/*ordinal=*/0);
-    return platform->GetUncachedExecutor(config).value();
+    return platform->ExecutorForDevice(/*ordinal=*/0).value();
   }
 };
 
 TEST_F(StreamTest, InitOk) {
-  std::unique_ptr<StreamExecutor> executor = NewStreamExecutor();
+  StreamExecutor* executor = NewStreamExecutor();
   TF_ASSERT_OK_AND_ASSIGN(auto stream, executor->CreateStream());
 }
 
 TEST_F(StreamTest, InitWithIntPriorityOk) {
-  std::unique_ptr<StreamExecutor> executor = NewStreamExecutor();
+  StreamExecutor* executor = NewStreamExecutor();
   TF_ASSERT_OK_AND_ASSIGN(auto stream, executor->CreateStream(1));
 }
 
 TEST_F(StreamTest, InitWithStreamPriorityOk) {
-  std::unique_ptr<StreamExecutor> executor = NewStreamExecutor();
+  StreamExecutor* executor = NewStreamExecutor();
   TF_ASSERT_OK_AND_ASSIGN(auto stream,
                           executor->CreateStream(StreamPriority::Highest));
 }
 
 TEST_F(StreamTest, OneSubStream) {
-  std::unique_ptr<StreamExecutor> executor = NewStreamExecutor();
+  StreamExecutor* executor = NewStreamExecutor();
   TF_ASSERT_OK_AND_ASSIGN(auto stream, executor->CreateStream());
 
   // Get and return a sub-stream. Sub-streams are always initialized.
@@ -70,7 +79,7 @@ TEST_F(StreamTest, OneSubStream) {
 }
 
 TEST_F(StreamTest, TwoSubStreams) {
-  std::unique_ptr<StreamExecutor> executor = NewStreamExecutor();
+  StreamExecutor* executor = NewStreamExecutor();
   TF_ASSERT_OK_AND_ASSIGN(auto stream, executor->CreateStream());
 
   // Get two sub-streams.
@@ -96,6 +105,20 @@ TEST_F(StreamTest, TwoSubStreams) {
   EXPECT_TRUE(sub_stream4->ok());
   EXPECT_EQ(sub_stream2, sub_stream4);
   EXPECT_NE(sub_stream3, sub_stream4);
+}
+
+TEST_F(StreamTest, GetOrCreateResource) {
+  StreamExecutor* executor = NewStreamExecutor();
+  TF_ASSERT_OK_AND_ASSIGN(auto stream, executor->CreateStream());
+
+  EXPECT_EQ(stream->GetOrNullResource<TestResource>(), nullptr);
+
+  TestResource* resource = stream->GetOrCreateResource<TestResource>(
+      [] { return std::make_unique<TestResource>(42); });
+  EXPECT_NE(resource, nullptr);
+  EXPECT_EQ(resource->value, 42);
+
+  EXPECT_EQ(stream->GetOrNullResource<TestResource>(), resource);
 }
 
 }  // namespace

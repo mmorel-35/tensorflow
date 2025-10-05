@@ -15,11 +15,15 @@ limitations under the License.
 
 #include "xla/cpu_function_runtime.h"
 
+#include <cstdint>
+#include <cstdlib>
+
 #include "absl/base/dynamic_annotations.h"
+#include "xla/backends/cpu/alignment.h"
 
 namespace xla {
 namespace {
-// Inline memory allocation routines here, because depending on '//base' brings
+// Inline memory allocation routines here, because depending on 'base' brings
 // in libraries which use c++ streams, which adds considerable code size on
 // android.
 void* aligned_malloc(size_t size, int minimum_alignment) {
@@ -33,11 +37,13 @@ void* aligned_malloc(size_t size, int minimum_alignment) {
   // sizeof(void*). In this case, fall back on malloc which should return memory
   // aligned to at least the size of a pointer.
   const int required_alignment = sizeof(void*);
-  if (minimum_alignment < required_alignment) return malloc(size);
-  if (posix_memalign(&ptr, minimum_alignment, size) != 0)
+  if (minimum_alignment < required_alignment) {
+    return malloc(size);
+  }
+  if (posix_memalign(&ptr, minimum_alignment, size) != 0) {
     return nullptr;
-  else
-    return ptr;
+  }
+  return ptr;
 #endif
 }
 
@@ -64,7 +70,7 @@ size_t AlignedBufferBytes(const BufferInfo* buffer_infos, size_t n,
         (buffer_infos[i].is_entry_parameter() && allocate_entry_params);
 
     if (should_allocate) {
-      total += align_to(buffer_infos[i].size(), Align());
+      total += align_to(buffer_infos[i].size(), cpu::Align());
     }
   }
   return total;
@@ -77,7 +83,7 @@ void* MallocContiguousBuffers(const BufferInfo* buffer_infos, size_t n,
       AlignedBufferBytes(buffer_infos, n, allocate_entry_params);
   void* contiguous = nullptr;
   if (total > 0) {
-    contiguous = aligned_malloc(total, Align());
+    contiguous = aligned_malloc(total, cpu::Align());
     if (annotate_initialized) {
       // Since the memory for temp buffers is written to by JITed code, msan has
       // no way of knowing the memory was initialized, so explicitly mark it.
@@ -91,7 +97,7 @@ void* MallocContiguousBuffers(const BufferInfo* buffer_infos, size_t n,
         (buffer_infos[i].is_entry_parameter() && allocate_entry_params);
     if (should_allocate) {
       bufs[i] = reinterpret_cast<void*>(pos);
-      pos += align_to(buffer_infos[i].size(), Align());
+      pos += align_to(buffer_infos[i].size(), cpu::Align());
     } else {
       bufs[i] = nullptr;
     }

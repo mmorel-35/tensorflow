@@ -40,8 +40,6 @@ limitations under the License.
 
 namespace tensorflow {
 
-using ::testing::UnorderedElementsAre;
-
 REGISTER_OP("OneInput").Input("x: float");
 
 REGISTER_OP("OneOutput").Output("y: float");
@@ -112,13 +110,13 @@ class GraphTest : public ::testing::Test {
                     int num_inputs) {
     auto builder = NodeDefBuilder(name, node_type);
     for (int i = 0; i < num_inputs; ++i) {
-      builder = builder.Input(strings::StrCat("node_", i), i, DT_FLOAT);
+      builder = builder.Input(absl::StrCat("node_", i), i, DT_FLOAT);
     }
 
     NodeDef node_def;
     TF_CHECK_OK(builder.Finalize(&node_def));
 
-    Status s;
+    absl::Status s;
     Node* node = graph_.AddNode(node_def, &s);
     TF_CHECK_OK(s);
     return node;
@@ -146,7 +144,7 @@ class GraphTest : public ::testing::Test {
         return true;
       }
     }
-    std::string control_edge_name = strings::StrCat("^", src->name());
+    std::string control_edge_name = absl::StrCat("^", src->name());
     for (int i = 0; i < dst->def().input_size(); ++i) {
       if (dst->def().input(i) == control_edge_name) {
         return true;
@@ -280,7 +278,7 @@ TEST_F(GraphTest, NodeByIndex) {
   graph_.RemoveNode(a);
 
   // 'c's input_node entry should be invalidated.
-  Status s = c->input_node(0, &a_copy);
+  absl::Status s = c->input_node(0, &a_copy);
   EXPECT_FALSE(s.ok());
 
   // Add two new nodes.
@@ -399,7 +397,7 @@ static string EdgeIter(const Graph& g) {
   std::sort(edges.begin(), edges.end());
   string result;
   for (auto& p : edges) {
-    strings::StrAppend(&result, p.first, "->", p.second, ";");
+    absl::StrAppend(&result, p.first, "->", p.second, ";");
   }
   return result;
 }
@@ -446,7 +444,7 @@ TEST_F(GraphTest, IsValidNode) {
   TF_CHECK_OK(NodeBuilder("g2_node2", "NoOp").Finalize(&graph2, &g2_node2));
 
   // nullptr
-  Status s = graph_.IsValidNode(nullptr);
+  absl::Status s = graph_.IsValidNode(nullptr);
   EXPECT_EQ(error::INVALID_ARGUMENT, s.code());
   EXPECT_EQ(string("Node is null"), s.message());
 
@@ -586,7 +584,7 @@ TEST_F(GraphTest, UpdateEdge) {
   EXPECT_EQ("0->1;0->2;2->1;2->3;2->4;2->5;4->1;", EdgeIter(graph_));
 
   // Update a's 1st output which is out of range.
-  Status s = graph_.UpdateEdge(a, 1, d, 0);
+  absl::Status s = graph_.UpdateEdge(a, 1, d, 0);
   EXPECT_FALSE(s.ok());
   EXPECT_EQ(
       s.message(),
@@ -624,12 +622,12 @@ TEST_F(GraphTest, EdgeDebugString) {
   EXPECT_EQ(s1, "[id=0 <NULL>:0 -> <NULL>:0]");
 
   // Print edge with null src node
-  auto e2 = BuildEdge(2, 0, b, 1, 1);
+  auto e2 = BuildEdge(2, nullptr, b, 1, 1);
   auto s2 = e2->DebugString();
   EXPECT_EQ(s2, "[id=2 <NULL>:1 -> B:1]");
 
   // Print edge with null dst node
-  auto e3 = BuildEdge(3, a, 0, 2, 1);
+  auto e3 = BuildEdge(3, a, nullptr, 2, 1);
   auto s3 = e3->DebugString();
   EXPECT_EQ(s3, "[id=3 A:2 -> <NULL>:1]");
 }
@@ -652,7 +650,7 @@ TEST_F(GraphTest, AddFunctionLibrary) {
   FunctionDefLibrary error_proto = proto;
   *error_proto.mutable_function(0)->add_node_def() =
       error_proto.function(0).node_def(0);
-  Status s = graph_.AddFunctionLibrary(error_proto);
+  absl::Status s = graph_.AddFunctionLibrary(error_proto);
   EXPECT_FALSE(s.ok());
   EXPECT_EQ(s.message(),
             "Cannot add function 'XTimesTwo' because a different function with "
@@ -744,7 +742,7 @@ TEST_F(GraphTest, NodeShrinkTypeOutput) {
   NodeDef node_def;
   TF_CHECK_OK(builder.Finalize(&node_def));
 
-  Status s;
+  absl::Status s;
   Node* node = graph_.AddNode(node_def, &s);
   TF_CHECK_OK(s);
 
@@ -792,7 +790,7 @@ TEST_F(GraphTest, NodeShrinkTypeInput) {
   NodeDef node_def;
   TF_CHECK_OK(builder.Finalize(&node_def));
 
-  Status s;
+  absl::Status s;
   Node* node = graph_.AddNode(node_def, &s);
   TF_CHECK_OK(s);
 

@@ -16,12 +16,14 @@ limitations under the License.
 #define TENSORFLOW_CORE_TFRT_RUN_HANDLER_THREAD_POOL_RUN_HANDLER_CONCURRENT_WORK_QUEUE_H_
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <ostream>
 #include <string>
 #include <vector>
 
+#include "absl/status/statusor.h"
 #include "tensorflow/core/platform/strcat.h"
 #include "tensorflow/core/tfrt/run_handler_thread_pool/run_handler.h"
 #include "tensorflow/core/tfrt/runtime/work_queue_interface.h"
@@ -79,6 +81,9 @@ class RunHandlerThreadWorkQueue
 
     // If true, threads will be waken up by new tasks.
     bool enable_wake_up = true;
+
+    // If true, enables priority based queuing of requests.
+    bool enable_priority_based_queuing = false;
   };
 
   explicit RunHandlerThreadWorkQueue(const Options& options);
@@ -92,7 +97,7 @@ class RunHandlerThreadWorkQueue
   }
 
   absl::StatusOr<std::unique_ptr<tensorflow::tfrt_stub::WorkQueueInterface>>
-  InitializeRequest(int64_t request_id) const override;
+  InitializeRequest(int64_t request_id, int priority) const override;
 
   int GetParallelismLevel() const override {
     return options_.num_main_threads + options_.num_complementary_threads;

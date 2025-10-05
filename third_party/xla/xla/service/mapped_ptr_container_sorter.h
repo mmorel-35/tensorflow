@@ -44,9 +44,9 @@ limitations under the License.
 #include "absl/container/flat_hash_set.h"
 #include "absl/functional/function_ref.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
-#include "xla/statusor.h"
 #include "xla/util.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/logging.h"
@@ -79,7 +79,7 @@ class MappedPtrContainerSorter {
   using UnmappedPtrIndexFn = absl::FunctionRef<size_t(const PointedToTy*)>;
 
   // Functions that return an UnmappedElementIndexFn that indicates that
-  // ummapped elements (from an unordered container) should be placed before or
+  // unmapped elements (from an unordered container) should be placed before or
   // after all mapped elements, respectively.
   static UnmappedPtrIndexFn IndexBeforeMappedElementsFn();
   static UnmappedPtrIndexFn IndexAfterMappedElementsFn();

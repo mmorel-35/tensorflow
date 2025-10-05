@@ -13,15 +13,21 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <cstdint>
 #include <utility>
 
-#include "xla/tests/hlo_test_base.h"
+#include "xla/literal.h"
+#include "xla/literal_util.h"
+#include "xla/tests/hlo_pjrt_test_base.h"
+#include "xla/tests/literal_test_util.h"
+#include "xla/tsl/platform/statusor.h"
+#include "xla/tsl/platform/test.h"
 
 namespace xla {
 namespace gpu {
 namespace {
 
-class NopCustomCallTest : public HloTestBase {};
+class NopCustomCallTest : public HloPjRtTestBase {};
 
 TEST_F(NopCustomCallTest, RunAllocateBufferAndUpdate) {
   // The test uses a custom call with the AllocateBuffer target (also known as
@@ -43,7 +49,8 @@ TEST_F(NopCustomCallTest, RunAllocateBufferAndUpdate) {
   })";
   auto module = ParseAndReturnVerifiedModule(hlo_text).value();
 
-  Literal result = ExecuteNoHloPasses(std::move(module), {});
+  TF_ASSERT_OK_AND_ASSIGN(
+      Literal result, Execute(std::move(module), {}, /*run_hlo_passes=*/false));
   Literal expected = LiteralUtil::CreateR1<int32_t>({1});
   EXPECT_TRUE(LiteralTestUtil::Equal(expected, result));
 }

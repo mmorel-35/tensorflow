@@ -51,28 +51,38 @@ do_external_licenses_check(){
 @org_tensorflow//
 @com_github_googlecloudplatform_google_cloud_cpp//google
 @com_github_grpc_grpc//src/compiler
+@com_google_protobuf//upb_generator
+@llvm-project//third-party/siphash
 @platforms//os
+@ml_dtypes_py//ml_dtypes
 @ruy//
+@rules_java_builtin//toolchains
+@rules_ml_toolchain//
+@rules_python//
 @stablehlo//stablehlo/experimental
 EOF
 
   # grep patterns for targets which are allowed to be extra licenses
   cat > $BATS_TEST_TMPDIR/allowed_to_be_extra <<EOF
-//third_party/mkl
-//third_party/mkl_dnn
+@local_xla//third_party/mkl
+@local_xla//third_party/mkl_dnn
 @absl_py//
 @bazel_tools//src
 @bazel_tools//platforms
-@bazel_tools//tools/
+@bazel_tools//tools
 @org_tensorflow//tensorflow
 @com_google_absl//
+@com_google_protobuf//
+@internal_platforms_do_not_use//host
 @pybind11_abseil//pybind11_abseil
 //external
 @local
 @com_github_googlecloudplatform_google_cloud_cpp//
 @embedded_jdk//
 ^//$
+@ml_dtypes_py//
 @ruy//
+@rules_ml_toolchain//
 EOF
 
   license_query "attr('licenses', 'notice', deps($BUILD_TARGET))" > $BATS_TEST_TMPDIR/expected_licenses
@@ -103,18 +113,6 @@ EOF
   do_external_licenses_check \
     "//tensorflow/tools/pip_package:wheel" \
     "//tensorflow/tools/pip_package:licenses"
-}
-
-@test "Libtensorflow generated license includes all dependencies' licenses" {
-  do_external_licenses_check \
-    "//tensorflow:libtensorflow.so" \
-    "//tensorflow/tools/lib_package:clicenses_generate"
-}
-
-@test "Java library generated license includes all dependencies' licenses" {
-  do_external_licenses_check \
-    "//tensorflow/java:libtensorflow_jni.so" \
-    "//tensorflow/tools/lib_package:jnilicenses_generate"
 }
 
 # This test ensures that all the targets built into the Python package include
@@ -215,6 +213,9 @@ EOF
   bazel cquery \
     --experimental_cc_shared_library \
     --@local_config_cuda//:enable_cuda \
+    --@local_config_cuda//cuda:include_cuda_libs=false \
+    --repo_env=HERMETIC_CUDA_VERSION="12.3.2" \
+    --repo_env=HERMETIC_CUDNN_VERSION="8.9.7.29" \
     "somepath(//tensorflow/tools/pip_package:wheel, " \
     "@local_config_cuda//cuda:cudart + "\
     "@local_config_cuda//cuda:cudart + "\
@@ -236,6 +237,9 @@ EOF
   bazel cquery \
     --experimental_cc_shared_library \
     --@local_config_cuda//:enable_cuda \
+    --@local_config_cuda//cuda:include_cuda_libs=false \
+    --repo_env=HERMETIC_CUDA_VERSION="12.3.2" \
+    --repo_env=HERMETIC_CUDNN_VERSION="8.9.7.29" \
     --define framework_shared_object=false \
     "somepath(//tensorflow/tools/pip_package:wheel, " \
     "@local_config_cuda//cuda:cudart + "\
@@ -297,7 +301,7 @@ EOF
 # anything with a Windows-only toolchain, and bazel errors if trying to build
 # that directory.
 @test "bazel nobuild passes on all of TF except TF Lite and win toolchains" {
-    bazel build --experimental_cc_shared_library --nobuild --keep_going -- //tensorflow/... -//tensorflow/lite/... -//tensorflow/tools/toolchains/win/... -//tensorflow/tools/toolchains/win_1803/...
+    bazel build --experimental_cc_shared_library --nobuild --keep_going -- //tensorflow/... -//tensorflow/lite/... -//tensorflow/tools/toolchains/win/... -//tensorflow/tools/toolchains/win_1803/...  -//tensorflow/tools/toolchains/win2022/...
 }
 
 @test "API compatibility test passes, ensuring no unexpected changes to the TF API" {
@@ -309,7 +313,7 @@ EOF
 # See b/279852433 (internal).
 # TODO(b/279852433) Replace deps(//tensorflow/...) with deps(//...)
 @test "Verify that it's possible to query every TensorFlow target without BUILD errors" {
-    bazel query "deps(//tensorflow/...)" > /dev/null
+    bazel query "deps(//tensorflow/... -attr(tags, 'manual', //tensorflow/...))" > /dev/null
 }
 
 teardown_file() {

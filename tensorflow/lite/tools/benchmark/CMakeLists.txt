@@ -25,6 +25,7 @@ list(APPEND TFLITE_BENCHMARK_SRCS
   ${TFLITE_SOURCE_DIR}/kernels/internal/utils/sparsity_format_converter.cc
   ${TFLITE_SOURCE_DIR}/profiling/memory_info.cc
   ${TFLITE_SOURCE_DIR}/profiling/memory_usage_monitor.cc
+  ${TFLITE_SOURCE_DIR}/profiling/model_runtime_info.cc
   ${TFLITE_SOURCE_DIR}/profiling/profile_buffer.cc
   ${TFLITE_SOURCE_DIR}/profiling/profile_summarizer.cc
   ${TFLITE_SOURCE_DIR}/profiling/profile_summary_formatter.cc
@@ -47,7 +48,12 @@ list(APPEND TFLITE_BENCHMARK_LIBS
 
 list(APPEND TFLITE_BENCHMARK_LIBS
   profiling_info_proto
+  feature_proto
+  example_proto
+  model_runtime_info_proto
+  benchmark_result_proto
   protobuf::libprotobuf
+  absl::log
 )
 
 # TODO(b/171007016): Enable performance options on Windows.
@@ -90,9 +96,16 @@ if(TFLITE_ENABLE_GPU)
 endif()  # TFLITE_ENABLE_GPU
 
 add_executable(benchmark_model
-  EXCLUDE_FROM_ALL
   ${TFLITE_BENCHMARK_SRCS}
 )
+if(TFLITE_ENABLE_BENCHMARK_MODEL)
+  set_target_properties(benchmark_model PROPERTIES EXCLUDE_FROM_ALL FALSE)
+  if(TFLITE_ENABLE_INSTALL)
+    install(TARGETS benchmark_model)
+  endif()  # TFLITE_ENABLE_INSTALL
+else()
+  set_target_properties(benchmark_model PROPERTIES EXCLUDE_FROM_ALL TRUE)
+endif()  # TFLITE_ENABLE_BENCHMARK_MODEL
 target_compile_options(benchmark_model
   PRIVATE
     ${TFLITE_BENCHMARK_CC_OPTIONS}

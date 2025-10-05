@@ -2,6 +2,8 @@
 #   JNI-based Java inference interface for TensorFlow.
 
 load("@build_bazel_rules_android//android:rules.bzl", "android_library")
+load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load(
     "//tensorflow:tensorflow.bzl",
     "if_android",
@@ -32,6 +34,7 @@ cc_library(
     name = "android_tensorflow_inference_jni",
     srcs = if_android([":android_tensorflow_inference_jni_srcs"]),
     copts = tf_copts(),
+    features = ["-layering_check"],
     visibility = ["//visibility:public"],
     deps = [
         "//tensorflow/core:portable_tensorflow_lib_lite",

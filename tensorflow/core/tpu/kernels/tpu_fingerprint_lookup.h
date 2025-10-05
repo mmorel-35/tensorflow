@@ -65,7 +65,7 @@ class TpuFingerprintLookup : public ResourceBase {
 
   // Look up fingerprint with key.
   // Return std::nullopt if not found.
-  std::optional<::tensorflow::StringPiece> Lookup(uint64 key);
+  std::optional<absl::string_view> Lookup(uint64 key);
 
   size_t num_valid() {
     absl::MutexLock lock(&mu_);
@@ -75,7 +75,7 @@ class TpuFingerprintLookup : public ResourceBase {
   std::string DebugString() const override { return "TpuFingerprintLookup"; }
 
  private:
-  explicit TpuFingerprintLookup() {}
+  explicit TpuFingerprintLookup() = default;
 
   absl::Mutex mu_;
   // Main storage for lookup

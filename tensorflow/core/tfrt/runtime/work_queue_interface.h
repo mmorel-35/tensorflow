@@ -20,6 +20,10 @@ limitations under the License.
 #include <string>
 #include <utility>
 
+#include "absl/base/attributes.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
+#include "absl/strings/string_view.h"
 #include "tensorflow/core/platform/context.h"
 #include "tensorflow/core/platform/statusor.h"
 #include "tensorflow/core/platform/threadpool_interface.h"
@@ -57,7 +61,7 @@ class WorkQueueInterface : public tfrt::ConcurrentWorkQueue {
   // should be handled separately.
   ABSL_DEPRECATED("Create the instance directly instead.")
   virtual absl::StatusOr<std::unique_ptr<WorkQueueInterface>> InitializeRequest(
-      int64_t request_id) const {
+      int64_t request_id, int priority) const {
     return {nullptr};
   }
 

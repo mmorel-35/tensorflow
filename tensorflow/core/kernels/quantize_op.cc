@@ -17,6 +17,8 @@ limitations under the License.
 
 #define EIGEN_USE_THREADS
 
+#include <limits>
+
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/type_traits.h"
@@ -60,7 +62,7 @@ class QuantizeV2Op : public OpKernel {
  public:
   explicit QuantizeV2Op(OpKernelConstruction* ctx) : OpKernel(ctx) {
     half_range_ =
-        !std::is_signed<T>::value
+        !std::numeric_limits<T>::is_signed
             ? 0.0f
             : (static_cast<double>(std::numeric_limits<T>::max()) -
                static_cast<double>(std::numeric_limits<T>::min()) + 1) /
@@ -96,7 +98,7 @@ class QuantizeV2Op : public OpKernel {
       OP_REQUIRES(ctx, mode_string == "SCALED",
                   errors::InvalidArgument("Round mode 'HALF_TO_EVEN' "
                                           "only supported for mode 'SCALED', "
-                                          "b  ut mode is '" +
+                                          "but mode is '" +
                                           mode_string + "'."));
       round_mode_ = ROUND_HALF_TO_EVEN;
     }
@@ -283,7 +285,7 @@ class QuantizeV2Op : public OpKernel {
       // semantic of std::round, which implements "round-half-away-zero",
       // e.g., -5.5 gets rounded to -6, -5.4 goes to -5, 5.4 goes to 5,
       // and 5.5 goes to 6.
-      bool is_signed = std::is_signed<T>::value;
+      bool is_signed = std::numeric_limits<T>::is_signed;
       if (is_signed) {
         // The slow path.
         // TODO(xbing,yonghui): Speedup this path as well.

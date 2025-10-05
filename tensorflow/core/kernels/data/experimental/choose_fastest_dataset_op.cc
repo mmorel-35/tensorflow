@@ -13,6 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include "absl/synchronization/notification.h"
 #include "tensorflow/core/framework/common_shape_fns.h"
 #include "tensorflow/core/framework/dataset.h"
 #include "tensorflow/core/framework/op.h"
@@ -141,7 +142,7 @@ class ChooseFastestDatasetOp : public DatasetOpKernel {
         const string& prefix) const override {
       return std::make_unique<ChooseFastestIterator>(
           ChooseFastestIterator::Params{
-              this, strings::StrCat(prefix, "::ChooseFastest")});
+              this, absl::StrCat(prefix, "::ChooseFastest")});
     }
 
     const DataTypeVector& output_dtypes() const override {
@@ -160,7 +161,7 @@ class ChooseFastestDatasetOp : public DatasetOpKernel {
       return cardinality_;
     }
 
-    Status InputDatasets(
+    absl::Status InputDatasets(
         std::vector<const DatasetBase*>* inputs) const override {
       for (const auto& input : inputs_) {
         inputs->push_back(input);
@@ -168,7 +169,7 @@ class ChooseFastestDatasetOp : public DatasetOpKernel {
       return absl::OkStatus();
     }
 
-    Status CheckExternalState() const override {
+    absl::Status CheckExternalState() const override {
       for (const auto& input : inputs_) {
         TF_RETURN_IF_ERROR(input->CheckExternalState());
       }
@@ -176,9 +177,9 @@ class ChooseFastestDatasetOp : public DatasetOpKernel {
     }
 
    protected:
-    Status AsGraphDefInternal(SerializationContext* ctx,
-                              DatasetGraphDefBuilder* b,
-                              Node** output) const override {
+    absl::Status AsGraphDefInternal(SerializationContext* ctx,
+                                    DatasetGraphDefBuilder* b,
+                                    Node** output) const override {
       std::vector<Node*> input_nodes;
       input_nodes.reserve(inputs_.size());
       for (const auto& input : inputs_) {
@@ -201,21 +202,21 @@ class ChooseFastestDatasetOp : public DatasetOpKernel {
           : DatasetIterator<Dataset>(params),
             histograms_(dataset()->inputs_.size()) {}
 
-      Status Initialize(IteratorContext* ctx) override {
+      absl::Status Initialize(IteratorContext* ctx) override {
         mutex_lock l(mu_);
         input_impls_.resize(dataset()->inputs_.size());
         for (size_t i = 0, num_inputs = dataset()->inputs_.size();
              i < num_inputs; ++i) {
           TF_RETURN_IF_ERROR(dataset()->inputs_[i]->MakeIterator(
-              ctx, this, strings::StrCat(prefix(), "[", i, "]"),
+              ctx, this, absl::StrCat(prefix(), "[", i, "]"),
               &input_impls_[i]));
         }
         return absl::OkStatus();
       }
 
-      Status GetNextInternal(IteratorContext* ctx,
-                             std::vector<Tensor>* out_tensors,
-                             bool* end_of_sequence) override {
+      absl::Status GetNextInternal(IteratorContext* ctx,
+                                   std::vector<Tensor>* out_tensors,
+                                   bool* end_of_sequence) override {
         mutex_lock l(mu_);
 
         // The first num_experiments_ iterations, we fire up a thread for
@@ -248,8 +249,8 @@ class ChooseFastestDatasetOp : public DatasetOpKernel {
       // TODO(rachelim): Save and restore histogram state as well. Currently,
       // if an iterator is saved and restored, the histograms start recording
       // from scratch.
-      Status SaveInternal(SerializationContext* ctx,
-                          IteratorStateWriter* writer) override {
+      absl::Status SaveInternal(SerializationContext* ctx,
+                                IteratorStateWriter* writer) override {
         mutex_lock l(mu_);
         TF_RETURN_IF_ERROR(writer->WriteScalar(full_name("experiment_counter"),
                                                experiment_counter_));
@@ -269,8 +270,8 @@ class ChooseFastestDatasetOp : public DatasetOpKernel {
         return absl::OkStatus();
       }
 
-      Status RestoreInternal(IteratorContext* ctx,
-                             IteratorStateReader* reader) override {
+      absl::Status RestoreInternal(IteratorContext* ctx,
+                                   IteratorStateReader* reader) override {
         mutex_lock l(mu_);
         TF_RETURN_IF_ERROR(reader->ReadScalar(full_name("experiment_counter"),
                                               &experiment_counter_));
@@ -278,7 +279,7 @@ class ChooseFastestDatasetOp : public DatasetOpKernel {
             reader->ReadScalar(full_name("fastest_index"), &fastest_index_));
         if (fastest_index_ != -1) {
           TF_RETURN_IF_ERROR(dataset()->inputs_[fastest_index_]->MakeIterator(
-              ctx, this, strings::StrCat(prefix(), "[", fastest_index_, "]"),
+              ctx, this, absl::StrCat(prefix(), "[", fastest_index_, "]"),
               &fastest_input_impl_));
           TF_RETURN_IF_ERROR(RestoreInput(ctx, reader, fastest_input_impl_));
         } else if (reader->Contains(full_name("input_impls_empty"))) {
@@ -294,8 +295,8 @@ class ChooseFastestDatasetOp : public DatasetOpKernel {
 
      private:
       struct InvocationResult {
-        Notification notification;
-        Status status;
+        absl::Notification notification;
+        absl::Status status;
         bool end_of_sequence;
         std::vector<Tensor> out_tensors;
       };
@@ -321,7 +322,7 @@ class ChooseFastestDatasetOp : public DatasetOpKernel {
              i < num_inputs; ++i) {
           threads[i].result = std::make_unique<InvocationResult>();
           threads[i].thread = ctx->StartThread(
-              strings::StrCat("tf_data_merge_", i),
+              absl::StrCat("tf_data_merge_", i),
               std::bind(&ChooseFastestIterator::RunnerThread, this, ctx,
                         threads[i].result.get(), i));
         }
@@ -332,8 +333,8 @@ class ChooseFastestDatasetOp : public DatasetOpKernel {
         RecordStart(ctx);
         auto cleanup = gtl::MakeCleanup([this, ctx]() { RecordStop(ctx); });
         int64_t start = EnvTime::NowNanos();
-        Status s = input_impls_[i]->GetNext(ctx, &result->out_tensors,
-                                            &result->end_of_sequence);
+        absl::Status s = input_impls_[i]->GetNext(ctx, &result->out_tensors,
+                                                  &result->end_of_sequence);
         histograms_[i].Add(static_cast<double>(EnvTime::NowNanos() - start));
 
         result->status = s;

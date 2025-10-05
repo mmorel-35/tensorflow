@@ -19,7 +19,7 @@ limitations under the License.
 #include "absl/status/statusor.h"
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
-#include "mlir/Dialect/Quant/QuantOps.h"  // from @llvm-project  // IWYU pragma: keep
+#include "mlir/Dialect/Quant/IR/Quant.h"  // from @llvm-project  // IWYU pragma: keep
 #include "mlir/Dialect/Shape/IR/Shape.h"  // from @llvm-project  // IWYU pragma: keep
 #include "mlir/IR/Builders.h"  // from @llvm-project
 #include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
@@ -36,7 +36,6 @@ limitations under the License.
 #include "mlir/Support/LogicalResult.h"  // from @llvm-project
 #include "mlir/Support/TypeID.h"  // from @llvm-project
 #include "mlir/Transforms/DialectConversion.h"  // from @llvm-project
-#include "stablehlo/api/PortableApi.h"  // from @stablehlo
 #include "stablehlo/dialect/Serialization.h"  // from @stablehlo
 #include "stablehlo/dialect/StablehloOps.h"  // from @stablehlo  // IWYU pragma: keep
 #include "tensorflow/compiler/mlir/quantization/stablehlo/passes/passes.h"  // IWYU pragma: keep
@@ -58,6 +57,14 @@ absl::StatusOr<std::string> ConvertSerializedStableHloModuleToBfloat16(
   OwningOpRef<ModuleOp> stablehlo_module_op =
       mlir::stablehlo::deserializePortableArtifact(serialized_stablehlo_module,
                                                    &context);
+  auto version =
+      mlir::stablehlo::getPortableArtifactVersion(serialized_stablehlo_module);
+  if (failed(version)) {
+    return absl::InternalError(
+        "Failed to get the deserialized StableHLO version, XlaCallModuleOp "
+        "must have a valid StableHLO module serialized using "
+        "stablehlo::serializePortableArtifact APIs.");
+  }
 
   // Convert the StableHLO module to bfloat16.
   PassManager pm(&context);
@@ -70,8 +77,7 @@ absl::StatusOr<std::string> ConvertSerializedStableHloModuleToBfloat16(
   std::string bytecode;
   llvm::raw_string_ostream os(bytecode);
   if (failed(mlir::stablehlo::serializePortableArtifact(
-          stablehlo_module_op.get(), mlir::stablehlo::getCurrentVersion(),
-          os))) {
+          stablehlo_module_op.get(), version.value().toString(), os))) {
     return absl::InternalError("Failed to serialize StableHLO module.");
   }
   return bytecode;
@@ -113,17 +119,18 @@ void ConvertXlaCallModuleOpToBfloat16Pass::runOnOperation() {
     // Convert the `tf.XlaCallModuleOp` to bfloat16 and add casts around it.
     builder.setInsertionPoint(op);
     for (auto& op_operand : op->getOpOperands()) {
-      if (IsLargeFloatType(op_operand.get().getType())) {
+      if (quant::stablehlo::IsLargeFloatType(op_operand.get().getType())) {
         op_operand.set(builder.create<TF::CastOp>(
-            op->getLoc(), ToBfloat16Type(op_operand.get().getType()),
+            op->getLoc(),
+            quant::stablehlo::ToBfloat16Type(op_operand.get().getType()),
             op_operand.get()));
       }
     }
     builder.setInsertionPointAfter(op);
     for (auto op_result : op->getOpResults()) {
-      if (IsLargeFloatType(op_result.getType())) {
+      if (quant::stablehlo::IsLargeFloatType(op_result.getType())) {
         const Type original_type = op_result.getType();
-        op_result.setType(ToBfloat16Type(original_type));
+        op_result.setType(quant::stablehlo::ToBfloat16Type(original_type));
         const Value cast =
             builder.create<TF::CastOp>(op->getLoc(), original_type, op_result);
         op_result.replaceAllUsesExcept(cast, cast.getDefiningOp());

@@ -20,9 +20,9 @@ limitations under the License.
 #include <string>
 
 #include "absl/strings/string_view.h"
+#include "xla/hlo/testlib/verified_hlo_module.h"
 #include "xla/stream_executor/platform_manager.h"
 #include "xla/tests/llvm_irgen_test_base.h"
-#include "xla/tests/verified_hlo_module.h"
 
 namespace xla {
 namespace gpu {
@@ -31,8 +31,9 @@ namespace gpu {
 class GpuCodegenTest : public LlvmIrGenTestBase {
  public:
   GpuCodegenTest()
-      : is_built_with_rocm_(
-            se::PlatformManager::PlatformWithName("ROCM").ok()) {}
+      : is_built_with_rocm_(se::PlatformManager::PlatformWithName("ROCM").ok()),
+        is_built_with_sycl_(
+            se::PlatformManager::PlatformWithName("SYCL").ok()) {}
 
  protected:
   // Converts LLVM match to be platform-specific.
@@ -48,9 +49,11 @@ class GpuCodegenTest : public LlvmIrGenTestBase {
   // and hence the "Optionally" in function name.
   // For ROCm platform this routine will only do the "Compile" part.
   void CompileAndOptionallyVerifyPtx(
-      std::unique_ptr<VerifiedHloModule> hlo_module, absl::string_view pattern);
+      std::unique_ptr<VerifiedHloModule> hlo_module, absl::string_view pattern,
+      bool run_optimization_passes = true);
 
   bool is_built_with_rocm_;
+  bool is_built_with_sycl_;
 };
 
 }  // namespace gpu

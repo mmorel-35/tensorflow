@@ -28,11 +28,11 @@ limitations under the License.
 #include "xla/pjrt/local_device_state.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/stream_executor/integrations/tf_allocator_adapter.h"
+#include "xla/tsl/framework/allocator.h"
 #include "tensorflow/core/framework/resource_base.h"
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/platform/status.h"
 #include "tensorflow/core/platform/types.h"
-#include "tsl/framework/allocator.h"
 
 namespace tensorflow {
 
@@ -57,11 +57,11 @@ class PjRtState : public ResourceBase {
   absl::StatusOr<xla::PjRtClient*> GetPjRtClient(const DeviceType& device_type);
   absl::StatusOr<xla::PjRtClient*> GetOrCreatePjRtClient(
       const DeviceType& device_type);
-  Status SetPjRtClient(const DeviceType& device_type,
-                       std::unique_ptr<xla::PjRtClient> client);
+  absl::Status SetPjRtClient(const DeviceType& device_type,
+                             std::unique_ptr<xla::PjRtClient> client);
   // Moves PJRT client to `unused_`. The PJRT client moved to `unused_` will not
   // be returned by `GetPjRtClient`.
-  Status MovePjRtClientToUnused(const DeviceType& device_type);
+  absl::Status MovePjRtClientToUnused(const DeviceType& device_type);
   string DebugString() const override;
 
   // Saves information needed to create a PJRT client (to enable creating a
@@ -74,7 +74,7 @@ class PjRtState : public ResourceBase {
   PjRtGpuClientCreationInfo* GetPjRtGpuClientCreationInfo();
 
  private:
-  explicit PjRtState() {}
+  explicit PjRtState() = default;
   absl::Mutex mu_;
   PjRtClientsMap clients_ ABSL_GUARDED_BY(mu_);
   // Store the PJRT clients that are no longer used to guarantee that PJRT

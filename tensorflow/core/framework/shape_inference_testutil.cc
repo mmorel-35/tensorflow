@@ -30,9 +30,9 @@ namespace shape_inference {
 
 using errors::Unknown;
 
-Status ShapeInferenceTestutil::InferShapes(ShapeInferenceTestOp op,
-                                           const string& ins,
-                                           const string& expected_outs) {
+absl::Status ShapeInferenceTestutil::InferShapes(ShapeInferenceTestOp op,
+                                                 const string& ins,
+                                                 const string& expected_outs) {
   const OpRegistrationData* op_reg_data;
   TF_RETURN_IF_ERROR(OpRegistry::Global()->LookUp(op.name, &op_reg_data));
 
@@ -89,12 +89,11 @@ Status ShapeInferenceTestutil::InferShapes(ShapeInferenceTestOp op,
                    " but should list ", num_outputs);
   }
   for (int i = 0; i < num_outputs; ++i) {
-    StringPiece expected(expected_outs_v[i]);
+    absl::string_view expected(expected_outs_v[i]);
     shape_inference::ShapeHandle out = c.output(i);
 
-    string err_prefix = strings::StrCat("Output ", i);
-    string err_suffix =
-        strings::StrCat(". Output shape was ", c.DebugString(out));
+    string err_prefix = absl::StrCat("Output ", i);
+    string err_suffix = absl::StrCat(". Output shape was ", c.DebugString(out));
 
     int in_index = -1;
     for (int i = 0; i < c.num_inputs(); ++i) {
@@ -113,7 +112,7 @@ Status ShapeInferenceTestutil::InferShapes(ShapeInferenceTestOp op,
                        err_suffix);
       }
       auto v = str_util::Split(expected, '|');
-      if (std::find(v.begin(), v.end(), strings::StrCat("in", in_index)) ==
+      if (std::find(v.begin(), v.end(), absl::StrCat("in", in_index)) ==
           v.end()) {
         return Unknown(
             err_prefix, " matched input ", in_index,
@@ -138,7 +137,7 @@ Status ShapeInferenceTestutil::InferShapes(ShapeInferenceTestOp op,
     }
 
     // Verify the dimensions.
-    CHECK(absl::StartsWith(expected, "[") && str_util::EndsWith(expected, "]"))
+    CHECK(absl::StartsWith(expected, "[") && absl::EndsWith(expected, "]"))
         << expected;
     expected.remove_prefix(1);
     expected.remove_suffix(1);
@@ -154,8 +153,8 @@ Status ShapeInferenceTestutil::InferShapes(ShapeInferenceTestOp op,
                      " but was ", c.Rank(out), err_suffix);
     }
     for (int j = 0; j < expected_dims.size(); ++j) {
-      err_prefix = strings::StrCat("Output dim ", i, ",", j);
-      StringPiece expected_dim(expected_dims[j]);
+      err_prefix = absl::StrCat("Output dim ", i, ",", j);
+      absl::string_view expected_dim(expected_dims[j]);
       DimensionHandle out_dim = c.Dim(out, j);
 
       std::pair<int, int> in_dim_idx(-1, -1);
@@ -191,8 +190,8 @@ Status ShapeInferenceTestutil::InferShapes(ShapeInferenceTestOp op,
               "DimensionHandle for an input, but did not", err_suffix);
         }
         if (std::find(v.begin(), v.end(),
-                      strings::StrCat("d", in_dim_idx.first, "_",
-                                      in_dim_idx.second)) == v.end()) {
+                      absl::StrCat("d", in_dim_idx.first, "_",
+                                   in_dim_idx.second)) == v.end()) {
           return Unknown(err_prefix, " matched input d", in_dim_idx.first, "_",
                          in_dim_idx.second,
                          ", but should have matched one of (", expected_dim,
@@ -203,7 +202,7 @@ Status ShapeInferenceTestutil::InferShapes(ShapeInferenceTestOp op,
       } else {
         // Parse it as a value.
         int64_t value = -1;
-        if (!strings::safe_strto64(expected_dim, &value)) {
+        if (!absl::SimpleAtoi(expected_dim, &value)) {
           return Unknown(err_prefix, ": the expected dimension value '",
                          expected_dim, "' failed to parse as int64",
                          err_suffix);
@@ -230,7 +229,7 @@ Status ShapeInferenceTestutil::InferShapes(ShapeInferenceTestOp op,
 }
 
 // static
-Status ShapeInferenceTestutil::MakeShapeFromString(
+absl::Status ShapeInferenceTestutil::MakeShapeFromString(
     InferenceContext::ShapeManager* manager, const string& spec,
     ShapeHandle* output) {
   if (spec == "?") {
@@ -247,11 +246,11 @@ Status ShapeInferenceTestutil::MakeShapeFromString(
       dims.push_back(manager->MakeDim(InferenceContext::kUnknownDim));
     } else {
       scanner.RestartCapture().Many(strings::Scanner::DIGIT);
-      StringPiece match;
+      absl::string_view match;
       int64_t dim_size = 0;
 
       if (!scanner.GetResult(nullptr, &match) ||
-          !strings::safe_strto64(match, &dim_size)) {
+          !absl::SimpleAtoi(match, &dim_size)) {
         return errors::InvalidArgument("Could not parse number in ", spec);
       }
 

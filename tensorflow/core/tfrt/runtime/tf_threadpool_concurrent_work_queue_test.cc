@@ -14,9 +14,9 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/tfrt/runtime/tf_threadpool_concurrent_work_queue.h"
 
+#include <cstdint>
 #include <memory>
 
-#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/platform/errors.h"
@@ -52,7 +52,8 @@ TEST_F(TfThreadpoolWorkQueueTest, GetNameOk) {
 TEST_F(TfThreadpoolWorkQueueTest, InitializeRequestOk) {
   tfrt::RequestContextBuilder ctx_builder(/*host=*/nullptr,
                                           /*resource_context=*/nullptr);
-  auto queue = tf_threadpool_cwq_->InitializeRequest(/*request_id=*/0);
+  auto queue =
+      tf_threadpool_cwq_->InitializeRequest(/*request_id=*/0, /*priority=*/0);
   TF_ASSERT_OK(queue.status());
   EXPECT_NE(*queue, nullptr);
   EXPECT_NE((*queue)->GetIntraOpThreadPool(), nullptr);

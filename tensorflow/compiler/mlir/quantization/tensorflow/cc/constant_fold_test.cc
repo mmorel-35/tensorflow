@@ -38,7 +38,7 @@ namespace {
 using ::testing::NotNull;
 using ::testing::SizeIs;
 
-using ConstantFoldingTest = ::mlir::quant::QuantizationTestBase;
+using ConstantFoldingTest = QuantizationTestBase;
 
 TEST_F(ConstantFoldingTest, FoldLargeConstant) {
   constexpr absl::string_view kModuleCode = R"mlir(
@@ -155,8 +155,7 @@ TEST_F(ConstantFoldingTest, FoldDepthwiseConvWeight) {
 
   RewritePatternSet patterns(ctx_.get());
   patterns.add<ConstantFoldQuantizableOperands>(ctx_.get());
-  EXPECT_TRUE(
-      succeeded(applyPatternsAndFoldGreedily(test_func, std::move(patterns))));
+  EXPECT_TRUE(succeeded(applyPatternsGreedily(test_func, std::move(patterns))));
 
   auto depthwise_conv_op =
       FindOperationOfType<TF::DepthwiseConv2dNativeOp>(test_func);
@@ -188,8 +187,7 @@ TEST_F(ConstantFoldingTest, DepthwiseConvWeightNotFoldable) {
 
   RewritePatternSet patterns(ctx_.get());
   patterns.add<ConstantFoldQuantizableOperands>(ctx_.get());
-  EXPECT_TRUE(
-      succeeded(applyPatternsAndFoldGreedily(test_func, std::move(patterns))));
+  EXPECT_TRUE(succeeded(applyPatternsGreedily(test_func, std::move(patterns))));
 
   auto depthwise_conv_op =
       FindOperationOfType<TF::DepthwiseConv2dNativeOp>(test_func);

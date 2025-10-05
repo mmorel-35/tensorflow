@@ -20,7 +20,7 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/tensorflow/ir/tpu_embedding_ops_registry.h"
 
 namespace mlir {
-namespace mhlo {
+namespace hlo {
 
 namespace {
 
@@ -346,6 +346,7 @@ bool IsOpTypeAllowedTf2XlaFallback(const TypeID& type_id) {
         TypeID::get<TF::XlaPadOp>(),
         TypeID::get<TF::XlaSetBoundOp>(),
         TypeID::get<TF::XlaSetDynamicDimensionSizeOp>(),
+        TypeID::get<TF::XlaSparseActivationsUnstackOp>(),
         TypeID::get<TF::XlaSparseCoreAdagradMomentumOp>(),
         TypeID::get<TF::XlaSparseCoreAdagradOp>(),
         TypeID::get<TF::XlaSparseCoreAdamOp>(),
@@ -358,6 +359,7 @@ bool IsOpTypeAllowedTf2XlaFallback(const TypeID& type_id) {
         TypeID::get<TF::XlaSparseDenseMatmulGradWithFtrlAndCsrInputOp>(),
         TypeID::get<TF::XlaSparseDenseMatmulGradWithSgdAndCsrInputOp>(),
         TypeID::get<TF::XlaSparseDenseMatmulWithCsrInputOp>(),
+        TypeID::get<TF::XlaSparseDenseMatmulCustomCombinerOnTcWithCsrInputOp>(),
         TypeID::get<TF::XlaSparseDenseMatmulWithStaticBufferSizeOp>(),
         TypeID::get<
             TF::XlaSparseDenseMatmulGradWithAdagradAndStaticBufferSizeOp>(),
@@ -369,6 +371,21 @@ bool IsOpTypeAllowedTf2XlaFallback(const TypeID& type_id) {
             TF::XlaSparseDenseMatmulGradWithFtrlAndStaticBufferSizeOp>(),
         TypeID::get<
             TF::XlaSparseDenseMatmulGradWithSgdAndStaticBufferSizeOp>(),  // NOLINT
+        TypeID::get<TF::XlaSparseDenseMatmulGradWithCsrInputOp>(),
+        TypeID::get<
+            TF::XlaSparseDenseMatmulCustomCombinerOnTcGradWithSgdAndCsrInputOp>(),  // NOLINT
+        TypeID::get<
+            TF::XlaSparseDenseMatmulCustomCombinerOnTcGradWithAdagradAndCsrInputOp>(),  // NOLINT
+        TypeID::get<
+            TF::XlaSparseDenseMatmulCustomCombinerOnTcGradWithAdagradMomentumAndCsrInputOp>(),  // NOLINT
+        TypeID::get<
+            TF::XlaSparseDenseMatmulCustomCombinerOnTcGradWithAdamAndCsrInputOp>(),  // NOLINT
+        TypeID::get<
+            TF::XlaSparseDenseMatmulCustomCombinerOnTcGradWithFtrlAndCsrInputOp>(),  // NOLINT
+        TypeID::get<
+            TF::XlaSparseDenseMatmulCustomCombinerOnTcGradWithCsrInputOp>(),
+        TypeID::get<TF::XlaLocalSparseDenseMatmulOp>(),  // NOLINT
+        TypeID::get<TF::XlaSparseGradientsStackOp>(),
         TypeID::get<TF::XlaSpmdFullToShardShapeOp>(),
         TypeID::get<TF::XlaSpmdShardToFullShapeOp>(),
         TypeID::get<TF::XlaSvdOp>(),
@@ -527,12 +544,6 @@ bool HasTf2XlaFallback(const TypeID& type_id) {
          IsOpTypeAllowedTf2XlaPreferred(type_id);
 }
 
-bool IsOpLegalizedWithMlir(Operation& op) {
-  auto abstractOp = op.getRegisteredInfo();
-  if (!abstractOp) return false;
-  return IsTypeLegalizedWithMlir(abstractOp->getTypeID());
-}
-
 bool IsTypeLegalizedWithMlir(const TypeID& type_id) {
   return MlirAlwaysOps().contains(type_id);
 }
@@ -549,5 +560,5 @@ bool IsDynamicPadderOp(const TypeID& type_id) {
   return DynamicTensorflowOps().contains(type_id);
 }
 
-}  // namespace mhlo
+}  // namespace hlo
 }  // namespace mlir

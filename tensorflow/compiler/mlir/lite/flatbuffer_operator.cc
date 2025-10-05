@@ -22,6 +22,8 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "flatbuffers/buffer.h"  // from @flatbuffers
 #include "flatbuffers/flatbuffer_builder.h"  // from @flatbuffers
@@ -45,17 +47,15 @@ limitations under the License.
 #include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "stablehlo/dialect/StablehloOps.h"  // from @stablehlo
 #include "stablehlo/dialect/VhloOps.h"  // from @stablehlo
+#include "tensorflow/compiler/mlir/lite/core/c/builtin_op_data.h"
 #include "tensorflow/compiler/mlir/lite/ir/tfl_ops.h"
 #include "tensorflow/compiler/mlir/lite/schema/mutable/schema_generated.h"
 #include "tensorflow/compiler/mlir/lite/schema/schema_utils.h"
 #include "tensorflow/compiler/mlir/lite/utils/convert_type.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_types.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/dynamic_shape_utils.h"
-#include "xla/statusor.h"
 #include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/status.h"
-#include "tensorflow/lite/core/c/builtin_op_data.h"
-#include "tensorflow/lite/kernels/internal/kernel_utils.h"
 #include "tsl/platform/status.h"
 
 namespace {
@@ -333,11 +333,49 @@ static mlir::Attribute BuildRankedTensorAttr(std::vector<int64_t> shape,
 }
 
 static mlir::Attribute BuildRankedTensorAttr(std::vector<int64_t> shape,
+                                             std::vector<int32_t> value,
+                                             mlir::Builder builder) {
+  mlir::RankedTensorType ty =
+      tensorflow::GetTypeFromTFTensorShape(shape, builder.getIntegerType(32));
+  return mlir::DenseIntElementsAttr::get(ty, value);
+}
+
+static mlir::Attribute BuildRankedTensorAttr(std::vector<int64_t> shape,
                                              std::vector<int64_t> value,
                                              mlir::Builder builder) {
   mlir::RankedTensorType ty =
       tensorflow::GetTypeFromTFTensorShape(shape, builder.getIntegerType(64));
   return mlir::DenseIntElementsAttr::get(ty, value);
+}
+
+static mlir::Attribute BuildRankedTensorAttr(std::vector<int64_t> shape,
+                                             std::vector<float> value,
+                                             mlir::Builder builder) {
+  mlir::RankedTensorType ty =
+      tensorflow::GetTypeFromTFTensorShape(shape, builder.getF32Type());
+  return mlir::DenseFPElementsAttr::get(ty, value);
+}
+
+static mlir::Attribute BuildVhloTensorV1Attr(std::vector<int64_t> shape,
+                                             std::vector<int32_t> value,
+                                             mlir::Builder builder) {
+  mlir::StablehloVhloTypeConverter type_converter;
+  auto builtin_attr = mlir::dyn_cast<mlir::DenseIntElementsAttr>(
+      BuildRankedTensorAttr(shape, value, builder));
+  auto vhlo_type = type_converter.convertType(builtin_attr.getType());
+  return mlir::vhlo::TensorV1Attr::get(builder.getContext(), vhlo_type,
+                                       builtin_attr.getRawData());
+}
+
+static mlir::Attribute BuildVhloTensorV1Attr(std::vector<int64_t> shape,
+                                             std::vector<float> value,
+                                             mlir::Builder builder) {
+  mlir::StablehloVhloTypeConverter type_converter;
+  auto builtin_attr = mlir::dyn_cast<mlir::DenseFPElementsAttr>(
+      BuildRankedTensorAttr(shape, value, builder));
+  auto vhlo_type = type_converter.convertType(builtin_attr.getType());
+  return mlir::vhlo::TensorV1Attr::get(builder.getContext(), vhlo_type,
+                                       builtin_attr.getRawData());
 }
 
 static mlir::Attribute BuildVhloTensorV1Attr(std::vector<int64_t> shape,
@@ -724,6 +762,49 @@ void BuiltinOptions2ToAttributesManual(
 
         composite_attribute_pair.second =
             BuildVhloArrayV1Attr(std::move(mlir_vector), builder);
+      }
+
+      if (value.IsMap()) {
+        auto tensor_attr = value.AsMap();
+        if (std::string(key).rfind("_TENSOR_V1_", 0) == 0) {
+          const char* attribute_name = key + 11;  // length of "_TENSOR_V1_"
+          composite_attribute_pair.first =
+              BuildVhloStringV1Attr(attribute_name, builder);
+          auto shape = tensor_attr["TENSOR_SHAPE"].AsVector();
+          std::vector<int64_t> shape_vector;
+          shape_vector.reserve(shape.size());
+          for (int i = 0; i < shape.size(); ++i) {
+            shape_vector.push_back(shape[i].AsInt64());
+          }
+          tflite::TensorType type =
+              tflite::TensorType(tensor_attr["TENSOR_TYPE"].AsInt32());
+          auto data = tensor_attr["TENSOR_DATA"].AsVector();
+          if (type == tflite::TensorType_INT32) {
+            std::vector<int32_t> data_vector;
+            data_vector.reserve(data.size());
+            for (int i = 0; i < data.size(); ++i) {
+              data_vector.push_back(data[i].AsInt32());
+            }
+            composite_attribute_pair.second =
+                BuildVhloTensorV1Attr(shape_vector, data_vector, builder);
+          } else if (type == tflite::TensorType_INT64) {
+            std::vector<int64_t> data_vector;
+            data_vector.reserve(data.size());
+            for (int i = 0; i < data.size(); ++i) {
+              data_vector.push_back(data[i].AsInt64());
+            }
+            composite_attribute_pair.second =
+                BuildVhloTensorV1Attr(shape_vector, data_vector, builder);
+          } else if (type == tflite::TensorType_FLOAT32) {
+            std::vector<float> data_vector;
+            data_vector.reserve(data.size());
+            for (int i = 0; i < data.size(); ++i) {
+              data_vector.push_back(data[i].AsFloat());
+            }
+            composite_attribute_pair.second =
+                BuildVhloTensorV1Attr(shape_vector, data_vector, builder);
+          }
+        }
       }
 
       composite_attribute_pairs.emplace_back(composite_attribute_pair);

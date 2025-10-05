@@ -3061,6 +3061,18 @@ func.func @convert_iota_3d() -> tensor<5x7x9xi32> {
   func.return %0 : tensor<5x7x9xi32>
 }
 
+// CHECK-LABEL:   func @convert_iota_ui64() -> tensor<123xui64> {
+// CHECK-DAG:       %[[VAL_0:.*]] = "tf.Const"() <{value = dense<0> : tensor<ui64>}> : () -> tensor<ui64>
+// CHECK-DAG:       %[[VAL_1:.*]] = "tf.Const"() <{value = dense<123> : tensor<ui64>}> : () -> tensor<ui64>
+// CHECK-DAG:       %[[VAL_2:.*]] = "tf.Const"() <{value = dense<1> : tensor<ui64>}> : () -> tensor<ui64>
+// CHECK:           %[[VAL_3:.*]] = "tf.Range"(%[[VAL_0]], %[[VAL_1]], %[[VAL_2]]) : (tensor<ui64>, tensor<ui64>, tensor<ui64>) -> tensor<123xui64>
+// CHECK:           return %[[VAL_3]] : tensor<123xui64>
+// CHECK:         }
+func.func @convert_iota_ui64() -> tensor<123xui64> {
+  %0 = "mhlo.iota"() <{ iota_dimension = 0 : i64 }> : () -> tensor<123xui64>
+  func.return %0 : tensor<123xui64>
+}
+
 // CHECK-LABEL:   func @convert_avgpool_valid(
 // CHECK-SAME:                                %[[VAL_0:.*]]: tensor<4x16x16x8xf32>) -> tensor<4x7x7x8xf32> {
 // CHECK:           %[[VAL_1:.*]] = "tf.AvgPool"(%[[VAL_0]]) <{data_format = "NHWC", ksize = [1, 3, 3, 1], padding = "VALID", strides = [1, 2, 2, 1]}> : (tensor<4x16x16x8xf32>) -> tensor<4x7x7x8xf32>
@@ -3749,6 +3761,108 @@ func.func @convert_gather_offset(%arg0: tensor<1x20xi32>, %arg1: tensor<1x1xi32>
     slice_sizes = dense<1> : tensor<2xi64>
   } : (tensor<1x20xi32>, tensor<1x1xi32>) -> tensor<1x1xi32>
   func.return %0 : tensor<1x1xi32>
+}
+
+// CHECK-LABEL:   func @convert_gather_batching_dims(
+// CHECK-SAME:                          %[[ARG_0:.*]]: tensor<2x3x128xf32>,
+// CHECK-SAME:                          %[[ARG_1:.*]]: tensor<3x128x2x1xi32>)
+// CHECK-DAG:         %[[CST:.*]] = arith.constant dense<[6, 128]> : tensor<2xi64>
+// CHECK:             %[[VAL_0:.*]] = "tf.Reshape"(%[[ARG_0]], %[[CST]]) : (tensor<2x3x128xf32>, tensor<2xi64>) -> tensor<6x128xf32>
+// CHECK-DAG:         %[[CST_0:.*]] = "tf.Const"() <{value = dense<[2, 0, 1, 3]> : tensor<4xi64>}> : () -> tensor<4xi64>
+// CHECK:             %[[VAL_1:.*]] = "tf.Transpose"(%[[ARG_1]], %[[CST_0]]) : (tensor<3x128x2x1xi32>, tensor<4xi64>) -> tensor<2x3x128x1xi32>
+// CHECK-DAG:         %[[CST_1:.*]] = arith.constant dense<[6, 128, 1]> : tensor<3xi64>
+// CHECK:             %[[VAL_2:.*]] = "tf.Reshape"(%[[VAL_1]], %[[CST_1]]) : (tensor<2x3x128x1xi32>, tensor<3xi64>) -> tensor<6x128x1xi32>
+// CHECK-DAG:         %[[CST_2:.*]] = "tf.Const"() <{value = dense<0> : tensor<i32>}> : () -> tensor<i32>
+// CHECK-DAG:         %[[CST_3:.*]] = "tf.Const"() <{value = dense<6> : tensor<i32>}> : () -> tensor<i32>
+// CHECK-DAG:         %[[CST_4:.*]] = "tf.Const"() <{value = dense<1> : tensor<i32>}> : () -> tensor<i32>
+// CHECK:             %[[VAL_3:.*]] = "tf.Range"(%[[CST_2]], %[[CST_3]], %[[CST_4]]) : (tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<6xi32>
+// CHECK-DAG:         %[[CST_5:.*]] = "tf.Const"() <{value = dense<[6, 1, 1]> : tensor<3xi64>}> : () -> tensor<3xi64>
+// CHECK:             %[[VAL_4:.*]] = "tf.Reshape"(%[[VAL_3]], %[[CST_5]]) : (tensor<6xi32>, tensor<3xi64>) -> tensor<6x1x1xi32>
+// CHECK-DAG:         %[[CST_6:.*]] = "tf.Const"() <{value = dense<[6, 128, 1]> : tensor<3xi64>}> : () -> tensor<3xi64>
+// CHECK:             %[[VAL_5:.*]] = "tf.BroadcastTo"(%[[VAL_4]], %[[CST_6]]) : (tensor<6x1x1xi32>, tensor<3xi64>) -> tensor<6x128x1xi32>
+// CHECK-DAG:         %[[CST_7:.*]] = "tf.Const"() <{value = dense<2> : tensor<i32>}> : () -> tensor<i32>
+// CHECK:             %[[VAL_6:.*]] = "tf.ConcatV2"(%[[VAL_5]], %[[VAL_2]], %[[CST_7]]) : (tensor<6x128x1xi32>, tensor<6x128x1xi32>, tensor<i32>) -> tensor<6x128x2xi32>
+// CHECK:             %[[VAL_7:.*]] = "tf.GatherNd"(%[[VAL_0]], %[[VAL_6]]) <{bad_indices_policy = ""}> : {{.*}} -> tensor<6x128xf32>
+// CHECK-DAG:         %[[CST_8:.*]] = arith.constant dense<[2, 3, 128]> : tensor<3xi64>
+// CHECK:             %[[VAL_8:.*]] = "tf.Reshape"(%[[VAL_7]], %[[CST_8]]) : (tensor<6x128xf32>, tensor<3xi64>) -> tensor<2x3x128xf32>
+// CHECK-DAG:         %[[CST_9:.*]] = "tf.Const"() <{value = dense<[1, 2, 0]> : tensor<3xi64>}> : () -> tensor<3xi64>
+// CHECK:             %[[VAL_9:.*]] = "tf.Transpose"(%[[VAL_8]], %[[CST_9]]) : (tensor<2x3x128xf32>, tensor<3xi64>) -> tensor<3x128x2xf32>
+// CHECK:             return %[[VAL_9]]
+// CHECK:         }
+func.func @convert_gather_batching_dims(%arg0: tensor<2x3x128xf32>, %arg1: tensor<3x128x2x1xi32>) -> tensor<3x128x2xf32> {
+  %0 = "mhlo.gather"(%arg0, %arg1) {
+    dimension_numbers = #mhlo.gather<
+      index_vector_dim = 3,
+      start_index_map = [2],
+      operand_batching_dims = [0, 1],
+      start_indices_batching_dims = [2, 0],
+      collapsed_slice_dims = [2],
+    >,
+    indices_are_sorted = false,
+    slice_sizes = dense<1> : tensor<3xi64>
+  } : (tensor<2x3x128xf32>, tensor<3x128x2x1xi32>) -> tensor<3x128x2xf32>
+  func.return %0 : tensor<3x128x2xf32>
+}
+
+// CHECK-LABEL: func @convert_gather_non_collapsed_index_dim(
+// CHECK-SAME:                                      %[[ARG_0:.*]]: tensor<10x5xi32>,
+// CHECK-SAME:                                      %[[ARG_1:.*]]: tensor<2x1xi32>) -> tensor<2x1x5xi32> {
+// CHECK:           %[[VAL_0:.*]] = "tf.GatherNd"(%[[ARG_0]], %[[ARG_1]]) <{bad_indices_policy = ""}> : (tensor<10x5xi32>, tensor<2x1xi32>) -> tensor<2x5xi32>
+// CHECK-DAG:       %[[CST:.*]] = arith.constant dense<[2, 1, 5]> : tensor<3xi64>
+// CHECK:           %[[VAL_1:.*]] = "tf.Reshape"(%[[VAL_0]], %[[CST]]) : (tensor<2x5xi32>, tensor<3xi64>) -> tensor<2x1x5xi32>
+// CHECK:           return %[[VAL_1]] : tensor<2x1x5xi32>
+// CHECK:       }
+func.func @convert_gather_non_collapsed_index_dim(%arg0: tensor<10x5xi32>, %arg1: tensor<2x1xi32>) -> tensor<2x1x5xi32> {
+  %0 = "mhlo.gather"(%arg0, %arg1) {
+    dimension_numbers = #mhlo.gather<
+      index_vector_dim = 1,
+      offset_dims = [1, 2],
+      start_index_map = [0],
+    >,
+    indices_are_sorted = false,
+    slice_sizes = dense<[1, 5]> : tensor<2xi64>
+  } : (tensor<10x5xi32>, tensor<2x1xi32>) -> tensor<2x1x5xi32>
+  func.return %0 : tensor<2x1x5xi32>
+}
+
+// CHECK-LABEL: func @convert_gather_indexed_dimension_slice(
+// CHECK-SAME:                                      %[[ARG_0:.*]]: tensor<4x5x6xi32>,
+// CHECK-SAME:                                      %[[ARG_1:.*]]: tensor<2x2xi32>) -> tensor<2x1x5x6xi32> {
+// CHECK-DAG:       %[[CST:.*]] = "tf.Const"() <{value = dense<[0, 2, 1]> : tensor<3xi64>}> : () -> tensor<3xi64>
+// CHECK:           %[[VAL_0:.*]] = "tf.Transpose"(%[[ARG_0]], %[[CST]]) : (tensor<4x5x6xi32>, tensor<3xi64>) -> tensor<4x6x5xi32>
+// CHECK-DAG:       %[[CST_0:.*]] = arith.constant dense<[2, 1, 2]> : tensor<3xi64>
+// CHECK:           %[[VAL_1:.*]] = "tf.Reshape"(%[[ARG_1]], %[[CST_0]]) : (tensor<2x2xi32>, tensor<3xi64>) -> tensor<2x1x2xi32>
+// CHECK-DAG:       %[[CST_1:.*]] = "tf.Const"() <{value = dense<0> : tensor<i32>}> : () -> tensor<i32>
+// CHECK-DAG:       %[[CST_2:.*]] = "tf.Const"() <{value = dense<6> : tensor<i32>}> : () -> tensor<i32>
+// CHECK-DAG:       %[[CST_3:.*]] = "tf.Const"() <{value = dense<1> : tensor<i32>}> : () -> tensor<i32>
+// CHECK:           %[[VAL_2:.*]] = "tf.Range"(%[[CST_1]], %[[CST_2]], %[[CST_3]]) : (tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<6xi32>
+// CHECK-DAG:       %[[CST_4:.*]] = "tf.Const"() <{value = dense<[1, 6, 1]> : tensor<3xi64>}> : () -> tensor<3xi64>
+// CHECK:           %[[VAL_3:.*]] = "tf.Reshape"(%[[VAL_2]], %[[CST_4]]) : (tensor<6xi32>, tensor<3xi64>) -> tensor<1x6x1xi32>
+// CHECK-DAG:       %[[CST_5:.*]] = "tf.Const"() <{value = dense<[1, 6, 1]> : tensor<3xi64>}> : () -> tensor<3xi64>
+// CHECK:           %[[VAL_4:.*]] = "tf.BroadcastTo"(%[[VAL_3]], %[[CST_5]]) : (tensor<1x6x1xi32>, tensor<3xi64>) -> tensor<1x6x1xi32>
+// CHECK-DAG:       %[[CST_6:.*]] = arith.constant dense<0> : tensor<i32>
+// CHECK-DAG:       %[[CST_7:.*]] = arith.constant
+// CHECK-SAME{LITERAL:  dense<[[0, 0], [0, 0], [1, 0]]> : tensor<3x2xi64>
+// CHECK:           %[[VAL_5:.*]] = "tf.PadV2"(%[[VAL_4]], %[[CST_7]], %[[CST_6]]) : (tensor<1x6x1xi32>, tensor<3x2xi64>, tensor<i32>) -> tensor<1x6x2xi32>
+// CHECK:           %[[VAL_6:.*]] = "tf.Add"(%[[VAL_1]], %[[VAL_5]]) : (tensor<2x1x2xi32>, tensor<1x6x2xi32>) -> tensor<2x6x2xi32>
+// CHECK:           %[[VAL_7:.*]] = "tf.GatherNd"(%[[VAL_0]], %[[VAL_6]]) <{bad_indices_policy = ""}> : (tensor<4x6x5xi32>, tensor<2x6x2xi32>) -> tensor<2x6x5xi32>
+// CHECK-DAG:       %[[CST_8:.*]] = arith.constant dense<[2, 1, 6, 5]> : tensor<4xi64>
+// CHECK:           %[[VAL_8:.*]] = "tf.Reshape"(%[[VAL_7]], %[[CST_8]]) : (tensor<2x6x5xi32>, tensor<4xi64>) -> tensor<2x1x6x5xi32>
+// CHECK-DAG:       %[[CST_9:.*]] = "tf.Const"() <{value = dense<[0, 1, 3, 2]> : tensor<4xi64>}> : () -> tensor<4xi64>
+// CHECK:           %[[VAL_9:.*]] = "tf.Transpose"(%[[VAL_8]], %[[CST_9]]) : (tensor<2x1x6x5xi32>, tensor<4xi64>) -> tensor<2x1x5x6xi32>
+// CHECK:           return %[[VAL_9]] : tensor<2x1x5x6xi32>
+// CHECK:       }
+func.func @convert_gather_indexed_dimension_slice(%arg0: tensor<4x5x6xi32>, %arg1: tensor<2x2xi32>) -> tensor<2x1x5x6xi32> {
+  %0 = "mhlo.gather"(%arg0, %arg1) {
+    dimension_numbers = #mhlo.gather<
+      index_vector_dim = 1,
+      offset_dims = [1, 2, 3],
+      start_index_map = [0, 2],
+    >,
+    indices_are_sorted = false,
+    slice_sizes = dense<[1, 5, 6]> : tensor<3xi64>
+  } : (tensor<4x5x6xi32>, tensor<2x2xi32>) -> tensor<2x1x5x6xi32>
+  func.return %0 : tensor<2x1x5x6xi32>
 }
 
 // CHECK-LABEL:   func @convert_gather_to_slice_batch_size_1(
@@ -4982,9 +5096,9 @@ func.func @lowered_cumprod(%arg0: tensor<4x12xf32>) -> tensor<4x12xf32> {
 }
 
 // CHECK-LABEL: reduce_window_trivial_window_dims
+// CHECK-NOT:       "tf.Cumprod"
 func.func @reduce_window_trivial_window_dims(%arg0: tensor<4x12xf32>) -> tensor<4x12xf32> {
   %0 = mhlo.constant dense<1.000000e+00> : tensor<f32>
-  // expected-error @+1 {{no reduced dimension is found.}}
   %1 = "mhlo.reduce_window"(%arg0, %0) ({
   ^bb0(%arg1: tensor<f32>, %arg2: tensor<f32>):
     %2 = mhlo.multiply %arg1, %arg2 : tensor<f32>

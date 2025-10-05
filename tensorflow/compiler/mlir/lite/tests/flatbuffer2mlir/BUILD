@@ -27,10 +27,10 @@ filegroup(
     data = [
         ":importer_test_min_max",
         ":test_schema.fbs",
-        "//tensorflow/compiler/mlir:tf-opt",
         "//tensorflow/compiler/mlir/lite:flatbuffer_to_string",
         "//tensorflow/compiler/mlir/lite:flatbuffer_translate",
         "//tensorflow/compiler/mlir/lite:json_to_flatbuffer",
+        "//tensorflow/compiler/mlir/lite:litert-opt",
         "//tensorflow/compiler/mlir/lite:tf_tfl_translate",
         "@llvm-project//llvm:FileCheck",
     ],
@@ -56,9 +56,9 @@ tf_native_cc_binary(
         "importer_test_min_max.cc",
     ],
     deps = [
+        "//tensorflow/compiler/mlir/lite/core:absl_error_model_builder",
         "//tensorflow/compiler/mlir/lite/schema:schema_fbs",
         "//tensorflow/compiler/mlir/lite/schema:schema_utils",
-        "//tensorflow/lite:framework",
         "@com_google_absl//absl/strings",
         "@llvm-project//llvm:Support",
     ],

@@ -20,27 +20,28 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
-#include "absl/strings/str_cat.h"
+#include "absl/log/log.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_format.h"
+#include "absl/types/span.h"
 #include "xla/client/executable_build_options.h"
-#include "xla/client/xla_computation.h"
-#include "xla/execution_options_util.h"
-#include "xla/hlo/ir/hlo_computation.h"
-#include "xla/hlo/ir/hlo_module.h"
+#include "xla/hlo/builder/xla_computation.h"
 #include "xla/service/backend.h"
+#include "xla/service/compiler.h"
 #include "xla/service/computation_layout.h"
+#include "xla/service/computation_placer.h"
 #include "xla/service/executable.h"
-#include "xla/service/hlo_execution_profile.h"
 #include "xla/service/hlo_module_config.h"
-#include "xla/service/hlo_module_util.h"
 #include "xla/service/local_service_utils.h"
 #include "xla/service/platform_util.h"
-#include "xla/shape_layout.h"
-#include "xla/shape_util.h"
-#include "xla/status_macros.h"
+#include "xla/service/service.h"
+#include "xla/service/shaped_buffer.h"
+#include "xla/shape.h"
+#include "xla/stream_executor/platform.h"
 #include "xla/stream_executor/stream_executor.h"
-#include "xla/types.h"
+#include "xla/tsl/platform/statusor.h"
 #include "xla/util.h"
+#include "xla/xla_data.pb.h"
 #include "tsl/platform/logging.h"
 #include "tsl/platform/statusor.h"
 
@@ -90,14 +91,20 @@ LocalService::CompileExecutables(
   // TODO(cjfj): Investigate why there are a couple of test failures when the
   // single partition computations are built using `BuildExecutables`, fix it,
   // and remove this special case (provided the performance if similar).
+  const Compiler::CompileOptions compile_options{
+      build_options.device_allocator(),
+      build_options.compile_thread_pool(),
+      build_options.layout_canonicalization_callback(),
+      false,
+      {},
+      {build_options.key_value_store(), build_options.process_index(),
+       build_options.process_count()},
+      build_options.slice_size()};
   if (build_options.num_partitions() == 1) {
     TF_ASSIGN_OR_RETURN(
         std::unique_ptr<Executable> executable,
         BuildExecutable(computation.proto(), std::move(module_config),
-                        execute_backend_.get(), executor,
-                        {build_options.device_allocator(),
-                         build_options.compile_thread_pool(),
-                         build_options.layout_canonicalization_callback()},
+                        execute_backend_.get(), executor, compile_options,
                         build_options.run_backend_only()));
     std::vector<std::unique_ptr<Executable>> executables;
     executables.push_back(std::move(executable));
@@ -112,11 +119,7 @@ LocalService::CompileExecutables(
 
     return BuildExecutables(
         /*module_protos=*/{&computation.proto()}, std::move(module_configs),
-        execute_backend_.get(), {executors},
-        Compiler::CompileOptions{
-            build_options.device_allocator(),
-            build_options.compile_thread_pool(),
-            build_options.layout_canonicalization_callback()},
+        execute_backend_.get(), {executors}, compile_options,
         build_options.run_backend_only());
   }
 }
@@ -152,9 +155,11 @@ LocalService::CompileAotResults(
 
 absl::StatusOr<int> LocalService::ReplicaNumberToDeviceOrdinal(
     int replica_number) {
-  return backend().computation_placer()->DeviceId(
-      replica_number, /*computation=*/0, options_.number_of_replicas(),
-      /*computation_count=*/1);
+  TF_ASSIGN_OR_RETURN(
+      DeviceAssignment da,
+      backend().computation_placer()->AssignDevices(
+          options_.number_of_replicas(), /*computation_count=*/1));
+  return da.DeviceId(replica_number, /*computation=*/0);
 }
 
 absl::StatusOr<const ShapedBuffer*> LocalService::GlobalDataToShapedBuffer(

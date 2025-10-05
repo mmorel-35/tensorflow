@@ -15,14 +15,15 @@ limitations under the License.
 
 #include "xla/shape_layout.h"
 
+#include "absl/log/check.h"
 #include "absl/status/status.h"
 #include "xla/layout.h"
 #include "xla/layout_util.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
+#include "xla/tsl/platform/logging.h"  // IWYU pragma: keep
+#include "xla/tsl/platform/status.h"
 #include "xla/util.h"
-#include "tsl/platform/logging.h"  // IWYU pragma: keep
-#include "tsl/platform/status.h"
 
 namespace xla {
 
@@ -94,6 +95,11 @@ void ShapeLayout::Clear(ShapeIndexView shape_index) {
   ShapeUtil::GetMutableSubshape(&shape_, shape_index)->clear_layout();
 }
 
+void ShapeLayout::ClearTiles() { LayoutUtil::ClearTiles(&shape_); }
+void ShapeLayout::ClearTiles(ShapeIndexView shape_index) {
+  LayoutUtil::ClearTiles(ShapeUtil::GetMutableSubshape(&shape_, shape_index));
+}
+
 bool ShapeLayout::LayoutIsSet() const { return LayoutUtil::HasLayout(shape_); }
 bool ShapeLayout::AnyLayoutIsSet() const {
   return LayoutUtil::HasAnyLayout(shape_);
@@ -110,7 +116,8 @@ void ShapeLayout::ResetLayout(const Layout& layout,
                               ShapeIndexView shape_index) {
   *ShapeUtil::GetMutableSubshape(&shape_, shape_index)->mutable_layout() =
       layout;
-  TF_DCHECK_OK(ShapeUtil::ValidateShape(shape_));
+  TF_DCHECK_OK(
+      ShapeUtil::ValidateShape(ShapeUtil::GetSubshape(shape_, shape_index)));
 }
 
 bool ShapeLayout::operator==(const ShapeLayout& other) const {

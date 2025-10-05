@@ -13,31 +13,35 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include <limits>
+#include <cstdint>
 #include <memory>
 #include <vector>
 
+#include "xla/tests/xla_test_backend_predicates.h"
 #include "absl/strings/str_cat.h"
-#if TENSORFLOW_USE_ROCM
-#include "rocm/rocm_config.h"
-#endif
 #include "xla/array2d.h"
 #include "xla/array3d.h"
-#include "xla/client/lib/arithmetic.h"
-#include "xla/client/lib/matrix.h"
 #include "xla/client/local_client.h"
-#include "xla/client/xla_builder.h"
+#include "xla/error_spec.h"
+#include "xla/hlo/builder/lib/arithmetic.h"
+#include "xla/hlo/builder/lib/matrix.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "xla/hlo/parser/hlo_parser.h"
+#include "xla/literal_util.h"
 #include "xla/primitive_util.h"
 #include "xla/reference_util.h"
-#include "xla/service/hlo_parser.h"
+#include "xla/service/platform_util.h"
 #include "xla/shape_util.h"
 #include "xla/stream_executor/stream_executor_memory_allocator.h"
 #include "xla/tests/client_library_test_base.h"
 #include "xla/tests/hlo_test_base.h"
-#include "xla/tests/test_macros.h"
-#include "xla/tests/test_utils.h"
-#include "tsl/platform/test.h"
-#include "tsl/platform/test_benchmark.h"
+#include "xla/tsl/platform/test.h"
+#include "xla/tsl/platform/test_benchmark.h"
+#include "tsl/platform/ml_dtypes.h"
+
+#if TENSORFLOW_USE_ROCM
+#include "rocm/rocm_config.h"
+#endif
 
 namespace xla {
 namespace {
@@ -48,27 +52,17 @@ class DotOperationTest : public ClientLibraryTestBase {
 };
 
 using TypesF16F32 = ::testing::Types<
-#if !defined(XLA_BACKEND_DOES_NOT_SUPPORT_FLOAT16)
     Eigen::half,
-#endif
     float>;
 
 using TypesF16F32F64 = ::testing::Types<
-#if !defined(XLA_BACKEND_DOES_NOT_SUPPORT_FLOAT16)
     Eigen::half,
-#endif
-#if !defined(XLA_BACKEND_DOES_NOT_SUPPORT_FLOAT64)
     double,
-#endif
     float>;
 
 using TypesF16F32F64CF64 = ::testing::Types<
-#if !defined(XLA_BACKEND_DOES_NOT_SUPPORT_FLOAT16)
     Eigen::half,
-#endif
-#if !defined(XLA_BACKEND_DOES_NOT_SUPPORT_FLOAT64)
     double, complex64,
-#endif
     float>;
 
 #if GOOGLE_CUDA
@@ -79,7 +73,7 @@ using TypesF8 = ::testing::Types<tsl::float8_e4m3fnuz>;
 #endif
 
 // Check that we can safely pass an input tuple's elements to a dot operation.
-XLA_TEST_F(DotOperationTest, DotOfInputTupleElem) {
+TEST_F(DotOperationTest, DotOfInputTupleElem) {
   XlaBuilder builder(TestName());
 
   XlaOp param;
@@ -101,10 +95,18 @@ XLA_TEST_F(DotOperationTest, DotOfInputTupleElem) {
 }
 
 template <typename T>
-class DotOperationTest_F16F32F64CF64 : public DotOperationTest {};
+class DotOperationTest_F16F32F64CF64 : public DotOperationTest {
+ protected:
+  void SetUp() override {
+    if ((std::is_same_v<T, double> || std::is_same_v<T, complex64>) &&
+        !test::BackendSupportsFloat64()) {
+      GTEST_SKIP();
+    }
+  }
+};
 TYPED_TEST_CASE(DotOperationTest_F16F32F64CF64, TypesF16F32F64CF64);
 
-XLA_TYPED_TEST(DotOperationTest_F16F32F64CF64, ZeroElementVectorDot) {
+TYPED_TEST(DotOperationTest_F16F32F64CF64, ZeroElementVectorDot) {
   using T = TypeParam;
   XlaBuilder builder(this->TestName());
 
@@ -117,10 +119,17 @@ XLA_TYPED_TEST(DotOperationTest_F16F32F64CF64, ZeroElementVectorDot) {
 }
 
 template <typename T>
-class DotOperationTest_F16F32F64 : public DotOperationTest {};
+class DotOperationTest_F16F32F64 : public DotOperationTest {
+ protected:
+  void SetUp() override {
+    if (std::is_same_v<T, double> && !test::BackendSupportsFloat64()) {
+      GTEST_SKIP();
+    }
+  }
+};
 TYPED_TEST_CASE(DotOperationTest_F16F32F64, TypesF16F32F64);
 
-XLA_TYPED_TEST(DotOperationTest_F16F32F64, TrivialMatrixVectorDot) {
+TYPED_TEST(DotOperationTest_F16F32F64, TrivialMatrixVectorDot) {
   using T = TypeParam;
   XlaBuilder builder(this->TestName());
   auto lhs = ConstantR2FromArray2D<T>(&builder, {{3.0f, 4.0f}});
@@ -131,7 +140,7 @@ XLA_TYPED_TEST(DotOperationTest_F16F32F64, TrivialMatrixVectorDot) {
                                         this->error_spec_);
 }
 
-XLA_TYPED_TEST(DotOperationTest_F16F32F64CF64, OneElementVectorDot) {
+TYPED_TEST(DotOperationTest_F16F32F64CF64, OneElementVectorDot) {
   using T = TypeParam;
   XlaBuilder builder(this->TestName());
   auto lhs = ConstantR1<T>(&builder, {static_cast<T>(2.0f)});
@@ -142,7 +151,7 @@ XLA_TYPED_TEST(DotOperationTest_F16F32F64CF64, OneElementVectorDot) {
                                         this->error_spec_);
 }
 
-XLA_TYPED_TEST(DotOperationTest_F16F32F64, VectorDot) {
+TYPED_TEST(DotOperationTest_F16F32F64, VectorDot) {
   using T = TypeParam;
   XlaBuilder builder(this->TestName());
   auto lhs = ConstantFromArray<T>(&builder, {1.0f, 2.5f, 42.0f});
@@ -157,7 +166,7 @@ std::vector<int64_t> MinorToMajorForIsRowMajor(bool row_major) {
   return {row_major ? 1 : 0, row_major ? 0 : 1};
 }
 
-XLA_TYPED_TEST(DotOperationTest_F16F32F64CF64, Dot_0x2_2x0) {
+TYPED_TEST(DotOperationTest_F16F32F64CF64, Dot_0x2_2x0) {
   using T = TypeParam;
   XlaBuilder builder(this->TestName());
   auto lhs = ConstantR2FromArray2D<T>(&builder, Array2D<T>(0, 2));
@@ -168,7 +177,7 @@ XLA_TYPED_TEST(DotOperationTest_F16F32F64CF64, Dot_0x2_2x0) {
                                         this->error_spec_);
 }
 
-XLA_TYPED_TEST(DotOperationTest_F16F32F64CF64, Dot_0x2_2x3) {
+TYPED_TEST(DotOperationTest_F16F32F64CF64, Dot_0x2_2x3) {
   using T = TypeParam;
   XlaBuilder builder(this->TestName());
   auto lhs = ConstantR2FromArray2D<T>(&builder, Array2D<T>(0, 2));
@@ -180,7 +189,7 @@ XLA_TYPED_TEST(DotOperationTest_F16F32F64CF64, Dot_0x2_2x3) {
                                         this->error_spec_);
 }
 
-XLA_TYPED_TEST(DotOperationTest_F16F32F64CF64, Dot_3x2_2x0) {
+TYPED_TEST(DotOperationTest_F16F32F64CF64, Dot_3x2_2x0) {
   using T = TypeParam;
   XlaBuilder builder(this->TestName());
   auto lhs = ConstantR2FromArray2D<T>(
@@ -192,7 +201,7 @@ XLA_TYPED_TEST(DotOperationTest_F16F32F64CF64, Dot_3x2_2x0) {
                                         this->error_spec_);
 }
 
-XLA_TYPED_TEST(DotOperationTest_F16F32F64CF64, Dot_2x0_0x2) {
+TYPED_TEST(DotOperationTest_F16F32F64CF64, Dot_2x0_0x2) {
   using T = TypeParam;
   XlaBuilder builder(this->TestName());
   auto lhs = ConstantR2FromArray2D<T>(&builder, Array2D<T>(2, 0));
@@ -203,7 +212,7 @@ XLA_TYPED_TEST(DotOperationTest_F16F32F64CF64, Dot_2x0_0x2) {
       &builder, Array2D<T>(2, 2, static_cast<T>(0.0f)), {}, this->error_spec_);
 }
 
-XLA_TYPED_TEST(DotOperationTest_F16F32F64CF64, FusedDot) {
+TYPED_TEST(DotOperationTest_F16F32F64CF64, FusedDot) {
   using T = TypeParam;
   XlaBuilder builder(this->TestName());
   auto param0 =
@@ -259,13 +268,20 @@ class SquareMatrixDot : public DotOperationTest {
     ComputeAndCompareR2<T>(&builder, expected,
                            {lhs_handle.get(), rhs_handle.get()}, error_spec_);
   }
+
+ protected:
+  void SetUp() override {
+    if (std::is_same_v<T, double> && !test::BackendSupportsFloat64()) {
+      GTEST_SKIP();
+    }
+  }
 };
 
 TYPED_TEST_CASE(SquareMatrixDot, TypesF16F32F64CF64);
-XLA_TYPED_TEST(SquareMatrixDot, TypesFF) { this->TestImpl(false, false); }
-XLA_TYPED_TEST(SquareMatrixDot, TypesFT) { this->TestImpl(false, true); }
-XLA_TYPED_TEST(SquareMatrixDot, TypesTF) { this->TestImpl(true, false); }
-XLA_TYPED_TEST(SquareMatrixDot, TypesTT) { this->TestImpl(true, true); }
+TYPED_TEST(SquareMatrixDot, TypesFF) { this->TestImpl(false, false); }
+TYPED_TEST(SquareMatrixDot, TypesFT) { this->TestImpl(false, true); }
+TYPED_TEST(SquareMatrixDot, TypesTF) { this->TestImpl(true, false); }
+TYPED_TEST(SquareMatrixDot, TypesTT) { this->TestImpl(true, true); }
 
 struct DotTestParam {
   int m;
@@ -308,9 +324,10 @@ class ParametricDotTest : public DotOperationTest,
                                ->GetDeviceDescription()
                                .gpu_compute_capability();
     if (std::holds_alternative<se::RocmComputeCapability>(gpu_comp)) {
-      std::string_view name(
+      absl::string_view name(
           ::testing::UnitTest::GetInstance()->current_test_info()->name());
       if (name.find("TestF16/270x270x520_MajorToMinor") != std::string::npos) {
+        GTEST_SKIP() << "Not supported on ROCm until Triton is re-enabled.";
         execution_options_.mutable_debug_options()->set_xla_gpu_autotune_level(
             0);
         DotTestParam param = GetParam();
@@ -320,7 +337,6 @@ class ParametricDotTest : public DotOperationTest,
         propagate_grad_xy_ = param.dot_lhs_row_major ? 1 : 2;
       }
     }
-    ManifestCheckingTest::SetUp();
   }
 
   template <typename NativeT>
@@ -357,6 +373,34 @@ void ParametricDotTest::ComputeAndCompareR2WithError<int32_t>(
   ComputeAndCompareR2(builder, expected, arguments);
 }
 
+template <>
+void ParametricDotTest::ComputeAndCompareR2WithError<uint8_t>(
+    XlaBuilder* builder, const Array2D<uint8_t>& expected,
+    absl::Span<GlobalData* const> arguments) {
+  ComputeAndCompareR2(builder, expected, arguments);
+}
+
+template <>
+void ParametricDotTest::ComputeAndCompareR2WithError(
+    XlaBuilder* builder, const Array2D<tsl::float8_e5m2>& expected,
+    absl::Span<GlobalData* const> arguments) {
+  ErrorSpec error_spec(0.3, 3e-3);
+  error_spec.low_precision_fp_error_spec.type =
+      primitive_util::NativeToPrimitiveType<tsl::float8_e5m2>();
+  error_spec.low_precision_fp_error_spec.within_n_values = 1;
+  ComputeAndCompareR2(builder, expected, arguments, error_spec);
+}
+
+template <>
+void ParametricDotTest::ComputeAndCompareR2WithError(
+    XlaBuilder* builder, const Array2D<tsl::float8_e4m3fn>& expected,
+    absl::Span<GlobalData* const> arguments) {
+  ErrorSpec error_spec(0.3, 3e-3);
+  error_spec.low_precision_fp_error_spec.type =
+      primitive_util::NativeToPrimitiveType<tsl::float8_e4m3fn>();
+  error_spec.low_precision_fp_error_spec.within_n_values = 1;
+  ComputeAndCompareR2(builder, expected, arguments, error_spec);
+}
 template <typename NativeT>
 void ParametricDotTest::TestImpl() {
   DotTestParam param = GetParam();
@@ -469,16 +513,27 @@ std::vector<DotTestParam> CreateDotTestParameters() {
   return params;
 }
 
-#ifndef XLA_BACKEND_DOES_NOT_SUPPORT_FLOAT16
-XLA_TEST_P(ParametricDotTest, TestF16) { TestImpl<Eigen::half>(); }
-#endif
-XLA_TEST_P(ParametricDotTest, TestF32) { TestImpl<float>(); }
-XLA_TEST_P(ParametricDotTest, OVERSIZE_ON_GRM(TestF64)) { TestImpl<double>(); }
-XLA_TEST_P(ParametricDotTest, TestC64) { TestImpl<std::complex<float>>(); }
-#ifndef XLA_BACKEND_DOES_NOT_SUPPORT_COMPLEX128
-XLA_TEST_P(ParametricDotTest, TestC128) { TestImpl<std::complex<double>>(); }
-#endif
-XLA_TEST_P(ParametricDotTest, TestS32) { TestImpl<int32_t>(); }
+TEST_P(ParametricDotTest, TestF16) { TestImpl<Eigen::half>(); }
+TEST_P(ParametricDotTest, TestF32) { TestImpl<float>(); }
+TEST_P(ParametricDotTest, TestF64) {
+  if (test::HasModifiers({test::kGrm})) {
+    // Oversize.
+    GTEST_SKIP();
+  }
+  TestImpl<double>();
+}
+TEST_P(ParametricDotTest, TestC64) { TestImpl<std::complex<float>>(); }
+TEST_P(ParametricDotTest, TestC128) {
+  if (!test::BackendSupportsComplex128()) {
+    GTEST_SKIP();
+  }
+  TestImpl<std::complex<double>>();
+}
+TEST_P(ParametricDotTest, TestS32) { TestImpl<int32_t>(); }
+TEST_P(ParametricDotTest, TestF8E5M2) { TestImpl<tsl::float8_e5m2>(); }
+TEST_P(ParametricDotTest, TestF8E4M3FN) { TestImpl<tsl::float8_e4m3fn>(); }
+
+TEST_P(ParametricDotTest, TestU8) { TestImpl<uint8_t>(); }
 
 INSTANTIATE_TEST_CASE_P(DotTests, ParametricDotTest,
                         ::testing::ValuesIn(CreateDotTestParameters()),
@@ -541,16 +596,12 @@ std::vector<DotTestParam> CreateNoLayoutAssignmentDotTestParameters() {
   return params;
 }
 
-#ifndef XLA_BACKEND_DOES_NOT_SUPPORT_FLOAT16
-XLA_TEST_P(ParametricDotTestWithoutLayoutAssignment, TestF16) {
+TEST_P(ParametricDotTestWithoutLayoutAssignment, TestF16) {
   TestImpl<Eigen::half>();
 }
-#endif
-XLA_TEST_P(ParametricDotTestWithoutLayoutAssignment, TestF32) {
-  TestImpl<float>();
-}
+TEST_P(ParametricDotTestWithoutLayoutAssignment, TestF32) { TestImpl<float>(); }
 // TODO(b/147505663): Disabled for now.
-XLA_TEST_P(ParametricDotTestWithoutLayoutAssignment, DISABLED_TestF64) {
+TEST_P(ParametricDotTestWithoutLayoutAssignment, DISABLED_TestF64) {
   TestImpl<double>();
 }
 
@@ -588,15 +639,23 @@ class NonsquareMatrixDot : public DotOperationTest {
     ComputeAndCompareR2<T>(&builder, expected,
                            {lhs_handle.get(), rhs_handle.get()}, error_spec_);
   }
+
+ protected:
+  void SetUp() override {
+    if ((std::is_same_v<T, double> || std::is_same_v<T, complex64>) &&
+        !test::BackendSupportsFloat64()) {
+      GTEST_SKIP();
+    }
+  }
 };
 
 TYPED_TEST_CASE(NonsquareMatrixDot, TypesF16F32F64CF64);
-XLA_TYPED_TEST(NonsquareMatrixDot, TestFF) { this->TestImpl(false, false); }
-XLA_TYPED_TEST(NonsquareMatrixDot, TestFT) { this->TestImpl(false, true); }
-XLA_TYPED_TEST(NonsquareMatrixDot, TestTF) { this->TestImpl(true, false); }
-XLA_TYPED_TEST(NonsquareMatrixDot, TestTT) { this->TestImpl(true, true); }
+TYPED_TEST(NonsquareMatrixDot, TestFF) { this->TestImpl(false, false); }
+TYPED_TEST(NonsquareMatrixDot, TestFT) { this->TestImpl(false, true); }
+TYPED_TEST(NonsquareMatrixDot, TestTF) { this->TestImpl(true, false); }
+TYPED_TEST(NonsquareMatrixDot, TestTT) { this->TestImpl(true, true); }
 
-XLA_TEST_F(DotOperationTest, MatrixVectorC64) {
+TEST_F(DotOperationTest, MatrixVectorC64) {
   auto lhs_handle =
       client_
           ->TransferToServer(LiteralUtil::CreateR2WithLayout<complex64>(
@@ -620,7 +679,7 @@ XLA_TEST_F(DotOperationTest, MatrixVectorC64) {
       &builder, expected, {lhs_handle.get(), rhs_handle.get()}, error_spec_);
 }
 
-XLA_TYPED_TEST(DotOperationTest_F16F32F64CF64, ConcurrentMatMult) {
+TYPED_TEST(DotOperationTest_F16F32F64CF64, ConcurrentMatMult) {
   using T = TypeParam;
 
   XlaBuilder builder(this->TestName());
@@ -638,13 +697,23 @@ XLA_TYPED_TEST(DotOperationTest_F16F32F64CF64, ConcurrentMatMult) {
 }
 
 template <typename T>
-class DotOperationTestForBatchMatMul : public DotOperationTest {};
+class DotOperationTestForBatchMatMul : public DotOperationTest {
+ protected:
+  void SetUp() override {
+    if (std::is_same_v<T, double> && !test::BackendSupportsFloat64()) {
+      GTEST_SKIP();
+    }
+  }
+};
 TYPED_TEST_CASE(DotOperationTestForBatchMatMul, TypesF16F32F64);
 
 // Regression test for b/32055648. The root of the graph is a kFusion of 4
 // bitcasts. Although bitcasts don't map to thunks, the root should still be
 // sync-dependent on bitcasts' operands.
-XLA_TYPED_TEST(DotOperationTestForBatchMatMul, DISABLED_ON_TPU(Types)) {
+TYPED_TEST(DotOperationTestForBatchMatMul, Types) {
+  if (test::DeviceTypeIs(test::kTpu)) {
+    GTEST_SKIP();
+  }
   using T = TypeParam;
   XlaBuilder builder(this->TestName());
   auto x = Parameter(&builder, 0, ShapeUtil::MakeShapeWithType<T>({2, 2, 2, 2}),
@@ -652,8 +721,8 @@ XLA_TYPED_TEST(DotOperationTestForBatchMatMul, DISABLED_ON_TPU(Types)) {
   auto y = Parameter(&builder, 1, ShapeUtil::MakeShapeWithType<T>({2, 2, 2, 2}),
                      "y");
 
-  auto x_flat = Reshape(x, {0, 1, 2, 3}, {4, 2, 2});
-  auto y_flat = Reshape(y, {0, 1, 2, 3}, {4, 2, 2});
+  auto x_flat = Reshape(x, {4, 2, 2});
+  auto y_flat = Reshape(y, {4, 2, 2});
 
   // Slice batches into individual matrices and multiply them.
   std::vector<XlaOp> out_slices;
@@ -662,16 +731,16 @@ XLA_TYPED_TEST(DotOperationTestForBatchMatMul, DISABLED_ON_TPU(Types)) {
   for (int i = 0; i < n; ++i) {
     // Slice off individual matrices and reshape to 2D tensors.
     auto x_slice = Slice(x_flat, {i, 0, 0}, {i + 1, 2, 2}, {1, 1, 1});
-    x_slice = Reshape(x_slice, {0, 1, 2}, {2, 2});
+    x_slice = Reshape(x_slice, {2, 2});
     auto y_slice = Slice(y_flat, {i, 0, 0}, {i + 1, 2, 2}, {1, 1, 1});
-    y_slice = Reshape(y_slice, {0, 1, 2}, {2, 2});
+    y_slice = Reshape(y_slice, {2, 2});
 
     auto out = Dot(x_slice, y_slice);
-    out = Reshape(out, {0, 1}, {1, 2, 2});
+    out = Reshape(out, {1, 2, 2});
     out_slices.push_back(out);
   }
   auto out_flat = ConcatInDim(&builder, out_slices, 0);
-  Reshape(out_flat, {0, 1, 2}, {2, 2, 2, 2});
+  Reshape(out_flat, {2, 2, 2, 2});
 
   auto x_data = this->client_
                     ->TransferToServer(LiteralUtil::CreateR4FromArray4D<T>(
@@ -701,7 +770,7 @@ XLA_TYPED_TEST(DotOperationTestForBatchMatMul, DISABLED_ON_TPU(Types)) {
       {x_data.get(), y_data.get()}, this->error_spec_);
 }
 
-XLA_TYPED_TEST(DotOperationTest_F16F32F64CF64, GeneralMatMul) {
+TYPED_TEST(DotOperationTest_F16F32F64CF64, GeneralMatMul) {
   using T = TypeParam;
 
   XlaBuilder builder(this->TestName());
@@ -747,11 +816,19 @@ class DotOperationTestWithCublasLt_F16F32F64CF64 : public DotOperationTest {
     execution_options_.mutable_debug_options()->set_xla_gpu_enable_cublaslt(
         enable_cublas_lt);
   }
+
+ protected:
+  void SetUp() override {
+    if ((std::is_same_v<T, double> || std::is_same_v<T, complex64>) &&
+        !test::BackendSupportsFloat64()) {
+      GTEST_SKIP();
+    }
+  }
 };
 TYPED_TEST_CASE(DotOperationTestWithCublasLt_F16F32F64CF64, TypesF16F32F64CF64);
 
-XLA_TYPED_TEST(DotOperationTestWithCublasLt_F16F32F64CF64,
-               GeneralMatMulActivation) {
+TYPED_TEST(DotOperationTestWithCublasLt_F16F32F64CF64,
+           GeneralMatMulActivation) {
   using T = TypeParam;
 
   XlaBuilder builder(this->TestName());
@@ -804,7 +881,7 @@ class DotOperationTestWithCublasLt_F8 : public DotOperationTest {
 };
 TYPED_TEST_CASE(DotOperationTestWithCublasLt_F8, TypesF8);
 
-XLA_TYPED_TEST(DotOperationTestWithCublasLt_F8, ScaledABUnscaledDF8) {
+TYPED_TEST(DotOperationTestWithCublasLt_F8, ScaledABUnscaledDF8) {
   using T = TypeParam;
 
   XlaBuilder builder(this->TestName());
@@ -948,7 +1025,7 @@ XLA_TYPED_TEST(DotOperationTestWithCublasLt_F8, ScaledABUnscaledDF8) {
       this->error_spec_);
 }
 
-XLA_TYPED_TEST(DotOperationTestWithCublasLt_F8, ScaledABScaledDWithDAmaxF8) {
+TYPED_TEST(DotOperationTestWithCublasLt_F8, ScaledABScaledDWithDAmaxF8) {
   using T = TypeParam;
 
   XlaBuilder builder(this->TestName());
@@ -1117,7 +1194,7 @@ XLA_TYPED_TEST(DotOperationTestWithCublasLt_F8, ScaledABScaledDWithDAmaxF8) {
 }
 #endif  // GOOGLE_CUDA || TF_HIPBLASLT
 
-XLA_TYPED_TEST(DotOperationTest_F16F32F64CF64, GeneralMatMulR3LhsR2Rhs) {
+TYPED_TEST(DotOperationTest_F16F32F64CF64, GeneralMatMulR3LhsR2Rhs) {
   using T = TypeParam;
 
   XlaBuilder builder(this->TestName());
@@ -1150,7 +1227,7 @@ XLA_TYPED_TEST(DotOperationTest_F16F32F64CF64, GeneralMatMulR3LhsR2Rhs) {
       this->error_spec_);
 }
 
-XLA_TYPED_TEST(DotOperationTest_F16F32F64CF64, GeneralMatMulR2LhsR3Rhs) {
+TYPED_TEST(DotOperationTest_F16F32F64CF64, GeneralMatMulR2LhsR3Rhs) {
   using T = TypeParam;
 
   XlaBuilder builder(this->TestName());
@@ -1183,7 +1260,7 @@ XLA_TYPED_TEST(DotOperationTest_F16F32F64CF64, GeneralMatMulR2LhsR3Rhs) {
       this->error_spec_);
 }
 
-XLA_TYPED_TEST(DotOperationTest_F16F32F64CF64, GeneralMatMulMultipleBatch) {
+TYPED_TEST(DotOperationTest_F16F32F64CF64, GeneralMatMulMultipleBatch) {
   using T = TypeParam;
 
   XlaBuilder builder(this->TestName());
@@ -1225,7 +1302,7 @@ XLA_TYPED_TEST(DotOperationTest_F16F32F64CF64, GeneralMatMulMultipleBatch) {
       {x_data.get(), y_data.get()}, this->error_spec_);
 }
 
-XLA_TYPED_TEST(DotOperationTest_F16F32F64CF64, TransposeFolding) {
+TYPED_TEST(DotOperationTest_F16F32F64CF64, TransposeFolding) {
   using T = TypeParam;
   for (bool transpose_lhs : {false, true}) {
     for (bool transpose_rhs : {false, true}) {
@@ -1285,8 +1362,8 @@ XLA_TYPED_TEST(DotOperationTest_F16F32F64CF64, TransposeFolding) {
   }
 }
 
-XLA_TYPED_TEST(DotOperationTest_F16F32F64CF64,
-               DotOfConcatOptimizationWithConstLHS) {
+TYPED_TEST(DotOperationTest_F16F32F64CF64,
+           DotOfConcatOptimizationWithConstLHS) {
   using T = TypeParam;
   auto prim_type = primitive_util::NativeToPrimitiveType<T>();
 
@@ -1331,8 +1408,8 @@ XLA_TYPED_TEST(DotOperationTest_F16F32F64CF64,
       this->error_spec_);
 }
 
-XLA_TYPED_TEST(DotOperationTest_F16F32F64CF64,
-               DotOfConcatOptimizationWithConstRHS) {
+TYPED_TEST(DotOperationTest_F16F32F64CF64,
+           DotOfConcatOptimizationWithConstRHS) {
   using T = TypeParam;
   std::unique_ptr<Array2D<T>> constant_rhs_array(
       new Array2D<T>({{1.0f, 2.0f},
@@ -1380,7 +1457,7 @@ XLA_TYPED_TEST(DotOperationTest_F16F32F64CF64,
       this->error_spec_);
 }
 
-XLA_TEST_F(DotOperationTest, DotOfGatherOptimizationWithConstRHSClassicMM) {
+TEST_F(DotOperationTest, DotOfGatherOptimizationWithConstRHSClassicMM) {
   std::unique_ptr<Array2D<float>> constant_lhs_array(new Array2D<float>(
       {{1.0, 2.0, 3.0, 4.0, 5.0, 6.0}, {6.0, 5.0, 4.0, 3.0, 2.0, 1.0}}));
   std::unique_ptr<Array2D<float>> constant_rhs_array(
@@ -1408,7 +1485,7 @@ XLA_TEST_F(DotOperationTest, DotOfGatherOptimizationWithConstRHSClassicMM) {
   ComputeAndCompareR2<float>(&builder, expected, {}, error_spec_);
 }
 
-XLA_TEST_F(DotOperationTest, DotOfGatherOptimizationWithConstLHSClassicMM) {
+TEST_F(DotOperationTest, DotOfGatherOptimizationWithConstLHSClassicMM) {
   std::unique_ptr<Array2D<float>> constant_lhs_array(new Array2D<float>(
       {{1.0, 2.0, 3.0, 4.0, 5.0, 6.0}, {6.0, 5.0, 4.0, 3.0, 2.0, 1.0}}));
   std::unique_ptr<Array2D<float>> constant_rhs_array(
@@ -1436,9 +1513,9 @@ XLA_TEST_F(DotOperationTest, DotOfGatherOptimizationWithConstLHSClassicMM) {
   ComputeAndCompareR2<float>(&builder, expected, {}, error_spec_);
 }
 
-XLA_TEST_F(DotOperationTest,
+TEST_F(DotOperationTest,
 
-           DotOfGatherOptimizationWithConstRHSReverseMM) {
+       DotOfGatherOptimizationWithConstRHSReverseMM) {
   std::unique_ptr<Array2D<float>> constant_lhs_array(
       new Array2D<float>({{1.0, 2.0, 3.0},
                           {4.0, 5.0, 6.0},
@@ -1466,7 +1543,7 @@ XLA_TEST_F(DotOperationTest,
   ComputeAndCompareR2<float>(&builder, expected, {}, error_spec_);
 }
 
-XLA_TEST_F(DotOperationTest, DotOfGatherOptimizationWithConstLHSReverseMM) {
+TEST_F(DotOperationTest, DotOfGatherOptimizationWithConstLHSReverseMM) {
   std::unique_ptr<Array2D<float>> constant_lhs_array(
       new Array2D<float>({{1.0, 2.0, 3.0},
                           {4.0, 5.0, 6.0},
@@ -1494,7 +1571,7 @@ XLA_TEST_F(DotOperationTest, DotOfGatherOptimizationWithConstLHSReverseMM) {
   ComputeAndCompareR2<float>(&builder, expected, {}, error_spec_);
 }
 
-XLA_TEST_F(DotOperationTest, DotOfGatherOptimizationWithConstRHSRows) {
+TEST_F(DotOperationTest, DotOfGatherOptimizationWithConstRHSRows) {
   std::unique_ptr<Array2D<float>> constant_lhs_array(
       new Array2D<float>({{1.0, 2.0},
                           {3.0, 4.0},
@@ -1527,7 +1604,7 @@ XLA_TEST_F(DotOperationTest, DotOfGatherOptimizationWithConstRHSRows) {
   ComputeAndCompareR2<float>(&builder, expected, {}, error_spec_);
 }
 
-XLA_TEST_F(DotOperationTest, DotOfGatherOptimizationWithConstLHSRows) {
+TEST_F(DotOperationTest, DotOfGatherOptimizationWithConstLHSRows) {
   std::unique_ptr<Array2D<float>> constant_lhs_array(
       new Array2D<float>({{1.0, 2.0},
                           {3.0, 4.0},
@@ -1560,7 +1637,7 @@ XLA_TEST_F(DotOperationTest, DotOfGatherOptimizationWithConstLHSRows) {
   ComputeAndCompareR2<float>(&builder, expected, {}, error_spec_);
 }
 
-XLA_TEST_F(DotOperationTest, DotOfGatherOptimizationWithConstRHSCols) {
+TEST_F(DotOperationTest, DotOfGatherOptimizationWithConstRHSCols) {
   std::unique_ptr<Array2D<float>> constant_lhs_array(new Array2D<float>(
       {{1.0, 2.0, 3.0, 4.0, 5.0, 6.0}, {6.0, 5.0, 4.0, 3.0, 2.0, 1.0}}));
   std::unique_ptr<Array2D<float>> constant_rhs_array(
@@ -1585,7 +1662,7 @@ XLA_TEST_F(DotOperationTest, DotOfGatherOptimizationWithConstRHSCols) {
   ComputeAndCompareR2<float>(&builder, expected, {}, error_spec_);
 }
 
-XLA_TEST_F(DotOperationTest, DotOfGatherOptimizationWithConstLHSCols) {
+TEST_F(DotOperationTest, DotOfGatherOptimizationWithConstLHSCols) {
   std::unique_ptr<Array2D<float>> constant_lhs_array(new Array2D<float>(
       {{1.0, 2.0, 3.0, 4.0, 5.0, 6.0}, {6.0, 5.0, 4.0, 3.0, 2.0, 1.0}}));
   std::unique_ptr<Array2D<float>> constant_rhs_array(
@@ -1610,7 +1687,7 @@ XLA_TEST_F(DotOperationTest, DotOfGatherOptimizationWithConstLHSCols) {
   ComputeAndCompareR2<float>(&builder, expected, {}, error_spec_);
 }
 
-XLA_TEST_F(DotOperationTest, DotRank2AndRank2NonDefaultContractionDims) {
+TEST_F(DotOperationTest, DotRank2AndRank2NonDefaultContractionDims) {
   XlaBuilder builder(TestName());
 
   Array2D<float> lhs_array({{1.0f, 2.0f}, {3.0f, 4.0f}});
@@ -1637,7 +1714,7 @@ using EinsumParamType =
     std::tuple<std::vector<int64_t>, std::vector<int64_t>, std::string>;
 class EinsumTest : public DotOperationTest,
                    public ::testing::WithParamInterface<EinsumParamType> {};
-XLA_TEST_P(EinsumTest, SimpleEinsumTest) {
+TEST_P(EinsumTest, SimpleEinsumTest) {
   XlaBuilder builder(TestName());
   auto x = AddParam(
       MakeFakeLiteral(ShapeUtil::MakeShape(F32, std::get<0>(GetParam())))
@@ -1726,7 +1803,7 @@ using BatchDotParamType = std::tuple<std::vector<int64_t>, std::vector<int64_t>,
                                      std::vector<int64_t>>;
 class BatchDotTest : public DotOperationTest,
                      public ::testing::WithParamInterface<BatchDotParamType> {};
-XLA_TEST_P(BatchDotTest, BroadcastingBatchDotTest) {
+TEST_P(BatchDotTest, BroadcastingBatchDotTest) {
   XlaBuilder builder(TestName());
   auto x = AddParam(
       MakeFakeLiteral(ShapeUtil::MakeShape(F32, std::get<0>(GetParam())))
@@ -1763,7 +1840,7 @@ INSTANTIATE_TEST_SUITE_P(BatchDot, BatchDotTest,
 
 class DotOperationTextTest : public HloTestBase {};
 
-XLA_TEST_F(DotOperationTextTest, DotReorderedDotDims) {
+TEST_F(DotOperationTextTest, DotReorderedDotDims) {
   absl::string_view hlo_string =
       R"(
 HloModule ComplexDotMultipleNonContracting
@@ -1778,7 +1855,7 @@ ENTRY %test {
   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{1e-3, 1e-3}));
 }
 
-XLA_TEST_F(DotOperationTextTest, DotReorderedDotDimsAndMultipleContracting) {
+TEST_F(DotOperationTextTest, DotReorderedDotDimsAndMultipleContracting) {
   absl::string_view hlo_string =
       R"(
 HloModule ComplexDotMultipleNonContracting
@@ -1793,7 +1870,7 @@ ENTRY %test {
   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{1e-3, 1e-3}));
 }
 
-XLA_TEST_F(DotOperationTextTest, DotWithNoDnums) {
+TEST_F(DotOperationTextTest, DotWithNoDnums) {
   absl::string_view hlo_string =
       R"(
 HloModule DotWithNoDnums
@@ -1808,7 +1885,7 @@ ENTRY %test {
   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{1e-3, 1e-3}));
 }
 
-XLA_TEST_F(DotOperationTextTest, Einsum) {
+TEST_F(DotOperationTextTest, Einsum) {
   absl::string_view hlo_string =
       R"(
 HloModule Einsum
@@ -1823,7 +1900,7 @@ ENTRY %test {
   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{4e-3, 4e-3}));
 }
 
-XLA_TEST_F(DotOperationTextTest, CpuTiledDotEmitterCachingBug_1) {
+TEST_F(DotOperationTextTest, CpuTiledDotEmitterCachingBug_1) {
   // Tests for a caching bug in the XLA CPU backend.
   absl::string_view hlo_string =
       R"(
@@ -1844,7 +1921,7 @@ ENTRY main {
   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{4e-3, 4e-3}));
 }
 
-XLA_TEST_F(DotOperationTextTest, CpuTiledDotEmitterCachingBug_2) {
+TEST_F(DotOperationTextTest, CpuTiledDotEmitterCachingBug_2) {
   // Tests for a caching bug in the XLA CPU backend.
   absl::string_view hlo_string =
       R"(
@@ -1869,7 +1946,7 @@ ENTRY main {
   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{4e-3, 4e-3}));
 }
 
-XLA_TEST_F(DotOperationTextTest, S32IotaDot) {
+TEST_F(DotOperationTextTest, S32IotaDot) {
   absl::string_view hlo_string =
       R"(
 HloModule SmallIntegerDot
@@ -1884,7 +1961,7 @@ ENTRY SmallIntegerDot {
   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{0, 0}));
 }
 
-XLA_TEST_F(DotOperationTextTest, S32IotaSquaredDot) {
+TEST_F(DotOperationTextTest, S32IotaSquaredDot) {
   absl::string_view hlo_string =
       R"(
 HloModule SmallIntegerDot
@@ -1903,7 +1980,7 @@ ENTRY SmallIntegerDot {
   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{0, 0}));
 }
 
-XLA_TEST_F(DotOperationTextTest, U16IotaDot) {
+TEST_F(DotOperationTextTest, U16IotaDot) {
   absl::string_view hlo_string =
       R"(
 HloModule SmallIntegerDot
@@ -1919,7 +1996,7 @@ ENTRY SmallIntegerDot {
   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{0, 0}));
 }
 
-XLA_TEST_F(DotOperationTextTest, U16IotaSquaredDot) {
+TEST_F(DotOperationTextTest, U16IotaSquaredDot) {
   absl::string_view hlo_string =
       R"(
 HloModule SmallIntegerDot
@@ -1938,7 +2015,7 @@ ENTRY SmallIntegerDot {
   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{0, 0}));
 }
 
-XLA_TEST_F(DotOperationTextTest, S16IotaDot) {
+TEST_F(DotOperationTextTest, S16IotaDot) {
   absl::string_view hlo_string =
       R"(
 HloModule SmallIntegerDot
@@ -1953,7 +2030,7 @@ ENTRY SmallIntegerDot {
   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{0, 0}));
 }
 
-XLA_TEST_F(DotOperationTextTest, S16IotaSquaredDot) {
+TEST_F(DotOperationTextTest, S16IotaSquaredDot) {
   absl::string_view hlo_string =
       R"(
 HloModule SmallIntegerDot
@@ -1972,7 +2049,7 @@ ENTRY SmallIntegerDot {
   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{0, 0}));
 }
 
-XLA_TEST_F(DotOperationTextTest, PREDDot) {
+TEST_F(DotOperationTextTest, PREDDot) {
   absl::string_view hlo_string =
       R"(
 HloModule SmallIntegerDot
@@ -1987,7 +2064,7 @@ ENTRY SmallIntegerDot {
   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{0, 0}));
 }
 
-XLA_TEST_F(DotOperationTextTest, S8Dot) {
+TEST_F(DotOperationTextTest, S8Dot) {
   absl::string_view hlo_string =
       R"(
 HloModule SmallIntegerDot
@@ -2002,37 +2079,25 @@ ENTRY SmallIntegerDot {
   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{0, 0}));
 }
 
-XLA_TEST_F(DotOperationTextTest, DISABLED_ON_GPU(PackedNibbleDot)) {
+TEST_F(DotOperationTextTest, S4Dot) {
+  if (test::DeviceTypeIs(test::kTpu)) {
+    GTEST_SKIP();
+  }
   absl::string_view hlo_string =
       R"(
 HloModule SmallIntegerDot
 
 ENTRY SmallIntegerDot {
-  arg0 = s8[20,55] parameter(0)
-  arg1 = s8[55,20] parameter(1)
-  ROOT dot = s32[20,20] dot(arg0, arg1), lhs_contracting_dims={1}, rhs_contracting_dims={0}, operand_precision={PACKED_NIBBLE, PACKED_NIBBLE}
+  arg0 = s4[20,2] parameter(0)
+  arg1 = s4[2,20] parameter(1)
+  ROOT dot = s4[20,20] dot(arg0, arg1), lhs_contracting_dims={1}, rhs_contracting_dims={0}
 }
 )";
 
   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{0, 0}));
 }
 
-XLA_TEST_F(DotOperationTextTest, UnsignedPackedNibbleDot) {
-  absl::string_view hlo_string =
-      R"(
-HloModule SmallIntegerDot
-
-ENTRY SmallIntegerDot {
-  arg0 = u8[3,11,21] parameter(0)
-  arg1 = u8[55,21,3] parameter(1)
-  ROOT dot = u32[3,11,55] dot(arg0, arg1), lhs_batch_dims={0}, lhs_contracting_dims={2}, rhs_batch_dims={2}, rhs_contracting_dims={1}, operand_precision={PACKED_NIBBLE, PACKED_NIBBLE}
-}
-)";
-
-  EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{0, 0}));
-}
-
-XLA_TEST_F(DotOperationTextTest, S32Dot) {
+TEST_F(DotOperationTextTest, S32Dot) {
   absl::string_view hlo_string =
       R"(
 HloModule SmallIntegerDot
@@ -2047,7 +2112,7 @@ ENTRY SmallIntegerDot {
   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{0, 0}));
 }
 
-XLA_TEST_F(DotOperationTextTest, GpuTransposeOutput) {
+TEST_F(DotOperationTextTest, GpuTransposeOutput) {
   absl::string_view hlo_string =
       R"(
 HloModule TransposeOutput
@@ -2065,7 +2130,7 @@ ENTRY TransposeOutput {
 // There was a bug in the Dot Codegen, which is masked for floating-point since
 // Dot for FP opertions are converted to cuBLAS operations. This one tests
 // integer ones to make sure the Dot-Codegen is producing correct code.
-XLA_TEST_F(DotOperationTextTest, IntegerDotTest) {
+TEST_F(DotOperationTextTest, IntegerDotTest) {
   constexpr absl::string_view kHloString = R"(
   HloModule dot_int_test
   ENTRY main.4 {
@@ -2076,7 +2141,7 @@ XLA_TEST_F(DotOperationTextTest, IntegerDotTest) {
   EXPECT_TRUE(RunAndCompare(kHloString, ErrorSpec{0, 0}));
 }
 
-XLA_TEST_F(DotOperationTextTest, FPDotTestNoGEMMRewriter) {
+TEST_F(DotOperationTextTest, FPDotTestNoGEMMRewriter) {
   constexpr absl::string_view kHloString = R"(
   HloModule dot_int_test
   ENTRY main.4 {
@@ -2093,7 +2158,7 @@ XLA_TEST_F(DotOperationTextTest, FPDotTestNoGEMMRewriter) {
   EXPECT_TRUE(RunAndCompare(std::move(module), ErrorSpec{4e-3, 4e-3}));
 }
 
-XLA_TEST_F(DotOperationTextTest, MatrixVectorComplex) {
+TEST_F(DotOperationTextTest, MatrixVectorComplex) {
   absl::string_view hlo_string =
       R"(
 HloModule MatrixVectorComplex
@@ -2112,7 +2177,7 @@ ENTRY MatrixVectorComplex {
   EXPECT_TRUE(RunAndCompare(std::move(hlo_module), ErrorSpec{4e-3, 4e-3}));
 }
 
-XLA_TEST_F(DotOperationTextTest, MatrixVectorBF16) {
+TEST_F(DotOperationTextTest, MatrixVectorBF16) {
   absl::string_view hlo_string =
       R"(
 HloModule MatrixVectorBF16
@@ -2132,7 +2197,7 @@ ENTRY MatrixVectorBF16 {
 // Regression test for b/138155357, where we were incorrectly creating a dot-add
 // fusion where the dot had a batch dimension.  This isn't supported on the CPU
 // backend.
-XLA_TEST_F(DotOperationTextTest, FusedBatchDotRegressionTest) {
+TEST_F(DotOperationTextTest, FusedBatchDotRegressionTest) {
   absl::string_view module_string = R"(
 HloModule jaxpr_computation__5.33
 
@@ -2177,7 +2242,7 @@ ENTRY jaxpr_computation__5.33 {
   EXPECT_TRUE(RunAndCompare(std::move(module), /*error=*/std::nullopt));
 }
 
-XLA_TEST_F(DotOperationTest, ReorderContractingDimsConstLHS_RL) {
+TEST_F(DotOperationTest, ReorderContractingDimsConstLHS_RL) {
   Array3D<float> input_arr(2, 3, 2);
   Array2D<float> const_arr(2, 6);
   input_arr.FillIota(0);
@@ -2194,7 +2259,7 @@ XLA_TEST_F(DotOperationTest, ReorderContractingDimsConstLHS_RL) {
   ComputeAndCompare(&builder, {}, error_spec_);
 }
 
-XLA_TEST_F(DotOperationTest, ReorderContractingDimsConstRHS_LR) {
+TEST_F(DotOperationTest, ReorderContractingDimsConstRHS_LR) {
   Array3D<float> input_arr(2, 3, 2);
   Array2D<float> const_arr(2, 6);
   input_arr.FillIota(0);
@@ -2215,7 +2280,7 @@ XLA_TEST_F(DotOperationTest, ReorderContractingDimsConstRHS_LR) {
   ComputeAndCompare(&builder, {}, error_spec_);
 }
 
-XLA_TEST_F(DotOperationTest, ReorderContractingDimsConstRHS_RL) {
+TEST_F(DotOperationTest, ReorderContractingDimsConstRHS_RL) {
   Array4D<float> input_arr(2, 2, 3, 4);
   Array2D<float> const_arr(24, 2);
   input_arr.FillIota(0);
@@ -2232,7 +2297,7 @@ XLA_TEST_F(DotOperationTest, ReorderContractingDimsConstRHS_RL) {
   ComputeAndCompare(&builder, {}, error_spec_);
 }
 
-XLA_TEST_F(DotOperationTest, ReorderContractingDimsConstRHS_MM) {
+TEST_F(DotOperationTest, ReorderContractingDimsConstRHS_MM) {
   Array3D<float> input_arr(2, 6, 2);
   Array3D<float> const_arr(2, 6, 3);
   input_arr.FillIota(0);
@@ -2256,7 +2321,7 @@ XLA_TEST_F(DotOperationTest, ReorderContractingDimsConstRHS_MM) {
   ComputeAndCompare(&builder, {}, error_spec_);
 }
 
-XLA_TEST_F(DotOperationTest, ReorderContractingDims_Multipass) {
+TEST_F(DotOperationTest, ReorderContractingDims_Multipass) {
   Array4D<float> input_arr(2, 2, 3, 5);
   Array2D<float> const_arr(2, 30);
   input_arr.FillIota(0);
@@ -2283,7 +2348,7 @@ XLA_TEST_F(DotOperationTest, ReorderContractingDims_Multipass) {
   ComputeAndCompare(&builder, {}, error_spec_);
 }
 
-XLA_TEST_F(DotOperationTextTest, WiderIntegralResultAccumulation) {
+TEST_F(DotOperationTextTest, WiderIntegralResultAccumulation) {
   absl::string_view hlo_string =
       R"(
 HloModule WiderIntegralAccumulation
@@ -2292,6 +2357,22 @@ ENTRY MatrixVectorComplex {
   p0 = s8[5,5]{1,0} parameter(0)
   p1 = s16[5,1]{0,1} parameter(1)
   ROOT dot = s32[5,1]{1,0} dot(p0, p1), lhs_contracting_dims={1},
+                                        rhs_contracting_dims={0}
+}
+)";
+
+  EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{4e-3, 4e-3}));
+}
+
+TEST_F(DotOperationTextTest, MixedPrecisionDotLowPrecisionOutput) {
+  absl::string_view hlo_string =
+      R"(
+HloModule MixedPrecisionDotLowPrecisionOutput
+
+ENTRY main {
+  p0 = f16[5,5]{1,0} parameter(0)
+  p1 = f32[5,1]{0,1} parameter(1)
+  ROOT dot = f16[5,1]{1,0} dot(p0, p1), lhs_contracting_dims={1},
                                         rhs_contracting_dims={0}
 }
 )";

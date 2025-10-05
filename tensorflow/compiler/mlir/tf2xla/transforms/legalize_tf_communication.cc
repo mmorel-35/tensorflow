@@ -17,6 +17,7 @@ limitations under the License.
 // ops (TF/XLA) to the HLO dialect.
 
 #include <atomic>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -42,11 +43,12 @@ limitations under the License.
 #include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "mlir/Support/LogicalResult.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
-#include "xla/client/sharding_builder.h"
+#include "xla/hlo/builder/sharding_builder.h"
+#include "xla/hlo/translate/mhlo_to_hlo/type_to_shape.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 #include "xla/primitive_util.h"
 #include "xla/side_effect_util.h"
-#include "xla/translate/mhlo_to_hlo/type_to_shape.h"
+#include "xla/xla_data.pb.h"
 
 namespace mlir {
 
@@ -286,10 +288,11 @@ Value CreateSendOp(OpBuilder& builder, Location loc, Value operand,
   auto channel_handle = ChannelHandleAttr::get(builder.getContext(),
                                                /*handle=*/GetNextChannelId(),
                                                /*type=*/2);
+  auto empty_source_target_pairs = builder.getI64TensorAttr({});
   auto send = builder.create<SendOp>(
       loc, token.getType(), operand, token, channel_handle,
-      /*is_host_transfer=*/builder.getBoolAttr(true));
-
+      /*is_host_transfer=*/builder.getBoolAttr(true),
+      /*source_target_pairs=*/empty_source_target_pairs);
   SetFrontendAttributes(send, index, key, operand.getType(),
                         /*device_to_host=*/true, host_handler_name);
 
@@ -308,9 +311,10 @@ Value CreateRecvOp(OpBuilder& builder, Location loc, Value result,
                                                /*type=*/3);
   auto result_type = result.getType();
   SmallVector<Type, 2> recv_result_type = {result_type, token.getType()};
-  auto recv =
-      builder.create<RecvOp>(loc, recv_result_type, token, channel_handle,
-                             /*is_host_transfer=*/builder.getBoolAttr(true));
+  auto recv = builder.create<RecvOp>(
+      loc, recv_result_type, token, channel_handle,
+      /*is_host_transfer=*/builder.getBoolAttr(true),
+      /*source_target_pairs=*/builder.getI64TensorAttr({}));
 
   SetFrontendAttributes(recv, index, key, result_type,
                         /*device_to_host=*/false, host_handler_name);

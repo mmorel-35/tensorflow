@@ -19,6 +19,7 @@ limitations under the License.
 #include "tensorflow/c/c_test_util.h"
 #include "tensorflow/c/eager/c_api_test_util.h"
 #include "tensorflow/c/tf_datatype.h"
+#include "xla/tsl/protobuf/coordination_config.pb.h"
 #include "tensorflow/core/distributed_runtime/server_lib.h"
 #include "tensorflow/core/framework/function.pb.h"
 #include "tensorflow/core/framework/graph.pb.h"
@@ -28,7 +29,6 @@ limitations under the License.
 #include "tensorflow/core/protobuf/config.pb.h"
 #include "tensorflow/core/protobuf/rewriter_config.pb.h"
 #include "tensorflow/core/protobuf/tensorflow_server.pb.h"
-#include "tsl/protobuf/coordination_config.pb.h"
 
 namespace tensorflow {
 namespace {
@@ -65,7 +65,7 @@ TEST_P(SingleClientTest, SetGetConfigInOpTest) {
   const char task1_name[] = "/job:worker/replica:0/task:1/device:CPU:0";
   const char task2_name[] = "/job:worker/replica:0/task:2/device:CPU:0";
   const std::string& master =
-      strings::StrCat("grpc://", server_def.cluster().job(0).tasks().at(0));
+      absl::StrCat("grpc://", server_def.cluster().job(0).tasks().at(0));
 
   EnableCoordinationService(&server_def);
   server_def.mutable_default_session_config()

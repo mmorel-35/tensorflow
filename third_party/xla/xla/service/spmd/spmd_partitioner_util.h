@@ -32,29 +32,51 @@ limitations under the License.
 #include "absl/algorithm/container.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/inlined_vector.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_replace.h"
+#include "absl/types/span.h"
 #include "absl/utility/utility.h"
 #include "xla/hlo/ir/collective_device_list.h"
 #include "xla/hlo/ir/hlo_casting_utils.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_module.h"
+#include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/hlo/ir/hlo_sharding.h"
+#include "xla/hlo/transforms/simplifiers/hlo_dce.h"
 #include "xla/hlo/utils/hlo_query.h"
 #include "xla/hlo/utils/hlo_sharding_util.h"
+#include "xla/literal.h"
 #include "xla/literal_util.h"
 #include "xla/service/collective_ops_utils.h"
-#include "xla/service/hlo_dce.h"
 #include "xla/service/spmd/spmd_partitioner.h"
+#include "xla/shape.h"
 #include "xla/shape_util.h"
+#include "xla/tsl/platform/errors.h"
+#include "xla/tsl/platform/statusor.h"
 #include "xla/util.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/platform/errors.h"
-#include "tsl/platform/statusor.h"
 
 namespace xla {
 namespace spmd {
+
+Window GenNewWindow(const HloInstruction* original_dot,
+                    const HloInstruction* dot_lhs,
+                    const HloInstruction* dot_rhs, int64_t lhs_concat_dim,
+                    int64_t rhs_concat_dim, bool windowed_at_contracting_dims,
+                    bool windowed_at_batch_dims);
+
+ConvolutionDimensionNumbers GenNewConvDNums(
+    const HloInstruction* original_dot, const HloInstruction* dot_lhs,
+    const HloInstruction* dot_rhs, int64_t lhs_concat_dim,
+    int64_t rhs_concat_dim, bool windowed_at_contracting_dims,
+    bool windowed_at_batch_dims,
+    const std::vector<int64_t>& lhs_to_output_indices,
+    const std::vector<int64_t>& rhs_to_output_indices,
+    const Shape& new_dot_shape);
 
 template <typename T>
 using IsCompOrCompBuilder =
@@ -77,6 +99,7 @@ HloInstruction* CreateConstantBase(const Shape& shape, Literal value, T* b,
                                                               PrimitiveType)) {
   if (shape.IsTuple()) {
     std::vector<HloInstruction*> elements;
+    elements.reserve(ShapeUtil::TupleElementCount(shape));
     for (int64_t i = 0; i < ShapeUtil::TupleElementCount(shape); ++i) {
       elements.push_back(
           CreateConstantBase(ShapeUtil::GetTupleElementShape(shape, i),
@@ -90,7 +113,7 @@ HloInstruction* CreateConstantBase(const Shape& shape, Literal value, T* b,
   }
   auto c = b->AddInstruction(HloInstruction::CreateConstant(
       literal_creator(std::move(value), shape.element_type())));
-  if (shape.rank() == 0) {
+  if (shape.dimensions().size() == 0) {
     return c;
   }
   return b->AddInstruction(HloInstruction::CreateBroadcast(shape, c, {}));
@@ -209,7 +232,7 @@ HloInstruction* PadToShape(HloInstruction* hlo, const Shape& padded_shape, T* b,
     return hlo;
   }
   PaddingConfig padding_config;
-  for (int64_t i = 0; i < padded_shape.rank(); ++i) {
+  for (int64_t i = 0; i < padded_shape.dimensions().size(); ++i) {
     auto padding_config_dim = padding_config.add_dimensions();
     padding_config_dim->set_edge_padding_low(0);
     padding_config_dim->set_interior_padding(0);
@@ -458,18 +481,20 @@ Shape GetPerGroupBaseShape(
 // Returns the partition id within a group.
 HloInstruction* GetInGroupPartitionId(
     HloInstruction* partition_id,
-    const std::vector<std::vector<int64_t>>& device_groups, SpmdBuilder* b);
+    const hlo_sharding_util::DeviceGroupTileAssignment& device_groups,
+    SpmdBuilder* b);
 
 // Creates the nested partitioner state for in-group partitioning.
 PartitionedHlo::PartitioningState CreatePerGroupPartitioningState(
     const PartitionedHlo::PartitioningState& state,
-    const std::vector<std::vector<int64_t>>& device_groups, SpmdBuilder* b);
+    const hlo_sharding_util::DeviceGroupTileAssignment& device_groups,
+    SpmdBuilder* b);
 
 // Partially shards a replicated HLO into groups along the group dimensions, and
 // within each group data is still replicated.
 HloInstruction* PerGroupSliceFromReplicated(
     HloInstruction* replicated, HloInstruction* partition_id,
-    const std::vector<std::vector<int64_t>>& device_groups,
+    const hlo_sharding_util::DeviceGroupTileAssignment& device_groups,
     absl::Span<const int64_t> group_dims,
     absl::Span<const int64_t> group_dim_sizes, SpmdBuilder* b);
 
@@ -510,7 +535,7 @@ std::optional<HloInstruction*> TileToPartialReplicateHaloExchange(
 // specified device groups. Group order and dimension order are ignored.
 std::optional<std::vector<int64_t>> FindMatchingPartitionedDimsForGrouping(
     const HloSharding& sharding,
-    const std::vector<std::vector<int64_t>>& device_groups);
+    const hlo_sharding_util::DeviceGroupTileAssignment& device_groups);
 
 // Create a sharding that matches the provided source sharding on the
 // specified dimensions. 'target_dims' and 'source_dims' represent the
@@ -528,17 +553,15 @@ HloSharding CreateMatchingShardingOnDims(const Shape& target_shape,
 std::optional<GatherScatterParallelDimSharding>
 GatherScatterOperandsShardedAcrossParallelDims(
     const HloInstruction& operand, const HloInstruction& indices,
-    const hlo_sharding_util::GatherScatterParallelDims& parallel_dims);
+    const hlo_sharding_util::GatherScatterDims& parallel_dims);
 
 // Pattern rewrite preprocessing utilities.
 
 // Returns rotate_amount if the concat(lhs, rhs) is equivalent to rotating the
 // elements along the concat dimension to the right by rotate_amount, where the
-// input of rotation is the shard operand of lhs and rhs. Returns -1 if the
-// pattern is not found.
-int64_t FindRotateRightPattern(const HloInstruction* concat,
-                               const HloInstruction* lhs,
-                               const HloInstruction* rhs);
+// input of rotation is the shard operand of lhs and rhs. Returns std::nullopt
+// if the pattern is not found.
+std::optional<int64_t> FindRotateRightPattern(const HloInstruction* concat);
 
 // Describes the pad with wrap pattern.
 struct PadWithWrapPattern {
@@ -548,12 +571,11 @@ struct PadWithWrapPattern {
   std::vector<const HloInstruction*> rhs_modifiers;
 };
 
-// Returns the `PadWithWrapPattern` if the concat(lhs,mid,rhs) is equivalent to
-// padding mid with wrapping (i.e., padding mid with slices of itself). Return
-// std::nullopt if the pattern is not found.
+// Returns the `PadWithWrapPattern` if the concat(lhs, mid, rhs) is equivalent
+// to padding mid with wrapping (i.e., padding mid with slices of itself).
+// Returns std::nullopt if the pattern is not found.
 std::optional<PadWithWrapPattern> FindPadWithWrapPattern(
-    const HloInstruction* concat, const HloInstruction* lhs,
-    const HloInstruction* mid, const HloInstruction* rhs);
+    const HloInstruction* concat);
 
 // Reshards data for a slice to be happening on such data with the passed
 // parameters.
@@ -585,6 +607,20 @@ HloInstruction* PadDataFromWindowReshard(
 // collective) from sharding and provided replication_dims.
 std::vector<std::vector<int64_t>> GetPartitionGroupsForReplication(
     const HloSharding& sharding, absl::Span<const int64_t> replication_dims);
+
+// Generates partition groups (groups of devices that will communicate via a
+// collective) across provided target dims with provided group sizes in vector
+// of vector format (legacy format).
+std::vector<std::vector<int64_t>> GetPartitionGroupsAcrossTargetDims(
+    const HloSharding& sharding, std::vector<int64_t> target_dims,
+    std::vector<int64_t> group_sizes);
+
+// Generates partition groups (groups of devices that will communicate via a
+// collective) across provided target dims with provided group sizes in iota
+// format from sharding.
+std::optional<IotaReplicaGroupList> GetIotaPartitionGroupsAcrossTargetDims(
+    const HloSharding& sharding, std::vector<int64_t> target_dims,
+    std::vector<int64_t> group_sizes, int64_t num_partitions);
 
 // Generates partition groups (groups of devices that will communicate via a
 // collective) in iota format from sharding and provided replication_dims.
@@ -856,12 +892,6 @@ absl::StatusOr<SpmdPartitioningVisitor*> FindSpmdPartitioningVisitor(
   return arg;
 }
 
-template <typename Arg, IsNotSpmdPartitioningVisitorPointer<Arg> = 0>
-absl::StatusOr<SpmdPartitioningVisitor*> FindSpmdPartitioningVisitor(
-    Arg&& arg) {
-  return absl::InvalidArgumentError("No SpmdPartitioningVisitor found.");
-}
-
 template <typename Arg, typename... Args,
           IsSpmdPartitioningVisitorPointer<Arg> = 0>
 absl::StatusOr<SpmdPartitioningVisitor*> FindSpmdPartitioningVisitor(
@@ -955,6 +985,47 @@ absl::StatusOr<std::pair<int64_t, int64_t>> EvaluatePartitionCost(
   }
   return std::make_pair(INT64_MAX, INT64_MAX);
 }
+
+// Creates a copy for the HloInstruction in the PartitionedHlo and returns a
+// new PartitionedHlo for the copy.
+PartitionedHlo MakeACopyAndReturnItsPartitionedHlo(const PartitionedHlo& phlo,
+                                                   SpmdBuilder* b);
+
+// For dynamic-update-slice, we focus on the partitioned slice dimensions,
+// ignoring batch dimensions and replicated slice dimensions. We have three
+// methods to handle the partitioned slice dimensions.
+//
+// 1. **Default.** Replicate all tensors along the slice dimensions.
+// 2. **Single Partition Update.** The update is entirely contained within a
+//    single partition. All partitioned slice dimensions satisfy
+//    2.1 The slice size is 1, OR
+//    2.2 The update indices are compile-time constants, and the start and end
+//        indices reside in the same partition.
+// 3. **Constant Indices.** All partitioned slice dimensions have compile-time
+//    constant indices.
+//
+// If both optimizations (2 and 3) are feasible, we prioritize (2) over (3).
+// Refer to go/dus-spmd for more details.
+enum class DynamicUpdateSliceMethod {
+  // Replicate all tensors along the slice dimensions.
+  kDefault,
+
+  // The update is fully contained in a single partition.
+  kUpdateOnASinglePartition,
+
+  // All partitioned slice dimensions have compile-time constant indices.
+  kAllPartitionedSliceDimsHaveConstantIndices,
+};
+
+struct DynamicUpdateSliceAnalysis {
+  DynamicUpdateSliceMethod method;
+  // All slice dimensions of the dynamic update slice instruction.
+  std::vector<int64_t> slice_dims;
+  // The slice dimensions that are partitioned.
+  std::vector<int64_t> partitioned_slice_dims;
+};
+
+DynamicUpdateSliceAnalysis AnalyzeDynamicUpdateSlice(const HloInstruction* hlo);
 
 }  // namespace spmd
 }  // namespace xla

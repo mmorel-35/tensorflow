@@ -161,7 +161,6 @@ tf_py_strict_test(
 py_strict_library(
     name = "checkpoint_test_base",
     srcs = ["checkpoint_test_base.py"],
-    srcs_version = "PY3",
     deps = [
         "//tensorflow/python/checkpoint",
         "//tensorflow/python/checkpoint:checkpoint_management",
@@ -213,9 +212,11 @@ tf_py_strict_test(
     name = "concatenate_test",
     size = "medium",
     srcs = ["concatenate_test.py"],
+    shard_count = 20,
     deps = [
         ":checkpoint_test_base",
         ":test_base",
+        "//tensorflow/python/data/experimental/ops:global_shuffle_op",
         "//tensorflow/python/data/experimental/ops:random_access",
         "//tensorflow/python/data/ops:dataset_ops",
         "//tensorflow/python/data/ops:options",
@@ -920,7 +921,9 @@ tf_py_strict_test(
         "//tensorflow/python/data/ops:dataset_ops",
         "//tensorflow/python/data/ops:options",
         "//tensorflow/python/framework:combinations",
+        "//tensorflow/python/framework:dtypes",
         "//tensorflow/python/framework:errors",
+        "//tensorflow/python/ops:script_ops",
         "//tensorflow/python/platform:client_testlib",
         "@absl_py//absl/testing:parameterized",
     ],
@@ -1271,7 +1274,6 @@ tf_py_strict_test(
 py_strict_library(
     name = "test_base",
     srcs = ["test_base.py"],
-    srcs_version = "PY3",
     deps = [
         "//tensorflow/python/data/experimental/ops:lookup_ops",
         "//tensorflow/python/data/experimental/ops:random_access",
@@ -1340,7 +1342,6 @@ py_strict_library(
     srcs = [
         "tf_record_test_base.py",
     ],
-    srcs_version = "PY3",
     deps = [
         ":test_base",
         "//tensorflow/core:protos_all_py",

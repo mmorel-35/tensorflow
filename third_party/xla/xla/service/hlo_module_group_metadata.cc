@@ -24,8 +24,6 @@ limitations under the License.
 #include "xla/hlo/ir/dfs_hlo_visitor_with_default.h"
 #include "xla/hlo/ir/hlo_casting_utils.h"
 #include "xla/hlo/ir/hlo_instructions.h"
-#include "xla/service/hlo_alias_analysis.h"
-#include "xla/service/tuple_points_to_analysis.h"
 #include "xla/shape_util.h"
 #include "xla/status_macros.h"
 #include "xla/util.h"
@@ -149,13 +147,6 @@ absl::Status HloModuleGroupMetadata::Build() {
   if (VLOG_IS_ON(4)) {
     DumpCollectedStats();
   }
-
-  for (HloModule* module : modules_) {
-    TF_ASSIGN_OR_RETURN(std::unique_ptr<HloAliasAnalysis> alias_analysis,
-                        HloAliasAnalysis::Run(module));
-    alias_analyses_[module] = std::move(alias_analysis);
-  }
-
   return absl::OkStatus();
 }
 

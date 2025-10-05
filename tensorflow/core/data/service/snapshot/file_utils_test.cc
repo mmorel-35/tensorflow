@@ -18,21 +18,24 @@ limitations under the License.
 #include <string>
 #include <vector>
 
+#include "absl/status/status_matchers.h"
+#include "absl/status/statusor.h"
+#include "xla/tsl/lib/core/status_test_util.h"
+#include "xla/tsl/lib/io/compression.h"
+#include "xla/tsl/platform/env.h"
+#include "xla/tsl/platform/errors.h"
+#include "xla/tsl/platform/status_matchers.h"
+#include "xla/tsl/platform/statusor.h"
+#include "xla/tsl/platform/test.h"
+#include "xla/tsl/protobuf/error_codes.pb.h"
 #include "tensorflow/core/data/dataset_test_base.h"
+#include "tensorflow/core/data/service/common.pb.h"
 #include "tensorflow/core/data/service/test_util.h"
 #include "tensorflow/core/data/snapshot_utils.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/types.pb.h"
-#include "tsl/lib/core/status_test_util.h"
-#include "tsl/lib/io/compression.h"
-#include "tsl/platform/env.h"
-#include "tsl/platform/errors.h"
 #include "tsl/platform/path.h"
-#include "tsl/platform/status_matchers.h"
-#include "tsl/platform/statusor.h"
-#include "tsl/platform/test.h"
-#include "tsl/protobuf/error_codes.pb.h"
 
 namespace tensorflow {
 namespace data {
@@ -117,18 +120,18 @@ TEST(FileUtilsTest, GetChildren) {
   std::string tmp_file = tsl::io::JoinPath(directory, "test_file.tmp");
   TF_ASSERT_OK(AtomicallyWriteStringToFile(tmp_file, "", tsl::Env::Default()));
   EXPECT_THAT(GetChildren(directory, tsl::Env::Default()),
-              IsOkAndHolds(ElementsAre("test_file")));
+              absl_testing::IsOkAndHolds(ElementsAre("test_file")));
 }
 
 TEST(FileUtilsTest, GetChildrenEmptyDirectory) {
   TF_ASSERT_OK_AND_ASSIGN(std::string empty_directory, CreateTestDirectory());
   EXPECT_THAT(GetChildren(empty_directory, tsl::Env::Default()),
-              IsOkAndHolds(IsEmpty()));
+              absl_testing::IsOkAndHolds(IsEmpty()));
 }
 
 TEST(FileUtilsTest, GetChildrenDirectoryNotFound) {
   EXPECT_THAT(GetChildren("Not exist", tsl::Env::Default()),
-              StatusIs(tsl::error::NOT_FOUND));
+              absl_testing::StatusIs(tsl::error::NOT_FOUND));
 }
 
 TEST(FileUtilsTest, IsTemporaryFile) {

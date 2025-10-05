@@ -27,18 +27,23 @@ limitations under the License.
 #include <vector>
 
 #include "absl/algorithm/container.h"
+#include "absl/container/flat_hash_map.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/ascii.h"
 #include "absl/strings/numbers.h"
-#include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
 #include "absl/strings/str_split.h"
+#include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
-#include "mlir/IR/Attributes.h"  // from @llvm-project
-#include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
-#include "mlir/Support/LLVM.h"  // from @llvm-project
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/Attributes.h"
+#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/Support/LLVM.h"
 #include "xla/client/executable_build_options.h"
-#include "xla/client/xla_computation.h"
+#include "xla/hlo/builder/xla_computation.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_input_output_alias_config.h"
 #include "xla/hlo/ir/hlo_opcode.h"
@@ -52,7 +57,6 @@ limitations under the License.
 #include "xla/shape.h"
 #include "xla/shape_util.h"
 #include "xla/status_macros.h"
-#include "xla/statusor.h"
 #include "xla/util.h"
 #include "xla/xla_data.pb.h"
 #include "tsl/platform/cpu_info.h"
@@ -83,7 +87,7 @@ absl::StatusOr<Shape> GetShardedShape(const Shape& shape,
 }
 
 absl::StatusOr<Shape> GetShardedShape(const HloInstructionProto& instr) {
-  const Shape unsharded_shape(instr.shape());
+  TF_ASSIGN_OR_RETURN(Shape unsharded_shape, Shape::FromProto(instr.shape()));
   Shape sharded_shape;
   if (instr.has_sharding()) {
     TF_ASSIGN_OR_RETURN(sharded_shape,
@@ -115,7 +119,8 @@ absl::StatusOr<std::pair<std::vector<Shape>, Shape>> GetShardedProgramShapes(
         TF_ASSIGN_OR_RETURN(arg_shapes[instr.parameter_number()],
                             GetShardedShape(instr));
       }
-      if (instr.id() == comp.root_id()) {
+      if (HloInstruction::CalculateLocalId(instr.id()) ==
+          HloInstruction::CalculateLocalId(comp.root_id())) {
         if (result_shape.element_type() != PRIMITIVE_TYPE_INVALID) {
           return InvalidArgument("Found multiple root instructions");
         }
@@ -137,7 +142,7 @@ absl::StatusOr<std::pair<std::vector<Shape>, Shape>> GetShardedProgramShapes(
 
 absl::Status ParseDeviceAssignmentCompileOptions(
     bool compile_portable_executable, ExecutableBuildOptions* build_options,
-    std::function<StatusOr<DeviceAssignment>(int, int)>
+    std::function<absl::StatusOr<DeviceAssignment>(int, int)>
         GetDefaultDeviceAssignmentFunction,
     int* num_replicas, int* num_partitions,
     std::shared_ptr<DeviceAssignment>* device_assignment) {
@@ -249,7 +254,7 @@ static absl::StatusOr<std::vector<MemorySpaceColor>> MlirAttrsToMemoryKinds(
     if (attr != nullptr) {
       TF_ASSIGN_OR_RETURN(MemorySpaceColor memory_space,
                           GetMemorySpaceColor(attr.getValue().str()));
-      result.emplace_back(memory_space);
+      result.push_back(memory_space);
     } else {
       result.emplace_back(xla::Layout::kDefaultMemorySpace);
     }
@@ -382,58 +387,6 @@ absl::StatusOr<std::vector<MemorySpaceColor>> GetOutputMemoryKinds(
 // Make sure to choose delimiter that will never show up in Layout strings.
 static const char* kDelimiter = ";";
 
-static std::string GetFrontendAttr(absl::Span<const LayoutMode> layout_modes) {
-  return absl::StrJoin(layout_modes, kDelimiter,
-                       [](std::string* out, const LayoutMode& mode) {
-                         absl::StrAppend(out, mode.ToString());
-                       });
-}
-
-absl::Status AddLayoutModesToFrontendAttrs(mlir::ModuleOp module,
-                                           XlaComputation& xla_computation) {
-  TF_ASSIGN_OR_RETURN(std::vector<LayoutMode> arg_layout_modes,
-                      GetArgLayoutModes(module));
-  TF_ASSIGN_OR_RETURN(std::vector<LayoutMode> out_layout_modes,
-                      GetOutputLayoutModes(module));
-
-  // Type is string->string proto map. Using auto here to deal with different
-  // build environments.
-  auto& frontend_attrs = *xla_computation.mutable_proto()
-                              ->mutable_frontend_attributes()
-                              ->mutable_map();
-  frontend_attrs["arg_layout_modes"] = GetFrontendAttr(arg_layout_modes);
-  frontend_attrs["out_layout_modes"] = GetFrontendAttr(out_layout_modes);
-  return absl::OkStatus();
-}
-
-static std::string GetFrontendAttrForMemorySpace(
-    const std::vector<MemorySpaceColor>& memory_spaces) {
-  return absl::StrJoin(
-      memory_spaces, kDelimiter,
-      [](std::string* out, const MemorySpaceColor memory_kind) {
-        absl::StrAppend(out, memory_kind);
-      });
-}
-
-absl::Status AddMemoryKindsToFrontendAttrs(mlir::ModuleOp module,
-                                           XlaComputation& xla_computation) {
-  TF_ASSIGN_OR_RETURN(std::vector<MemorySpaceColor> arg_memory_spaces,
-                      GetArgMemoryKinds(module));
-  TF_ASSIGN_OR_RETURN(std::vector<MemorySpaceColor> out_memory_spaces,
-                      GetOutputMemoryKinds(module));
-
-  // Type is string->string proto map. Using auto here to deal with different
-  // build environments.
-  auto& frontend_attrs = *xla_computation.mutable_proto()
-                              ->mutable_frontend_attributes()
-                              ->mutable_map();
-  frontend_attrs["arg_memory_spaces"] =
-      GetFrontendAttrForMemorySpace(arg_memory_spaces);
-  frontend_attrs["out_memory_spaces"] =
-      GetFrontendAttrForMemorySpace(out_memory_spaces);
-  return absl::OkStatus();
-}
-
 static absl::StatusOr<std::vector<LayoutMode>> GetLayoutModesFromFrontendAttr(
     absl::string_view attr) {
   // SkipEmpty() needed to avoid returning the empty string when attr is empty.
@@ -470,7 +423,7 @@ GetMemoryKindsFromFrontendAttr(absl::string_view attr) {
   for (const std::string& str_mem_space : str_memory_spaces) {
     MemorySpaceColor memory_space;
     CHECK(absl::SimpleAtoi(str_mem_space, &memory_space));
-    result.emplace_back(memory_space);
+    result.push_back(memory_space);
   }
   return result;
 }
@@ -494,7 +447,7 @@ absl::StatusOr<std::vector<LayoutMode>> GetArgLayoutModes(
                       computation.GetProgramShape());
   size_t num_args = program_shape.parameters_size() == 1 &&
                             program_shape.parameters(0).IsTuple()
-                        ? program_shape.parameters(0).tuple_shapes_size()
+                        ? program_shape.parameters(0).tuple_shapes().size()
                         : program_shape.parameters_size();
   return GetLayoutModes(computation, "arg_layout_modes", num_args);
 }
@@ -505,7 +458,7 @@ absl::StatusOr<std::vector<MemorySpaceColor>> GetArgMemoryKinds(
                       computation.GetProgramShape());
   size_t num_args = program_shape.parameters_size() == 1 &&
                             program_shape.parameters(0).IsTuple()
-                        ? program_shape.parameters(0).tuple_shapes_size()
+                        ? program_shape.parameters(0).tuple_shapes().size()
                         : program_shape.parameters_size();
   return GetMemoryKinds(computation, "arg_memory_spaces", num_args);
 }
@@ -515,7 +468,7 @@ absl::StatusOr<std::vector<LayoutMode>> GetOutputLayoutModes(
   TF_ASSIGN_OR_RETURN(ProgramShape program_shape,
                       computation.GetProgramShape());
   size_t num_outputs = program_shape.result().IsTuple()
-                           ? program_shape.result().tuple_shapes_size()
+                           ? program_shape.result().tuple_shapes().size()
                            : 1;
   return GetLayoutModes(computation, "out_layout_modes", num_outputs);
 }
@@ -525,15 +478,15 @@ absl::StatusOr<std::vector<MemorySpaceColor>> GetOutputMemoryKinds(
   TF_ASSIGN_OR_RETURN(ProgramShape program_shape,
                       computation.GetProgramShape());
   size_t num_outputs = program_shape.result().IsTuple()
-                           ? program_shape.result().tuple_shapes_size()
+                           ? program_shape.result().tuple_shapes().size()
                            : 1;
   return GetMemoryKinds(computation, "out_memory_spaces", num_outputs);
 }
 
-static absl::StatusOr<Shape> LayoutModeToXlaShape(
+absl::StatusOr<Shape> LayoutModeToXlaShape(
     const LayoutMode& layout_mode, const Shape& unsharded_shape,
-    const Shape& sharded_shape,
-    std::function<StatusOr<Shape>(Shape)>
+    const Shape& sharded_shape, MemorySpaceColor memory_space,
+    std::function<absl::StatusOr<Shape>(Shape)>
         choose_compact_layout_for_shape_function) {
   if (unsharded_shape.IsToken() || unsharded_shape.IsOpaque()) {
     return unsharded_shape;
@@ -566,6 +519,10 @@ static absl::StatusOr<Shape> LayoutModeToXlaShape(
       break;
     }
   }
+  // When layout is AUTO, memory space can't be set since it will be partial.
+  if (result.has_layout()) {
+    result.mutable_layout()->set_memory_space(memory_space);
+  }
   return result;
 }
 
@@ -574,7 +531,7 @@ absl::StatusOr<std::pair<std::vector<Shape>, Shape>> LayoutModesToXlaShapes(
     std::vector<LayoutMode> out_layout_modes,
     const std::vector<MemorySpaceColor>& arg_memory_spaces,
     const std::vector<MemorySpaceColor>& out_memory_spaces,
-    std::function<StatusOr<Shape>(Shape)>
+    std::function<absl::StatusOr<Shape>(Shape)>
         choose_compact_layout_for_shape_function) {
   // Compute sharded argument and output shapes.
   TF_ASSIGN_OR_RETURN(ProgramShape program_shape,
@@ -637,12 +594,8 @@ absl::StatusOr<std::pair<std::vector<Shape>, Shape>> LayoutModesToXlaShapes(
     TF_ASSIGN_OR_RETURN(
         Shape layout,
         LayoutModeToXlaShape(arg_layout_modes[i], unsharded_arg_shapes[i],
-                             sharded_arg_shapes[i],
+                             sharded_arg_shapes[i], arg_memory_spaces[i],
                              choose_compact_layout_for_shape_function));
-    // When layout is AUTO, memory space can't be set since it will be partial.
-    if (layout.has_layout()) {
-      layout.mutable_layout()->set_memory_space(arg_memory_spaces[i]);
-    }
     flat_arg_layouts.emplace_back(std::move(layout));
   }
 
@@ -656,12 +609,8 @@ absl::StatusOr<std::pair<std::vector<Shape>, Shape>> LayoutModesToXlaShapes(
     TF_ASSIGN_OR_RETURN(
         Shape layout,
         LayoutModeToXlaShape(out_layout_modes[i], unsharded_out_shapes[i],
-                             sharded_out_shapes[i],
+                             sharded_out_shapes[i], out_memory_spaces[i],
                              choose_compact_layout_for_shape_function));
-    // When layout is AUTO, memory space can't be set since it will be partial.
-    if (layout.has_layout()) {
-      layout.mutable_layout()->set_memory_space(out_memory_spaces[i]);
-    }
     flat_out_layouts.emplace_back(std::move(layout));
   }
 
@@ -683,7 +632,7 @@ LayoutModesToXla(const XlaComputation& computation,
                  std::vector<LayoutMode> out_layout_modes,
                  const std::vector<MemorySpaceColor>& arg_memory_spaces,
                  const std::vector<MemorySpaceColor>& out_memory_spaces,
-                 std::function<StatusOr<Shape>(Shape)>
+                 std::function<absl::StatusOr<Shape>(Shape)>
                      choose_compact_layout_for_shape_function,
                  ExecutableBuildOptions& build_options) {
   TF_ASSIGN_OR_RETURN(
@@ -710,13 +659,14 @@ LayoutModesToXla(const XlaComputation& computation,
 
 absl::Status DetermineArgumentLayoutsFromCompileOptions(
     const XlaComputation& computation,
-    std::function<StatusOr<Shape>(Shape)>
+    std::function<absl::StatusOr<Shape>(Shape)>
         choose_compact_layout_for_shape_function,
     std::optional<std::vector<Shape>>& argument_layouts,
     ExecutableBuildOptions* build_options,
     std::vector<const Shape*>* argument_layout_pointers) {
   TF_ASSIGN_OR_RETURN(ProgramShape program_shape,
                       computation.GetProgramShape());
+  const bool given_argument_layouts = argument_layouts.has_value();
   if (!argument_layouts) {
     argument_layouts.emplace(program_shape.parameters());
     for (Shape& shape : *argument_layouts) {
@@ -732,8 +682,7 @@ absl::Status DetermineArgumentLayoutsFromCompileOptions(
 
   // Assign a default layout based on `sharded_shape` to any array subshapes in
   // `dst_shape` that are missing layouts.
-  auto assign_layouts = [&choose_compact_layout_for_shape_function](
-                            const Shape& sharded_shape, Shape* dst_shape) {
+  auto assign_layouts = [&](const Shape& sharded_shape, Shape* dst_shape) {
     return ShapeUtil::ForEachMutableSubshapeWithStatus(
         dst_shape, [&](Shape* subshape, const ShapeIndex& idx) {
           if (subshape->IsArray() && !subshape->has_layout()) {
@@ -744,7 +693,11 @@ absl::Status DetermineArgumentLayoutsFromCompileOptions(
             TF_ASSIGN_OR_RETURN(
                 Shape layout,
                 choose_compact_layout_for_shape_function(sharded_subshape));
-            *subshape->mutable_layout() = layout.layout();
+            if (layout.has_layout()) {
+              *subshape->mutable_layout() = layout.layout();
+            } else {
+              subshape->clear_layout();
+            }
           }
           return absl::OkStatus();
         });
@@ -757,16 +710,49 @@ absl::Status DetermineArgumentLayoutsFromCompileOptions(
     Shape* layout = &(*argument_layouts)[i];
     argument_layout_pointers->push_back(layout);
     TF_RETURN_IF_ERROR(assign_layouts(sharded_shapes.first[i], layout));
+    if (!given_argument_layouts) {
+      // Carry memory space forward from program shape.
+      ShapeUtil::ForEachSubshape(
+          program_shape.parameters(i),
+          [&](const Shape& subshape, const ShapeIndex& index) {
+            if (subshape.IsArray()) {
+              Shape* program_subshape =
+                  ShapeUtil::GetMutableSubshape(layout, index);
+              if (program_subshape->has_layout() && subshape.has_layout()) {
+                program_subshape->mutable_layout()->set_memory_space(
+                    subshape.layout().memory_space());
+              }
+            }
+          });
+    }
   }
 
+  bool used_program_shape;
   Shape result_layout;
   if (build_options->result_layout()) {
     result_layout = *build_options->result_layout();
+    used_program_shape = false;
   } else {
     result_layout = program_shape.result();
     LayoutUtil::ClearLayout(&result_layout);
+    used_program_shape = true;
   }
   TF_RETURN_IF_ERROR(assign_layouts(sharded_shapes.second, &result_layout));
+  if (used_program_shape) {
+    // Carry memory spaces forward from program shape.
+    ShapeUtil::ForEachSubshape(
+        program_shape.result(),
+        [&](const Shape& subshape, const ShapeIndex& index) {
+          if (subshape.IsArray()) {
+            Shape* result_subshape =
+                ShapeUtil::GetMutableSubshape(&result_layout, index);
+            if (result_subshape->has_layout() && subshape.has_layout()) {
+              result_subshape->mutable_layout()->set_memory_space(
+                  subshape.layout().memory_space());
+            }
+          }
+        });
+  }
   build_options->set_result_layout(result_layout);
   return absl::OkStatus();
 }
@@ -780,7 +766,7 @@ absl::StatusOr<std::vector<int>> ComputeParametersThatMustBeDonated(
       const Shape& input_tuple_shape =
           computation->parameter_instruction(0)->shape();
       CHECK(input_tuple_shape.IsTuple());
-      return input_tuple_shape.tuple_shapes_size();
+      return input_tuple_shape.tuple_shapes().size();
     } else {
       return computation->num_parameters();
     }
@@ -929,6 +915,18 @@ absl::Status TestBufferDonationClashes(
     }
   }
   return absl::OkStatus();
+}
+
+void MakeAsciiTitlecase(std::string* s) {
+  if (!s->empty()) {
+    s->at(0) = absl::ascii_toupper(s->at(0));
+  }
+}
+
+std::string MakeAsciiTitlecase(absl::string_view s) {
+  std::string result(s);
+  MakeAsciiTitlecase(&result);
+  return result;
 }
 
 }  // namespace xla

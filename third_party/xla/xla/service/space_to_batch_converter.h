@@ -17,9 +17,11 @@ limitations under the License.
 
 #include <stdbool.h>
 
+#include "absl/container/flat_hash_set.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "xla/hlo/ir/hlo_module.h"
-#include "xla/service/hlo_pass_interface.h"
+#include "xla/hlo/pass/hlo_pass_interface.h"
 #include "xla/status_macros.h"
 
 namespace xla {
@@ -31,7 +33,6 @@ struct SpaceToBatchController {
   bool enable_propagations_on_trivial_window_dilations;
   bool disable_starting_on_small_chains;
   int64_t limit_on_batch_size;
-  bool enable_propagations_on_dots = false;
   int64_t dimension_from_end_to_convert = 1;
   // We choose the new batch size to be number_of_splits times that of the old
   // batch so that space-to-batch propagation through several convolutional
@@ -46,8 +47,6 @@ enum class SpaceToBatchDimMap : uint8_t {
   kFeature = 1,
   kSpace0 = 2,
 };
-
-inline constexpr int64_t NumMappedDims() { return 3; }
 
 // A pass which rewrites convolutions such that space dimension is turned into
 // batch.

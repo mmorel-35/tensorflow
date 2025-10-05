@@ -18,30 +18,48 @@ limitations under the License.
 
 #include <cstdint>
 
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
+#include "mlir/IR/MLIRContext.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/hlo/ir/hlo_schedule.h"
-#include "xla/shape.h"
+#include "xla/service/gpu/alias_info.h"
+#include "xla/service/latency_hiding_scheduler.h"
 #include "xla/stream_executor/device_description.h"
+#include "tsl/profiler/protobuf/profiled_instructions.pb.h"
 
 namespace xla {
 namespace gpu {
 
-int64_t GetSizeOfShape(const Shape& shape, int pointer_size);
+constexpr absl::string_view kFingerprintBeforeLHS = "fingerprint_before_lhs";
+
+// Converts sync collective instructions to a pair of async start and done
+// instructions.
+absl::Status RunAsyncCollectivesConversionPasses(HloModule* module);
 
 struct ScheduleMetadata {
-  int64_t scheduler_mem_limit;
+  uint64_t scheduler_mem_limit;
+  int64_t peak_memory_usage;
 };
+
+// Defines the scheduler config to be used by LHS.
+SchedulerConfig MakeGPUSchedulerConfig(uint64_t memory_limit,
+                                       int64_t overlap_limit);
+
+// Compute the device memory limit to be used by passes like scheduler and
+// HLO rematerialization.
+uint64_t GetSchedulerMemoryLimit(const HloModule& module,
+                                 const se::DeviceDescription& gpu_device_info,
+                                 int pointer_size);
 
 // Determines the schedule of HLO instructions for a module run on the GPU.
 absl::StatusOr<ScheduleMetadata> ScheduleGpuModule(
     HloModule* module, int64_t pointer_size,
-    const se::DeviceDescription& gpu_device_info);
+    const se::DeviceDescription& gpu_device_info,
+    mlir::MLIRContext* mlir_context, const GpuAliasInfo* alias_info);
 
 HloInstructionSequence PostProcessSchedule(const HloInstructionSequence& input);
-
-constexpr absl::string_view kFingerprintBeforeLHS = "fingerprint_before_lhs";
 
 }  // namespace gpu
 }  // namespace xla

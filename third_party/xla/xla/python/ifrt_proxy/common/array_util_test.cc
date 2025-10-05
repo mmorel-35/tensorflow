@@ -22,11 +22,12 @@
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include "absl/strings/cord.h"
 #include "absl/strings/string_view.h"
 #include "xla/python/ifrt/dtype.h"
 #include "xla/python/ifrt/shape.h"
-#include "tsl/platform/status_matchers.h"
-#include "tsl/platform/statusor.h"
+#include "xla/tsl/platform/status_matchers.h"
+#include "xla/tsl/platform/statusor.h"
 
 namespace xla {
 namespace ifrt {
@@ -46,12 +47,13 @@ constexpr DType::Kind kString = DType::Kind::kString;
 using Strides = std::vector<int64_t>;
 
 TEST(DefaultByteStrides, ErrorsIfBadDtype) {
-  EXPECT_THAT(DefaultByteStrides(DType(kString), Shape({1})), Not(IsOk()));
+  EXPECT_THAT(DefaultByteStrides(DType(kString), Shape({1})),
+              Not(absl_testing::IsOk()));
 }
 
 TEST(DefaultByteStrides, HappyCase) {
   EXPECT_THAT(DefaultByteStrides(DType(kF64), Shape({4, 3, 5})),
-              IsOkAndHolds(ElementsAre(120, 40, 8)));
+              absl_testing::IsOkAndHolds(ElementsAre(120, 40, 8)));
 }
 
 // TC represents a testcase.
@@ -147,12 +149,12 @@ TEST_P(ArrayMemRegionFailure, TestCase) {
 
   auto mem_region1 = ArrayMemRegion::FromZerothElementPointer(
       /*zeroth_element=*/kSomeAddr, dtype, shape, tc.byte_strides);
-  EXPECT_THAT(mem_region1.status(), Not(IsOk()));
+  EXPECT_THAT(mem_region1.status(), Not(absl_testing::IsOk()));
 
   const size_t kSomeSize = 1024;
   auto mem_region2 = ArrayMemRegion::FromMinimalMemRegion(
       absl::string_view(kSomeAddr, kSomeSize), dtype, shape, tc.byte_strides);
-  EXPECT_THAT(mem_region2.status(), Not(IsOk()));
+  EXPECT_THAT(mem_region2.status(), Not(absl_testing::IsOk()));
 }
 
 TEST(ArrayMemRegion, FromBadMemRegionSizeFails) {
@@ -182,7 +184,7 @@ TEST(ArrayMemRegion, FromBadMemRegionSizeFails) {
   auto mem_region2 = ArrayMemRegion::FromMinimalMemRegion(
       data_with_extra_suffix, kDType, kShape,
       /*byte_strides=*/std::nullopt);
-  EXPECT_THAT(mem_region2.status(), Not(IsOk()));
+  EXPECT_THAT(mem_region2.status(), Not(absl_testing::IsOk()));
 
   // Similarly, if we provided `FromMinimalMemRegion` a `data` that was smaller
   // than what the constructed `ArrayMemoryRegion` should point to, that will
@@ -191,7 +193,28 @@ TEST(ArrayMemRegion, FromBadMemRegionSizeFails) {
   auto mem_region3 = ArrayMemRegion::FromMinimalMemRegion(
       data_without_some_bytes, kDType, kShape,
       /*byte_strides=*/std::nullopt);
-  EXPECT_THAT(mem_region3.status(), Not(IsOk()));
+  EXPECT_THAT(mem_region3.status(), Not(absl_testing::IsOk()));
+}
+
+TEST(StringHostBufferTest, SerializeDeserializeWithString) {
+  std::vector<absl::Cord> input = {absl::Cord("foo"), absl::Cord("bar")};
+  TF_ASSERT_OK_AND_ASSIGN(auto serialized, SerializeStringHostBuffer(input));
+  TF_ASSERT_OK_AND_ASSIGN(auto deserialized,
+                          DeserializeStringHostBufferFromString(*serialized));
+  EXPECT_EQ(deserialized, input);
+}
+
+TEST(StringHostBufferTest,
+     DeserializeFromCordIntoPreallocatedStringHostBuffer) {
+  std::vector<absl::Cord> input = {absl::Cord("foo"), absl::Cord("bar")};
+  TF_ASSERT_OK_AND_ASSIGN(auto serialized, SerializeStringHostBuffer(input));
+
+  std::vector<absl::Cord> deserialized(input.size());
+  ASSERT_THAT(DeserializeFromCordIntoPreallocatedStringHostBuffer(
+                  absl::Cord(*serialized), deserialized.data()),
+              absl_testing::IsOk());
+
+  EXPECT_EQ(deserialized, input);
 }
 
 }  // namespace

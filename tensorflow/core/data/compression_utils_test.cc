@@ -14,14 +14,18 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/data/compression_utils.h"
 
-#include <string>
+#include <cstdint>
 #include <vector>
 
+#include <gmock/gmock.h>
+#include "absl/status/status_matchers.h"
+#include "xla/tsl/platform/status_matchers.h"
+#include "xla/tsl/protobuf/error_codes.pb.h"
 #include "tensorflow/core/data/dataset_test_base.h"
+#include "tensorflow/core/framework/dataset.pb.h"
 #include "tensorflow/core/framework/tensor_testutil.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/protobuf/error_codes.pb.h"
-#include "tsl/platform/status_matchers.h"
 
 namespace tensorflow {
 namespace data {
@@ -34,9 +38,10 @@ TEST(CompressionUtilsTest, Exceeds4GB) {
   std::vector<Tensor> element = {
       CreateTensor<int64_t>(TensorShape{1024, 1024, 513})};  // Just over 4GB.
   CompressedElement compressed;
-  EXPECT_THAT(CompressElement(element, &compressed),
-              StatusIs(error::OUT_OF_RANGE,
-                       HasSubstr("exceeding the 4GB Snappy limit")));
+  EXPECT_THAT(
+      CompressElement(element, &compressed),
+      absl_testing::StatusIs(error::OUT_OF_RANGE,
+                             HasSubstr("exceeding the 4GB Snappy limit")));
 }
 
 std::vector<std::vector<Tensor>> TestCases() {
@@ -101,7 +106,7 @@ TEST_P(ParameterizedCompressionUtilsTest, VersionMismatch) {
   compressed.set_version(1);
   std::vector<Tensor> round_trip_element;
   EXPECT_THAT(UncompressElement(compressed, &round_trip_element),
-              StatusIs(error::INTERNAL));
+              absl_testing::StatusIs(error::INTERNAL));
 }
 
 INSTANTIATE_TEST_SUITE_P(Instantiation, ParameterizedCompressionUtilsTest,

@@ -14,24 +14,26 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/data/service/snapshot/snapshot_manager.h"
 
+#include <cstdint>
 #include <memory>
 #include <string>
 
+#include "absl/status/status_matchers.h"
+#include "xla/tsl/lib/core/status_test_util.h"
+#include "xla/tsl/platform/env.h"
+#include "xla/tsl/platform/status.h"
+#include "xla/tsl/platform/status_matchers.h"
+#include "xla/tsl/platform/status_to_from_proto.h"
+#include "xla/tsl/platform/statusor.h"
+#include "xla/tsl/platform/test.h"
+#include "xla/tsl/protobuf/error_codes.pb.h"
+#include "xla/tsl/protobuf/status.pb.h"
 #include "tensorflow/core/data/service/common.pb.h"
 #include "tensorflow/core/data/service/dispatcher.pb.h"
 #include "tensorflow/core/data/service/snapshot/path_utils.h"
 #include "tensorflow/core/data/service/test_util.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor.pb.h"
-#include "tsl/lib/core/status_test_util.h"
-#include "tsl/platform/env.h"
-#include "tsl/platform/status.h"
-#include "tsl/platform/status_matchers.h"
-#include "tsl/platform/status_to_from_proto.h"
-#include "tsl/platform/statusor.h"
-#include "tsl/platform/test.h"
-#include "tsl/protobuf/error_codes.pb.h"
-#include "tsl/protobuf/status.pb.h"
 
 namespace tensorflow {
 namespace data {
@@ -242,7 +244,7 @@ TEST(SnapshotManagerTest, SnapshotStreamError) {
   TF_ASSERT_OK(ReadTextProto(
       Env::Default(), SnapshotErrorFilePath(snapshot_path), &status_proto));
   EXPECT_THAT(tsl::StatusFromProto(status_proto),
-              StatusIs(error::NOT_FOUND, "Not found"));
+              absl_testing::StatusIs(error::NOT_FOUND, "Not found"));
 }
 
 TEST(SnapshotManagerTest, ResumeFromError) {
@@ -304,7 +306,7 @@ TEST(SnapshotAssignmentManagerTest, LoadBalanceSnapshots) {
   // Worker 2: N/A
   EXPECT_THAT(snapshot_assignment_manager.TryAddAssignment(
                   "snapshot_3", "worker_1", /*stream_index=*/0),
-              IsOkAndHolds(true));
+              absl_testing::IsOkAndHolds(true));
   EXPECT_THAT(snapshot_assignment_manager.LoadBalanceSnapshots("worker_1"),
               ElementsAre("snapshot_3", _));
   ASSERT_THAT(snapshot_assignment_manager.LoadBalanceSnapshots("worker_2"),
@@ -314,7 +316,7 @@ TEST(SnapshotAssignmentManagerTest, LoadBalanceSnapshots) {
   // Worker 2: N/A
   EXPECT_THAT(snapshot_assignment_manager.TryAddAssignment(
                   "snapshot_2", "worker_1", /*stream_index=*/0),
-              IsOkAndHolds(true));
+              absl_testing::IsOkAndHolds(true));
   ASSERT_THAT(snapshot_assignment_manager.LoadBalanceSnapshots("worker_1"),
               UnorderedElementsAre("snapshot_2", "snapshot_3"));
   EXPECT_THAT(snapshot_assignment_manager.LoadBalanceSnapshots("worker_2"),
@@ -324,10 +326,10 @@ TEST(SnapshotAssignmentManagerTest, LoadBalanceSnapshots) {
   // Worker 2: snapshot 2
   EXPECT_THAT(snapshot_assignment_manager.TryAddAssignment(
                   "snapshot_1", "worker_1", /*stream_index=*/0),
-              IsOkAndHolds(false));
+              absl_testing::IsOkAndHolds(false));
   EXPECT_THAT(snapshot_assignment_manager.TryAddAssignment(
                   "snapshot_2", "worker_2", /*stream_index=*/0),
-              IsOkAndHolds(true));
+              absl_testing::IsOkAndHolds(true));
   ASSERT_THAT(snapshot_assignment_manager.LoadBalanceSnapshots("worker_1"),
               UnorderedElementsAre("snapshot_2", "snapshot_3"));
   EXPECT_THAT(snapshot_assignment_manager.LoadBalanceSnapshots("worker_2"),

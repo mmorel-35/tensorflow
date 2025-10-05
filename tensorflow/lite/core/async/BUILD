@@ -1,3 +1,5 @@
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_cc//cc:cc_test.bzl", "cc_test")
 load("//tensorflow:tensorflow.default.bzl", "get_compatible_with_portable")
 load("//tensorflow/lite/core/shims:cc_library_with_tflite.bzl", "cc_library_with_tflite")
 
@@ -38,8 +40,9 @@ cc_test(
     name = "task_internal_test",
     srcs = ["task_internal_test.cc"],
     deps = [
-        ":async_kernel_internal",
         ":task_internal",
+        "//tensorflow/lite/c:c_api_types",
+        "//tensorflow/lite/c:common",
         "//tensorflow/lite/core/async/c:types",
         "//tensorflow/lite/core/async/interop/c:types",
         "@com_google_googletest//:gtest_main",

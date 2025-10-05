@@ -13,6 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <gtest/gtest.h>
 #include "xla/service/gpu/tests/gpu_codegen_test.h"
 #include "tsl/platform/test.h"
 
@@ -40,8 +41,8 @@ ENTRY main {
 
   CompileAndVerifyIr(
       hlo_string,
-      "CHECK: {{.*}}align 128 dereferenceable(800) %{{.*}}align 16 "
-      "dereferenceable(400) %{{.*}}align 128 dereferenceable(600) %");
+      "CHECK: {{.*}}align 256 dereferenceable(800) %{{.*}}align 16 "
+      "dereferenceable(400) %{{.*}}align 256 dereferenceable(600) %");
 }
 
 }  // namespace

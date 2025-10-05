@@ -17,13 +17,13 @@ limitations under the License.
 
 #include <limits>
 
+#include "xla/tsl/lib/core/status_test_util.h"
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/tensor_shape.pb.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/platform/status_matchers.h"
 #include "tensorflow/core/platform/test.h"
-#include "tsl/lib/core/status_test_util.h"
 
 namespace tensorflow {
 namespace {
@@ -73,7 +73,7 @@ TEST(PartialTensorShapeTest, Concatenate) {
 TEST(PartialTensorShapeTest, ConcatenateWithStatus) {
   PartialTensorShape s({10, 5, 20});
   PartialTensorShape s2;
-  Status status = s.ConcatenateWithStatus(400, &s2);
+  absl::Status status = s.ConcatenateWithStatus(400, &s2);
   EXPECT_TRUE(status.ok());
   EXPECT_EQ(s2.num_elements(), 400000);
   EXPECT_EQ(s2.dims(), 4);
@@ -148,7 +148,7 @@ TEST(PartialTensorShapeTest, PartialTensorShapeIsValidShape) {
 
   proto.add_dim()->set_size(1);
   EXPECT_THAT(PartialTensorShape::IsValidShape(proto),
-              testing::StatusIs(
+              absl_testing::StatusIs(
                   error::Code::INVALID_ARGUMENT,
                   ::testing::ContainsRegex(
                       "An unknown shape must not have any dimensions set.")));
@@ -156,13 +156,14 @@ TEST(PartialTensorShapeTest, PartialTensorShapeIsValidShape) {
   proto.set_unknown_rank(false);
   proto.add_dim()->set_size(-1);
   proto.add_dim()->set_size(-2);
-  EXPECT_THAT(PartialTensorShape::IsValidShape(proto),
-              testing::StatusIs(error::Code::INVALID_ARGUMENT,
-                                ::testing::ContainsRegex(
-                                    "has dimensions with values below -1")));
+  EXPECT_THAT(
+      PartialTensorShape::IsValidShape(proto),
+      absl_testing::StatusIs(
+          error::Code::INVALID_ARGUMENT,
+          ::testing::ContainsRegex("has dimensions with values below -1")));
 
   EXPECT_THAT(TensorShape::IsValidShape(proto),
-              testing::StatusIs(
+              absl_testing::StatusIs(
                   error::Code::INVALID_ARGUMENT,
                   ::testing::ContainsRegex("Shape.*is not fully defined")));
 }
@@ -181,11 +182,11 @@ TEST(PartialTensorShapeTest, BuildPartialTensorShape) {
   EXPECT_EQ(s4.AsProto().DebugString(), sp3.DebugString());
 
   sp3.add_dim()->set_size(std::numeric_limits<int64_t>::max());
-  EXPECT_THAT(
-      PartialTensorShape::BuildPartialTensorShape(sp3, &s4),
-      testing::StatusIs(error::Code::INVALID_ARGUMENT,
-                        ::testing::ContainsRegex(
-                            "Encountered overflow when multiplying shape")));
+  EXPECT_THAT(PartialTensorShape::BuildPartialTensorShape(sp3, &s4),
+              absl_testing::StatusIs(
+                  error::Code::INVALID_ARGUMENT,
+                  ::testing::ContainsRegex(
+                      "Encountered overflow when multiplying shape")));
 }
 
 TEST(PartialTensorShapeTest, PartialShapeFullyDefined) {
@@ -295,45 +296,45 @@ TEST(PartialTensorShapeTest, PartialShapeMergeWith) {
   const PartialTensorShape e;
 
   PartialTensorShape test;
-  EXPECT_EQ(OkStatus(), a.MergeWith(a, &test));
+  EXPECT_EQ(absl::OkStatus(), a.MergeWith(a, &test));
   EXPECT_EQ(test.dims(), 3);
   EXPECT_EQ(test.dim_size(0), -1);
   EXPECT_EQ(test.dim_size(1), 0);
   EXPECT_EQ(test.dim_size(2), 1);
 
   test = PartialTensorShape();
-  EXPECT_EQ(OkStatus(), a.MergeWith(b, &test));
+  EXPECT_EQ(absl::OkStatus(), a.MergeWith(b, &test));
   EXPECT_EQ(test.dims(), 3);
   EXPECT_EQ(test.dim_size(0), 1);
   EXPECT_EQ(test.dim_size(1), 0);
   EXPECT_EQ(test.dim_size(2), 1);
 
   test = PartialTensorShape();
-  EXPECT_TRUE(errors::IsInvalidArgument(a.MergeWith(d, &test)));
+  EXPECT_TRUE(absl::IsInvalidArgument(a.MergeWith(d, &test)));
 
   test = PartialTensorShape();
-  EXPECT_EQ(OkStatus(), a.MergeWith(c, &test));
+  EXPECT_EQ(absl::OkStatus(), a.MergeWith(c, &test));
   EXPECT_EQ(test.dims(), 3);
   EXPECT_EQ(test.dim_size(0), -1);
   EXPECT_EQ(test.dim_size(1), 0);
   EXPECT_EQ(test.dim_size(2), 1);
 
   test = PartialTensorShape();
-  EXPECT_EQ(OkStatus(), c.MergeWith(a, &test));
+  EXPECT_EQ(absl::OkStatus(), c.MergeWith(a, &test));
   EXPECT_EQ(test.dims(), 3);
   EXPECT_EQ(test.dim_size(0), -1);
   EXPECT_EQ(test.dim_size(1), 0);
   EXPECT_EQ(test.dim_size(2), 1);
 
   test = PartialTensorShape();
-  EXPECT_EQ(OkStatus(), a.MergeWith(e, &test));
+  EXPECT_EQ(absl::OkStatus(), a.MergeWith(e, &test));
   EXPECT_EQ(test.dims(), 3);
   EXPECT_EQ(test.dim_size(0), -1);
   EXPECT_EQ(test.dim_size(1), 0);
   EXPECT_EQ(test.dim_size(2), 1);
 
   test = PartialTensorShape();
-  EXPECT_EQ(OkStatus(), e.MergeWith(a, &test));
+  EXPECT_EQ(absl::OkStatus(), e.MergeWith(a, &test));
   EXPECT_EQ(test.dims(), 3);
   EXPECT_EQ(test.dim_size(0), -1);
   EXPECT_EQ(test.dim_size(1), 0);
@@ -347,17 +348,18 @@ TEST(PartialTensorShapeTest, PartialShapeMergeWithInvalidData) {
   const PartialTensorShape d({-1, std::numeric_limits<int64_t>::max(), -1});
 
   EXPECT_THAT(a.MergeWith(b, &a),
-              testing::StatusIs(
+              absl_testing::StatusIs(
                   error::Code::INTERNAL,
                   ::testing::ContainsRegex("Cannot output result to itself")));
   EXPECT_THAT(b.MergeWith(c, &a),
-              testing::StatusIs(error::Code::INVALID_ARGUMENT,
-                                ::testing::ContainsRegex(
-                                    "Incompatible shapes during merge")));
-  EXPECT_THAT(c.MergeWith(d, &a),
-              testing::StatusIs(error::Code::INVALID_ARGUMENT,
-                                ::testing::ContainsRegex(
-                                    "Encountered overflow when multiplying")));
+              absl_testing::StatusIs(error::Code::INVALID_ARGUMENT,
+                                     ::testing::ContainsRegex(
+                                         "Incompatible shapes during merge")));
+  EXPECT_THAT(
+      c.MergeWith(d, &a),
+      absl_testing::StatusIs(
+          error::Code::INVALID_ARGUMENT,
+          ::testing::ContainsRegex("Encountered overflow when multiplying")));
 }
 
 TEST(PartialTensorShapeTest, MakePartialShapeEmpty) {

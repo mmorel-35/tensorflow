@@ -23,7 +23,7 @@ limitations under the License.
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
-#include "tensorflow/core/lib/core/notification.h"
+#include "absl/synchronization/notification.h"
 #include "tensorflow/core/lib/core/threadpool.h"
 #include "tensorflow/core/lib/gtl/inlined_vector.h"
 #include "tensorflow/core/platform/mutex.h"
@@ -68,9 +68,13 @@ class EventMgr {
   // be brief and non-blocking since it executes in the one thread used for all
   // such callbacks and also buffer deletions.
   void ThenExecute(se::Stream* stream, std::function<void()> func) {
-    mutex_lock l(mu_);
-    EnqueueCallback(stream, std::move(func));
-    PollEvents(stream);
+    ToFreeVector to_free;
+    {
+      mutex_lock l(mu_);
+      EnqueueCallback(stream, std::move(func));
+      PollEvents(stream, &to_free);
+    }
+    FreeMemory(to_free);
   }
 
  private:
@@ -83,7 +87,21 @@ class EventMgr {
   mutex mu_;
   condition_variable events_pending_ TF_GUARDED_BY(mu_);
 
+  struct InUse {
+    se::Event* event;
+    std::function<void()> func;
+  };
+
+  typedef absl::InlinedVector<InUse, 4UL> ToFreeVector;
+
   EventMgr(se::StreamExecutor* se, const GPUOptions& gpu_options);
+
+  void FreeMemory(const ToFreeVector& to_free) {
+    for (const auto& iu : to_free) {
+      // The function must be called in another thread.
+      if (iu.func != nullptr) threadpool_.Schedule(iu.func);
+    }
+  }
 
   // Set up `func` to be called once `stream` completes all its outstanding
   // work.
@@ -95,7 +113,7 @@ class EventMgr {
   //
   // If `stream` is not null, we only poll events for that stream.  Otherwise we
   // poll events for all streams.
-  void PollEvents(se::Stream* stream = nullptr)
+  void PollEvents(se::Stream* stream, ToFreeVector* to_free)
       TF_EXCLUSIVE_LOCKS_REQUIRED(mu_);
 
   // An internal polling loop that runs at a low frequency to clear straggler
@@ -116,7 +134,7 @@ class EventMgr {
       callbacks_ TF_GUARDED_BY(mu_);
 
   bool stop_polling_ TF_GUARDED_BY(mu_);
-  std::unique_ptr<Notification> polling_stopped_;
+  std::unique_ptr<absl::Notification> polling_stopped_;
 
   // The main PollLoop for the event manager runs in this threadpool.
   thread::ThreadPool threadpool_;

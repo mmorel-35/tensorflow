@@ -30,17 +30,17 @@ namespace tensorflow {
 static string OpsHistoryDirectory(const string& ops_prefix,
                                   const string& history_version) {
   return io::JoinPath(ops_prefix,
-                      strings::StrCat("compat/ops_history_", history_version));
+                      absl::StrCat("compat/ops_history_", history_version));
 }
 
 static string OpsHistoryFile(const string& ops_prefix,
                              const string& history_version) {
-  return io::JoinPath(ops_prefix, strings::StrCat("compat/ops_history.",
-                                                  history_version, ".pbtxt"));
+  return io::JoinPath(ops_prefix, absl::StrCat("compat/ops_history.",
+                                               history_version, ".pbtxt"));
 }
 
 static string FileNameFromOpName(const string& op_name) {
-  return strings::StrCat(op_name, ".pbtxt");
+  return absl::StrCat(op_name, ".pbtxt");
 }
 
 static void AddNewOpToHistory(const OpDef& op,
@@ -51,13 +51,13 @@ static void AddNewOpToHistory(const OpDef& op,
   }
 }
 
-static Status ReadOpHistory(Env* env, const string& file,
-                            const string& directory,
-                            OpCompatibilityLib::OpHistory* out) {
+static absl::Status ReadOpHistory(Env* env, const string& file,
+                                  const string& directory,
+                                  OpCompatibilityLib::OpHistory* out) {
   // Read op history form `directory` if it exists there.
   std::vector<string> matching_files;
-  Status status = env->GetMatchingPaths(io::JoinPath(directory, "*.pbtxt"),
-                                        &matching_files);
+  absl::Status status = env->GetMatchingPaths(
+      io::JoinPath(directory, "*.pbtxt"), &matching_files);
   if (status.ok() && !matching_files.empty()) {
     printf("Reading op history from %s/*.pbtxt...\n", directory.c_str());
     std::sort(matching_files.begin(), matching_files.end());
@@ -110,9 +110,9 @@ OpCompatibilityLib::OpCompatibilityLib(const string& ops_prefix,
   OpRegistry::Global()->Export(false, &op_list_);
 }
 
-Status OpCompatibilityLib::ValidateCompatible(Env* env, int* changed_ops,
-                                              int* added_ops,
-                                              OpHistory* out_op_history) {
+absl::Status OpCompatibilityLib::ValidateCompatible(Env* env, int* changed_ops,
+                                                    int* added_ops,
+                                                    OpHistory* out_op_history) {
   *changed_ops = 0;
   *added_ops = 0;
 

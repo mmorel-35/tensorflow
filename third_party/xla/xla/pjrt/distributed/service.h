@@ -20,13 +20,13 @@ limitations under the License.
 #include <string>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/status/statusor.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/synchronization/notification.h"
 #include "absl/time/time.h"
 #include "grpcpp/grpcpp.h"
 #include "grpcpp/security/server_credentials.h"
 #include "grpcpp/server_builder.h"
-#include "xla/statusor.h"
 #include "xla/tsl/distributed_runtime/coordination/coordination_service.h"
 #include "xla/tsl/distributed_runtime/rpc/async_service_interface.h"
 #include "xla/types.h"
@@ -45,13 +45,9 @@ class CoordinationServiceImpl {
 
     tsl::Env* env = tsl::Env::Default();
 
-    // Interval at which the service should check for missed heartbeat RPCs
-    // from the clients.
-    absl::Duration heartbeat_interval = absl::Seconds(10);
-
-    // Number of heartbeats that a client may miss in a row before the
-    // coordinator concludes that a client has vanished.
-    int max_missing_heartbeats = 10;
+    // The duration after which the service concludes a client has vanished if
+    // it hasn't received any heartbeats from the client.
+    absl::Duration heartbeat_timeout = absl::Seconds(100);
 
     // How long should we wait for all clients to call Connect() before
     // giving up?
@@ -76,7 +72,7 @@ class CoordinationServiceImpl {
 
  private:
   tsl::Env* env_ = nullptr;  // Not owned.
-  std::unique_ptr<tsl::CoordinationServiceInterface> coord_service_;
+  std::unique_ptr<tsl::CoordinationService> coord_service_;
   std::unique_ptr<tsl::thread::ThreadPool> coord_compute_pool_;
   std::unique_ptr<tsl::AsyncServiceInterface> coord_rpc_service_;
   std::unique_ptr<tsl::Thread> coord_rpc_thread_;

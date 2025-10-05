@@ -12,28 +12,32 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-#if defined(INTEL_MKL) && defined(ENABLE_ONEDNN_V3)
+
 #include "xla/service/cpu/onednn_softmax.h"
 
-#include <algorithm>
-#include <cmath>
-#include <initializer_list>
-#include <vector>
+#include <string>
+#include <unordered_map>
 
-#include "dnnl.hpp"
-#include "absl/base/dynamic_annotations.h"
+#include "absl/base/attributes.h"
+#include "oneapi/dnnl/dnnl.hpp"
+#include "oneapi/dnnl/dnnl_common.hpp"
+#include "oneapi/dnnl/dnnl_threadpool.hpp"
+#include "oneapi/dnnl/dnnl_types.h"
 #include "xla/executable_run_options.h"
 #include "xla/service/cpu/backend_config.pb.h"
+#include "xla/service/cpu/onednn_config.pb.h"
 #include "xla/service/cpu/onednn_memory_util.h"
 #include "xla/service/cpu/runtime_lightweight_check.h"
 #include "xla/tsl/util/onednn_threadpool.h"
-#include "unsupported/Eigen/CXX11/Tensor"
+// Below must come after `onednn_threadpool.h`
+#include "unsupported/Eigen/CXX11/Tensor"  // NOLINT
 
 namespace xla {
 namespace cpu {
 
 ABSL_ATTRIBUTE_NO_SANITIZE_MEMORY void __xla_cpu_runtime_OneDnnSoftmax(
-    const void* run_options_ptr, void* input, void* result) {
+    const void* run_options_ptr, void* input, void* result,
+    void* softmax_config_ptr) {
   const xla::ExecutableRunOptions* run_options =
       static_cast<const xla::ExecutableRunOptions*>(run_options_ptr);
   XLA_LIGHTWEIGHT_CHECK(run_options != nullptr);
@@ -48,6 +52,10 @@ ABSL_ATTRIBUTE_NO_SANITIZE_MEMORY void __xla_cpu_runtime_OneDnnSoftmax(
   auto onednn_stream = dnnl::stream(cpu_engine);
 #endif  // ENABLE_ONEDNN_OPENMP
 
+  std::string config_str(static_cast<const char*>(softmax_config_ptr));
+  OneDnnSoftmaxConfig softmax_config;
+  softmax_config.ParseFromString(config_str);
+
   MemrefInfo input_minfo(input);
   MemrefInfo result_minfo(result);
 
@@ -57,7 +65,7 @@ ABSL_ATTRIBUTE_NO_SANITIZE_MEMORY void __xla_cpu_runtime_OneDnnSoftmax(
   auto src_mem = dnnl::memory(src_md, cpu_engine, input_minfo.Data());
   auto dst_mem = dnnl::memory(dst_md, cpu_engine, result_minfo.Data());
 
-  int axis = (input_minfo.GetOneDnnDims().size()) - 1;
+  int axis = softmax_config.softmax_axis();
 
   auto softmax_pd = dnnl::softmax_forward::primitive_desc(
       cpu_engine, dnnl::prop_kind::forward_inference,
@@ -74,5 +82,3 @@ ABSL_ATTRIBUTE_NO_SANITIZE_MEMORY void __xla_cpu_runtime_OneDnnSoftmax(
 
 }  // namespace cpu
 }  // namespace xla
-
-#endif  // INTEL_MKL && ENABLE_ONEDNN_V3

@@ -18,36 +18,32 @@ limitations under the License.
 #include <string>
 #include <tuple>
 #include <utility>
+#include <variant>
 
+#include <gtest/gtest.h>
+#include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
-#if TENSORFLOW_USE_ROCM
-#include "rocm/rocm_config.h"
-#endif
 #include "xla/array2d.h"
 #include "xla/client/local_client.h"
-#include "xla/client/xla_builder.h"
-#include "xla/client/xla_computation.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "xla/hlo/builder/xla_computation.h"
+#include "xla/hlo/testlib/test_helpers.h"
 #include "xla/literal.h"
 #include "xla/reference_util.h"
 #include "xla/shape_util.h"
-#include "xla/statusor.h"
-#include "xla/test_helpers.h"
+#include "xla/stream_executor/device_description.h"
 #include "xla/tests/client_library_test_base.h"
 #include "xla/tests/literal_test_util.h"
-#include "xla/tests/test_macros.h"
 #include "xla/tests/test_utils.h"
 #include "xla/xla_data.pb.h"
+#include "tsl/platform/statusor.h"
 #include "tsl/platform/test.h"
 
 namespace xla {
 namespace {
 
-#ifdef XLA_BACKEND_DOES_NOT_SUPPORT_FLOAT16
-using TypesF16F32 = ::testing::Types<float>;
-#else
 using TypesF16F32 = ::testing::Types<Eigen::half, float>;
-#endif
 
 class MatOpsSimpleTest : public ClientLibraryTestBase {};
 
@@ -56,7 +52,7 @@ class MatOpsSimpleTest_F16F32 : public MatOpsSimpleTest {};
 
 TYPED_TEST_CASE(MatOpsSimpleTest_F16F32, TypesF16F32);
 
-XLA_TYPED_TEST(MatOpsSimpleTest_F16F32, ExpTwoByTwoValues) {
+TYPED_TEST(MatOpsSimpleTest_F16F32, ExpTwoByTwoValues) {
   using T = TypeParam;
   XlaBuilder builder("exp_2x2");
   auto data = ConstantR2FromArray2D<T>(&builder, {
@@ -72,7 +68,7 @@ XLA_TYPED_TEST(MatOpsSimpleTest_F16F32, ExpTwoByTwoValues) {
   this->ComputeAndCompareLiteral(&builder, expected, {}, ErrorSpec(1e-5));
 }
 
-XLA_TYPED_TEST(MatOpsSimpleTest_F16F32, MapTwoByTwo) {
+TYPED_TEST(MatOpsSimpleTest_F16F32, MapTwoByTwo) {
   using T = TypeParam;
   XlaComputation add_half;
   {
@@ -100,7 +96,7 @@ XLA_TYPED_TEST(MatOpsSimpleTest_F16F32, MapTwoByTwo) {
   this->ComputeAndCompareLiteral(&builder, expected, {}, ErrorSpec(1e-5));
 }
 
-XLA_TYPED_TEST(MatOpsSimpleTest_F16F32, MaxTwoByTwoValues) {
+TYPED_TEST(MatOpsSimpleTest_F16F32, MaxTwoByTwoValues) {
   using T = TypeParam;
   XlaBuilder builder("max_2x2");
   auto lhs = ConstantR2FromArray2D<T>(&builder, {
@@ -163,10 +159,8 @@ std::string PrintTestLinspaceMaxParam(
   return absl::StrCat(param.rows, "r", param.cols, "c");
 }
 
-#ifndef XLA_BACKEND_DOES_NOT_SUPPORT_FLOAT16
-XLA_TEST_P(TestLinspaceMaxParametric, TestF16) { TestImpl<Eigen::half>(); }
-#endif
-XLA_TEST_P(TestLinspaceMaxParametric, TestF32) { TestImpl<float>(); }
+TEST_P(TestLinspaceMaxParametric, TestF16) { TestImpl<Eigen::half>(); }
+TEST_P(TestLinspaceMaxParametric, TestF32) { TestImpl<float>(); }
 
 INSTANTIATE_TEST_CASE_P(
     TestLinspaceMax, TestLinspaceMaxParametric,
@@ -182,16 +176,25 @@ class MatOpsDotAddTest
     : public ClientLibraryTestBase,
       public ::testing::WithParamInterface<std::tuple<bool, bool, bool, bool>> {
  public:
+  // Returns true if the test is using a GPU.
+  bool IsGpu() {
+    auto stream_executor = client_->platform()->ExecutorForDevice(0).value();
+    auto gpu_compute_capability =
+        stream_executor->GetDeviceDescription().gpu_compute_capability();
+    if ((std::holds_alternative<stream_executor::CudaComputeCapability>(
+            gpu_compute_capability)) ||
+        std::holds_alternative<stream_executor::RocmComputeCapability>(
+            gpu_compute_capability)) {
+      return true;
+    }
+    return false;
+  }
   template <typename T>
   void TestImpl() {
     bool row_major = std::get<0>(GetParam());
     bool add_lhs = std::get<1>(GetParam());
     bool transpose = std::get<2>(GetParam());
-#if GOOGLE_CUDA || TF_HIPBLASLT
-    bool use_cublaslt = std::get<3>(GetParam());
-#else
-    bool use_cublaslt = false;
-#endif
+    bool use_cublaslt = IsGpu() ? std::get<3>(GetParam()) : false;
     execution_options_.mutable_debug_options()->set_xla_gpu_enable_cublaslt(
         use_cublaslt);
     Array2D<T> lhs({{1.0f, 2.0f}, {3.0f, 4.0f}});
@@ -287,11 +290,7 @@ class MatOpsDotAddTest
   void TestImplBiasAddEpilogueFusion() {
     bool row_major = std::get<0>(GetParam());
     bool transpose = std::get<2>(GetParam());
-#if GOOGLE_CUDA || TF_HIPBLASLT
-    bool use_cublaslt = std::get<3>(GetParam());
-#else
-    bool use_cublaslt = false;
-#endif
+    bool use_cublaslt = IsGpu() ? std::get<3>(GetParam()) : false;
     execution_options_.mutable_debug_options()->set_xla_gpu_enable_cublaslt(
         use_cublaslt);
     Array2D<T> lhs({{1.0f, 2.0f}, {3.0f, 4.0f}});
@@ -337,11 +336,7 @@ class MatOpsDotAddTest
   void TestImplReluActivationEpilogueFusion() {
     bool row_major = std::get<0>(GetParam());
     bool transpose = std::get<2>(GetParam());
-#if GOOGLE_CUDA || TF_HIPBLASLT
-    bool use_cublaslt = std::get<3>(GetParam());
-#else
-    bool use_cublaslt = false;
-#endif
+    bool use_cublaslt = IsGpu() ? std::get<3>(GetParam()) : false;
     execution_options_.mutable_debug_options()->set_xla_gpu_enable_cublaslt(
         use_cublaslt);
     Array2D<T> lhs({{-1.0f, 2.0f}, {3.0f, 4.0f}});
@@ -382,11 +377,7 @@ class MatOpsDotAddTest
   void TestImplBiasAddReluActivationEpilogueFusion() {
     bool row_major = std::get<0>(GetParam());
     bool transpose = std::get<2>(GetParam());
-#if GOOGLE_CUDA || TF_HIPBLASLT
-    bool use_cublaslt = std::get<3>(GetParam());
-#else
-    bool use_cublaslt = false;
-#endif
+    bool use_cublaslt = IsGpu() ? std::get<3>(GetParam()) : false;
     execution_options_.mutable_debug_options()->set_xla_gpu_enable_cublaslt(
         use_cublaslt);
     Array2D<T> lhs({{-1.0f, 2.0f}, {3.0f, 4.0f}});
@@ -432,28 +423,26 @@ class MatOpsDotAddTest
   }
 };
 
-XLA_TEST_P(MatOpsDotAddTest, Dot_Add_2x2_2x2BF16) { TestImpl<bfloat16>(); }
-#ifndef XLA_BACKEND_DOES_NOT_SUPPORT_FLOAT16
-XLA_TEST_P(MatOpsDotAddTest, Dot_Add_2x2_2x2F16) { TestImpl<Eigen::half>(); }
-XLA_TEST_P(MatOpsDotAddTest, Dot_BiasAdd_2x2_2x2F16) {
+TEST_P(MatOpsDotAddTest, Dot_Add_2x2_2x2BF16) { TestImpl<bfloat16>(); }
+TEST_P(MatOpsDotAddTest, Dot_Add_2x2_2x2F16) { TestImpl<Eigen::half>(); }
+TEST_P(MatOpsDotAddTest, Dot_BiasAdd_2x2_2x2F16) {
   TestImplBiasAddEpilogueFusion<Eigen::half>();
 }
-XLA_TEST_P(MatOpsDotAddTest, Dot_ReluActivation_2x2_2x2F16) {
+TEST_P(MatOpsDotAddTest, Dot_ReluActivation_2x2_2x2F16) {
   TestImplReluActivationEpilogueFusion<Eigen::half>();
 }
-XLA_TEST_P(MatOpsDotAddTest, Dot_BiasAddReluActivation_2x2_2x2F16) {
+TEST_P(MatOpsDotAddTest, Dot_BiasAddReluActivation_2x2_2x2F16) {
   TestImplBiasAddReluActivationEpilogueFusion<Eigen::half>();
 }
-#endif
 
-XLA_TEST_P(MatOpsDotAddTest, Dot_Add_2x2_2x2F32) { TestImpl<float>(); }
-XLA_TEST_P(MatOpsDotAddTest, Dot_BiasAdd_2x2_2x2F32) {
+TEST_P(MatOpsDotAddTest, Dot_Add_2x2_2x2F32) { TestImpl<float>(); }
+TEST_P(MatOpsDotAddTest, Dot_BiasAdd_2x2_2x2F32) {
   TestImplBiasAddEpilogueFusion<float>();
 }
-XLA_TEST_P(MatOpsDotAddTest, Dot_ReluActivation_2x2_2x2F32) {
+TEST_P(MatOpsDotAddTest, Dot_ReluActivation_2x2_2x2F32) {
   TestImplReluActivationEpilogueFusion<float>();
 }
-XLA_TEST_P(MatOpsDotAddTest, Dot_BiasAddReluActivation_2x2_2x2F32) {
+TEST_P(MatOpsDotAddTest, Dot_BiasAddReluActivation_2x2_2x2F32) {
   TestImplBiasAddReluActivationEpilogueFusion<float>();
 }
 

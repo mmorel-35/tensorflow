@@ -14,8 +14,11 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/delegates/coreml/builders/pooling_layer_builder.h"
 
+#include <cstdio>
 #include <string>
+#include <vector>
 
+#include "mlmodel/format/NeuralNetwork.pb.h"
 #include "tensorflow/lite/builtin_ops.h"
 #include "tensorflow/lite/core/c/builtin_op_data.h"
 #include "tensorflow/lite/core/c/common.h"

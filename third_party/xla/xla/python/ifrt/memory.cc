@@ -19,8 +19,10 @@ limitations under the License.
 #include <string>
 #include <utility>
 
+#include "absl/base/thread_annotations.h"
 #include "absl/container/node_hash_set.h"
-#include "xla/pjrt/pjrt_client.h"
+#include "absl/strings/string_view.h"
+#include "absl/synchronization/mutex.h"
 #include "xla/python/ifrt/device.h"
 
 namespace xla {
@@ -42,7 +44,7 @@ MemoryKind::MemoryKind(std::optional<absl::string_view> memory_kind) {
   if (!memory_kind.has_value()) {
     return;
   }
-  absl::MutexLock lock(&global_set->mu);
+  absl::MutexLock lock(global_set->mu);
   auto it = global_set->memory_kinds_set.find(*memory_kind);
   if (it == global_set->memory_kinds_set.end()) {
     memory_kind_ =
@@ -52,14 +54,15 @@ MemoryKind::MemoryKind(std::optional<absl::string_view> memory_kind) {
   }
 }
 
-std::string MemoryKind::DebugString() const {
+std::string MemoryKind::ToString() const {
   if (memory_kind_.has_value()) {
     return std::string(*memory_kind_);
   }
   return "(default)";
 }
 
-MemoryKind CanonicalizeMemoryKind(MemoryKind memory_kind, Device* device) {
+MemoryKind CanonicalizeMemoryKind(MemoryKind memory_kind,
+                                  const Device* device) {
   if (memory_kind.memory_kind().has_value()) {
     return memory_kind;
   }

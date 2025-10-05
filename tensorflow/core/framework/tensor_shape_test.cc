@@ -18,6 +18,7 @@ limitations under the License.
 #include <cstdint>
 #include <limits>
 
+#include "xla/tsl/lib/core/status_test_util.h"
 #include "tensorflow/core/framework/tensor_shape.pb.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/lib/random/simple_philox.h"
@@ -28,7 +29,6 @@ limitations under the License.
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/platform/test_benchmark.h"
 #include "tensorflow/core/protobuf/error_codes.pb.h"
-#include "tsl/lib/core/status_test_util.h"
 
 namespace tensorflow {
 class TensorShapeTestHelper {
@@ -74,11 +74,11 @@ TEST(TensorShapeTest, RemoveDimWithStatus) {
   EXPECT_EQ(s.num_elements(), 5);
   EXPECT_EQ(s.dims(), 1);
 
-  EXPECT_THAT(
-      s.RemoveDimWithStatus(-1),
-      testing::StatusIs(error::Code::INTERNAL,
-                        ::testing::ContainsRegex(
-                            "Expected dimension index to be non-negative")));
+  EXPECT_THAT(s.RemoveDimWithStatus(-1),
+              absl_testing::StatusIs(
+                  error::Code::INTERNAL,
+                  ::testing::ContainsRegex(
+                      "Expected dimension index to be non-negative")));
 }
 
 TEST(TensorShapeTest, RemoveAndAddDim) {
@@ -111,9 +111,9 @@ TEST(TensorShapeTest, RemoveLastDimsWithStatus) {
 
   EXPECT_THAT(
       s.RemoveLastDimsWithStatus(4),
-      testing::StatusIs(error::Code::INTERNAL,
-                        ::testing::ContainsRegex(
-                            "Expected dimension index to be at most 3")));
+      absl_testing::StatusIs(error::Code::INTERNAL,
+                             ::testing::ContainsRegex(
+                                 "Expected dimension index to be at most 3")));
 }
 
 TEST(TensorShapeTest, RemoveDimRange) {
@@ -202,22 +202,22 @@ TEST(TensorShapeTest, RemoveDimRangeWithStatusWithInvalidBeginEnd) {
   TensorShape s3({2, 5, 7});
 
   EXPECT_THAT(s3.RemoveDimRangeWithStatus(-5, 0),
-              testing::StatusIs(error::Code::INTERNAL,
-                                ::testing::ContainsRegex(
-                                    "Start index must be non-negative")));
+              absl_testing::StatusIs(error::Code::INTERNAL,
+                                     ::testing::ContainsRegex(
+                                         "Start index must be non-negative")));
 
   EXPECT_THAT(s3.RemoveDimRangeWithStatus(5, 0),
-              testing::StatusIs(
+              absl_testing::StatusIs(
                   error::Code::INTERNAL,
                   ::testing::ContainsRegex("Start index must be less than 3")));
 
   EXPECT_THAT(s3.RemoveDimRangeWithStatus(0, -5),
-              testing::StatusIs(
+              absl_testing::StatusIs(
                   error::Code::INTERNAL,
                   ::testing::ContainsRegex("End index must be non-negative")));
 
   EXPECT_THAT(s3.RemoveDimRangeWithStatus(0, 5),
-              testing::StatusIs(
+              absl_testing::StatusIs(
                   error::Code::INTERNAL,
                   ::testing::ContainsRegex("End index must be less than 3")));
 }
@@ -238,20 +238,21 @@ TEST(TensorShapeTest, InsertDimWithStatusWithInvalidData) {
   TensorShape s({10, 5, 20});
 
   EXPECT_THAT(s.InsertDimWithStatus(1, -5),
-              testing::StatusIs(
+              absl_testing::StatusIs(
                   error::Code::INVALID_ARGUMENT,
                   ::testing::ContainsRegex("Expected a non-negative size")));
 
   EXPECT_THAT(
       s.InsertDimWithStatus(-1, 5),
-      testing::StatusIs(error::Code::INTERNAL,
-                        ::testing::ContainsRegex(
-                            "The insertion index must be non-negative")));
+      absl_testing::StatusIs(error::Code::INTERNAL,
+                             ::testing::ContainsRegex(
+                                 "The insertion index must be non-negative")));
 
-  EXPECT_THAT(s.InsertDimWithStatus(4, 5),
-              testing::StatusIs(error::Code::INTERNAL,
-                                ::testing::ContainsRegex(
-                                    "The insertion index must be at most 3")));
+  EXPECT_THAT(
+      s.InsertDimWithStatus(4, 5),
+      absl_testing::StatusIs(
+          error::Code::INTERNAL,
+          ::testing::ContainsRegex("The insertion index must be at most 3")));
 }
 
 TEST(TensorShapeTest, InsertDimWithStatusWithTooManyDims) {
@@ -261,7 +262,7 @@ TEST(TensorShapeTest, InsertDimWithStatusWithTooManyDims) {
     TF_EXPECT_OK(s.InsertDimWithStatus(1, 1));
   }
   EXPECT_THAT(s.InsertDimWithStatus(1, 1),
-              testing::StatusIs(
+              absl_testing::StatusIs(
                   error::Code::INTERNAL,
                   ::testing::ContainsRegex(
                       "Shape has.*dimensions which is the maximum allowed")));
@@ -348,17 +349,17 @@ TEST(TensorShapeTest, SetDimWithStatus) {
   EXPECT_EQ(s.dim_size(1), 2);
 
   EXPECT_THAT(s.SetDimWithStatus(-1, 2),
-              testing::StatusIs(
+              absl_testing::StatusIs(
                   error::Code::INVALID_ARGUMENT,
                   ::testing::ContainsRegex("Index must be non-negative")));
 
-  EXPECT_THAT(
-      s.SetDimWithStatus(4, 2),
-      testing::StatusIs(error::Code::INVALID_ARGUMENT,
-                        ::testing::ContainsRegex("Index must be less than 3")));
+  EXPECT_THAT(s.SetDimWithStatus(4, 2),
+              absl_testing::StatusIs(
+                  error::Code::INVALID_ARGUMENT,
+                  ::testing::ContainsRegex("Index must be less than 3")));
 
   EXPECT_THAT(s.SetDimWithStatus(0, -2),
-              testing::StatusIs(
+              absl_testing::StatusIs(
                   error::Code::INVALID_ARGUMENT,
                   ::testing::ContainsRegex("Expected a non-negative size")));
 }
@@ -427,7 +428,7 @@ TEST(TensorShapeTest, ostream) {
 
 TEST(TensorShapeTest, AddDimWithStatus) {
   TensorShape s({10, 5, 20});
-  Status status = s.AddDimWithStatus(400);
+  absl::Status status = s.AddDimWithStatus(400);
   EXPECT_TRUE(status.ok());
   EXPECT_EQ(400000, s.num_elements());
   ASSERT_EQ(4, s.dims());
@@ -436,10 +437,11 @@ TEST(TensorShapeTest, AddDimWithStatus) {
   EXPECT_EQ(absl::StatusCode::kInvalidArgument, status.code());
 
   TensorShape s2({std::numeric_limits<int64_t>::max()});
-  EXPECT_THAT(s2.AddDimWithStatus(2),
-              testing::StatusIs(error::Code::INVALID_ARGUMENT,
-                                ::testing::ContainsRegex(
-                                    "Encountered overflow when multiplying")));
+  EXPECT_THAT(
+      s2.AddDimWithStatus(2),
+      absl_testing::StatusIs(
+          error::Code::INVALID_ARGUMENT,
+          ::testing::ContainsRegex("Encountered overflow when multiplying")));
 }
 
 TEST(TensorShapeTest, AppendShapeWithStatus) {
@@ -450,15 +452,16 @@ TEST(TensorShapeTest, AppendShapeWithStatus) {
   EXPECT_EQ(s.dims(), 4);
 
   TensorShape s3({std::numeric_limits<int64_t>::max()});
-  EXPECT_THAT(s2.AppendShapeWithStatus(s3),
-              testing::StatusIs(error::Code::INVALID_ARGUMENT,
-                                ::testing::ContainsRegex(
-                                    "Encountered overflow when multiplying")));
+  EXPECT_THAT(
+      s2.AppendShapeWithStatus(s3),
+      absl_testing::StatusIs(
+          error::Code::INVALID_ARGUMENT,
+          ::testing::ContainsRegex("Encountered overflow when multiplying")));
 }
 
 TEST(TensorShapeTest, Factory) {
   TensorShape s;
-  Status status = TensorShape::BuildTensorShapeBase({10, 5, 20}, &s);
+  absl::Status status = TensorShape::BuildTensorShapeBase({10, 5, 20}, &s);
   EXPECT_TRUE(status.ok());
   EXPECT_EQ(1000, s.num_elements());
   ASSERT_EQ(3, s.dims());
@@ -481,7 +484,7 @@ TEST(TensorShapeTest, AsEigenDSizess) {
 
   Eigen::DSizes<Eigen::DenseIndex, 2> dsizes_out2;
   EXPECT_THAT(s.AsEigenDSizesWithStatus<2>(&dsizes_out2),
-              testing::StatusIs(
+              absl_testing::StatusIs(
                   error::Code::INTERNAL,
                   ::testing::ContainsRegex(
                       "tensor of 2 dimensions from a tensor of 3 dimensions")));
@@ -501,7 +504,7 @@ TEST(TensorShapeTest, AsEigenDSizesWithPadding) {
 
   Eigen::DSizes<Eigen::DenseIndex, 2> dsizes_out2;
   EXPECT_THAT(s.AsEigenDSizesWithPaddingWithStatus<2>(&dsizes_out2),
-              testing::StatusIs(
+              absl_testing::StatusIs(
                   error::Code::INTERNAL,
                   ::testing::ContainsRegex(
                       "at most 2 dimensions from a tensor of 3 dimensions")));
@@ -547,7 +550,7 @@ class TensorShapeOld {
 
   /// Returns `OK` iff `proto` is a valid tensor shape, and a descriptive error
   /// status otherwise.
-  static Status IsValidShape(const TensorShapeProto& proto);
+  static absl::Status IsValidShape(const TensorShapeProto& proto);
 
   /// Clear a tensor shape
   void Clear();
@@ -629,7 +632,7 @@ class TensorShapeOld {
 
   // TODO(josh11b): Maybe use something from the Eigen Tensor library
   // for the sizes.
-  gtl::InlinedVector<int64_t, 4> dim_sizes_;
+  absl::InlinedVector<int64_t, 4UL> dim_sizes_;
 
   // total number of elements (avoids recomputing it each time).
   int64_t num_elements_;
@@ -675,7 +678,7 @@ bool TensorShapeOld::IsValid(const TensorShapeProto& proto) {
   return true;
 }
 
-Status TensorShapeOld::IsValidShape(const TensorShapeProto& proto) {
+absl::Status TensorShapeOld::IsValidShape(const TensorShapeProto& proto) {
   int64_t num_elements = 1;
   for (const auto& d : proto.dim()) {
     if (d.size() < 0) {
@@ -792,7 +795,7 @@ TensorShapeIterOld TensorShapeOld::end() const {
 }
 
 string TensorShapeOld::DebugString() const {
-  return strings::StrCat(
+  return absl::StrCat(
       "[", absl::StrJoin(absl::Span<const int64_t>(dim_sizes_), ","), "]");
 }
 
@@ -800,10 +803,10 @@ string TensorShapeOld::DebugString(const TensorShapeProto& proto) {
   string s = "[";
   bool first = true;
   for (const auto& d : proto.dim()) {
-    strings::StrAppend(&s, first ? "" : ",", d.size());
+    absl::StrAppend(&s, first ? "" : ",", d.size());
     first = false;
   }
-  strings::StrAppend(&s, "]");
+  absl::StrAppend(&s, "]");
   return s;
 }
 // End of old implementation
@@ -999,7 +1002,7 @@ TEST(TensorShapeUtilsTest, NumElements) {
   EXPECT_THAT(
       TensorShapeUtils::NumElements({int64_max_val, int64_max_val},
                                     &num_elements),
-      testing::StatusIs(
+      absl_testing::StatusIs(
           error::Code::INVALID_ARGUMENT,
           ::testing::ContainsRegex(
               "Can't compute total size of shape.*product would overflow")));

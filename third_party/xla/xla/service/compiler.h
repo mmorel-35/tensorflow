@@ -20,6 +20,7 @@ limitations under the License.
 #ifndef XLA_SERVICE_COMPILER_H_
 #define XLA_SERVICE_COMPILER_H_
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -28,21 +29,32 @@ limitations under the License.
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
-#include "absl/types/span.h"
+#include "absl/synchronization/mutex.h"
+#include "xla/debug_options_flags.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/hlo/ir/hlo_module_group.h"
+#include "xla/pjrt/distributed/key_value_store_interface.h"
 #include "xla/service/buffer_assignment.h"
 #include "xla/service/buffer_value.h"
 #include "xla/service/computation_placer.h"
 #include "xla/service/executable.h"
+#include "xla/service/hlo_cost_analysis.h"
 #include "xla/service/hlo_module_config.h"
 #include "xla/service/metrics_hook_interface.h"
-#include "xla/statusor.h"
+#include "xla/shape.h"
+#include "xla/stream_executor/device_description.h"
+#include "xla/stream_executor/device_memory_allocator.h"
+#include "xla/stream_executor/dnn.h"
+#include "xla/stream_executor/platform.h"
 #include "xla/stream_executor/stream_executor.h"
+#include "xla/tsl/platform/threadpool.h"
+#include "xla/util.h"
 #include "tsl/platform/protobuf.h"
-#include "tsl/platform/threadpool.h"
 
 namespace mlir {
 class DialectRegistry;
@@ -72,8 +84,13 @@ class AotCompilationResult {
   }
 
   virtual absl::StatusOr<std::unique_ptr<Executable>> LoadExecutable(
-      Compiler* compiler, const se::StreamExecutor* executor) const {
+      Compiler* compiler, const se::StreamExecutor* executor) && {
     return Unimplemented("LoadExecutable unimplemented.");
+  }
+
+  virtual absl::StatusOr<std::unique_ptr<BufferAssignment>> buffer_assignment()
+      const {
+    return Unimplemented("buffer_assignment unimplemented.");
   }
 
   // Returns the optimized HLO module if one was computed and the implementation
@@ -116,8 +133,10 @@ class Compiler {
  public:
   // Description of a target device for compilation.
   struct TargetConfig {
-    explicit TargetConfig(const se::GpuTargetConfigProto& proto);
     explicit TargetConfig(se::StreamExecutor* s);
+
+    static absl::StatusOr<TargetConfig> FromProto(
+        const se::GpuTargetConfigProto& proto);
 
     se::GpuTargetConfigProto ToProto() const;
 
@@ -134,6 +153,9 @@ class Compiler {
     std::string platform_name;
     se::dnn::VersionInfo dnn_version_info;
     std::string device_description_str;
+
+   private:
+    TargetConfig() = default;
   };
 
   struct CompileOptions {
@@ -157,9 +179,10 @@ class Compiler {
     // on which compilation is performed.
     std::optional<TargetConfig> target_config;
 
-    // Registry of MLIR dialects and plugins to be loaded during optimization.
-    // If non-null, it will be used to construct relevant MLIR contexts.
-    mlir::DialectRegistry* registry = nullptr;
+    MultiProcessKeyValueStore key_value_store;
+
+    // The number of devices in a fast-interconnect domain.
+    int64_t slice_size = 0;
   };
 
   virtual ~Compiler() = default;
@@ -283,7 +306,8 @@ class Compiler {
   // The Compiler class also serves as a point to register compiler objects
   // for the various platforms.
 
-  using CompilerFactory = std::function<std::unique_ptr<Compiler>()>;
+  using CompilerFactory =
+      std::function<absl::StatusOr<std::unique_ptr<Compiler>>()>;
 
   // Registers the compiler singleton for the platform. This is assumed to
   // be a singleton, so no ownership is transferred.
@@ -294,7 +318,8 @@ class Compiler {
 
   // Returns the compiler singleton pointer if it is available for the given
   // platform, or an error status if it is not.
-  static absl::StatusOr<Compiler*> GetForPlatform(const se::Platform* platform);
+  static absl::StatusOr<std::unique_ptr<Compiler>> GetForPlatform(
+      const se::Platform* platform);
 
   // Returns a function that computes the size in bytes of the logical
   // buffer that contains a shape.
@@ -302,7 +327,7 @@ class Compiler {
 
   // Returns a function that computes the size in bytes of a given
   // logical buffer.
-  std::function<int64_t(const BufferValue&)> BufferSizeBytesFunction() {
+  std::function<int64_t(const BufferValue&)> BufferSizeBytesFunction() const {
     HloCostAnalysis::ShapeSizeFunction shape_size = ShapeSizeBytesFunction();
     return [shape_size](const BufferValue& buffer) {
       return shape_size(buffer.shape());
@@ -322,7 +347,13 @@ class Compiler {
   // Returns a MetricsHookInterface object used to instrument Compiler's
   // compilation stages.
   virtual std::unique_ptr<MetricsHookInterface> CreateMetricsHook(
-      absl::string_view filename_prefix) const;
+      absl::string_view filename_prefix,
+      absl::string_view hlo_module_name) const;
+
+  virtual absl::StatusOr<std::unique_ptr<Executable>> DeserializeExecutable(
+      const absl::string_view serialized) const {
+    return Unimplemented("DeserializeExecutable unimplemented");
+  }
 
  private:
   // Mutex that guards the platform-compiler map.
@@ -354,6 +385,7 @@ class AotCompilationOptions {
   virtual int64_t replica_count() const { return 0; }
   virtual int64_t num_cores() const { return 0; }
   virtual bool use_spmd_partitioning() const { return false; }
+  virtual bool use_shardy_partitioner() const { return false; }
   virtual bool use_auto_spmd_partitioning() const { return false; }
   virtual std::vector<int64_t> auto_spmd_partitioning_mesh_shape() const {
     return {};

@@ -22,19 +22,23 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include "absl/functional/function_ref.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/str_join.h"
 #include "xla/hlo/ir/hlo_computation.h"
+#include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/layout_util.h"
 #include "xla/service/hlo.pb.h"
 #include "xla/shape.h"
+#include "xla/shape_tree.h"
 #include "xla/shape_util.h"
 #include "xla/status_macros.h"
-#include "xla/statusor.h"
-#include "tsl/platform/errors.h"
-#include "tsl/platform/logging.h"  // IWYU pragma: keep
+#include "xla/tsl/platform/errors.h"
+#include "xla/tsl/platform/logging.h"  // IWYU pragma: keep
+#include "xla/util.h"
 
 namespace xla {
 
@@ -218,8 +222,8 @@ absl::Status HloInputOutputAliasConfig::Verify(
         ShapeUtil::GetSubshape(param_shape, alias.parameter_index);
     const Shape& output_subshape =
         ShapeUtil::GetSubshape(output_shape, output_index);
-    TF_RET_CHECK(LayoutUtil::IsDenseArray(param_subshape));
-    TF_RET_CHECK(LayoutUtil::IsDenseArray(output_subshape));
+    TF_RET_CHECK(param_subshape.IsArray());
+    TF_RET_CHECK(output_subshape.IsArray());
 
     if (size_func(param_subshape) != size_func(output_subshape)) {
       return Internal(
@@ -332,7 +336,7 @@ absl::Status HloBufferDonorConfig::Verify(const HloModule& module) const {
 
     const Shape& param_subshape =
         ShapeUtil::GetSubshape(param_shape, donor.param_index);
-    TF_RET_CHECK(LayoutUtil::IsDenseArray(param_subshape));
+    TF_RET_CHECK(param_subshape.IsArray());
 
     if (alias_config.ParameterHasAlias(donor.param_number, donor.param_index)) {
       return Internal(

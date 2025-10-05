@@ -19,7 +19,7 @@ limitations under the License.
 #include <map>
 #include <vector>
 
-#include "xla/statusor.h"
+#include "absl/status/statusor.h"
 #include "tensorflow/core/common_runtime/optimization_registry.h"
 #include "tensorflow/core/common_runtime/shape_refiner.h"
 #include "tensorflow/core/lib/core/status.h"
@@ -43,9 +43,10 @@ typedef std::unordered_map<string, std::vector<InferredShape>> GraphShapeInfo;
 // `arg_shapes`: user given map from the `index` to shapes of this
 // node, where `index` is the `index` attribute of `_Arg` op or `_index`
 // attribute of `Placeholder` op.
-Status InferShapes(Graph* graph, const std::map<int, InferredShape>& arg_shapes,
-                   const tensorflow::FunctionLibraryDefinition* fnlib_def,
-                   GraphShapeInfo* shape_info);
+absl::Status InferShapes(Graph* graph,
+                         const std::map<int, InferredShape>& arg_shapes,
+                         const tensorflow::FunctionLibraryDefinition* fnlib_def,
+                         GraphShapeInfo* shape_info);
 
 // Merges two InferredShapes. Return an error if the two shapes cannot be
 // merged.

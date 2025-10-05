@@ -16,7 +16,17 @@ limitations under the License.
 
 #include <optional>
 
+#include "mlir/IR/Builders.h"  // from @llvm-project
+#include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
+#include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
+#include "mlir/IR/Location.h"  // from @llvm-project
+#include "mlir/IR/MLIRContext.h"  // from @llvm-project
+#include "mlir/IR/Operation.h"  // from @llvm-project
+#include "mlir/IR/Types.h"  // from @llvm-project
+#include "mlir/IR/Value.h"  // from @llvm-project
+#include "mlir/IR/ValueRange.h"  // from @llvm-project
 #include "mlir/Support/LLVM.h"  // from @llvm-project
+#include "mlir/Transforms/DialectConversion.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_types.h"
 #include "tensorflow/compiler/mlir/tfrt/ir/tfrt_fallback.h"
 #include "tensorflow/compiler/mlir/tfrt/ir/tfrt_fallback_async.h"
@@ -74,9 +84,9 @@ mlir::Value ConvertCoreRTTensorHandleToFallbackTensor(
     rewriter.setInsertionPointToStart(value.getParentBlock());
   }
 
-  return rewriter
-      .create<tfrt::fallback_async::CoreRTTensorHandleToFallbackTensorOp>(
-          loc, rewriter.getType<tfrt::fallback::TFTensorType>(), value, device)
+  return tfrt::fallback_async::CoreRTTensorHandleToFallbackTensorOp::create(
+             rewriter, loc, rewriter.getType<tfrt::fallback::TFTensorType>(),
+             value, device)
       .getResult(0);
 }
 
@@ -102,10 +112,9 @@ mlir::Value ConvertFallbackTensorToCoreRTTensorHandle(
     }
   }
 
-  return rewriter
-      .create<tfrt::fallback_async::FallbackTensorToCoreRTTensorHandleOp>(
-          loc, rewriter.getType<tfrt::corert::TensorHandleType>(), value,
-          device)
+  return tfrt::fallback_async::FallbackTensorToCoreRTTensorHandleOp::create(
+             rewriter, loc, rewriter.getType<tfrt::corert::TensorHandleType>(),
+             value, device)
       .getResult(0);
 }
 

@@ -13,6 +13,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <utility>
+#include <vector>
+
 #include "tensorflow/core/data/dataset_test_base.h"
 
 namespace tensorflow {
@@ -54,19 +57,19 @@ class ReduceDatasetParams : public DatasetParams {
     return input_tensors;
   }
 
-  Status GetInputNames(std::vector<string>* input_names) const override {
+  absl::Status GetInputNames(std::vector<string>* input_names) const override {
     input_names->clear();
     input_names->emplace_back("input_dataset");
     for (int i = 0; i < initial_state_.size(); ++i) {
-      input_names->emplace_back(strings::StrCat("initial_state_", i));
+      input_names->emplace_back(absl::StrCat("initial_state_", i));
     }
     for (int i = 0; i < other_arguments_.size(); ++i) {
-      input_names->emplace_back(strings::StrCat("other_arguments_", i));
+      input_names->emplace_back(absl::StrCat("other_arguments_", i));
     }
     return absl::OkStatus();
   }
 
-  Status GetAttributes(AttributeVector* attr_vector) const override {
+  absl::Status GetAttributes(AttributeVector* attr_vector) const override {
     attr_vector->clear();
     *attr_vector = {{"f", func_},
                     {"Tstate", type_state_},

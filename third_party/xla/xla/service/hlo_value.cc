@@ -16,7 +16,6 @@ limitations under the License.
 #include "xla/service/hlo_value.h"
 
 #include <algorithm>
-#include <cstdint>
 #include <ostream>
 #include <string>
 #include <utility>
@@ -37,7 +36,6 @@ limitations under the License.
 #include "xla/shape.h"
 #include "xla/shape_util.h"
 #include "xla/util.h"
-#include "tsl/platform/logging.h"
 
 namespace xla {
 
@@ -76,7 +74,8 @@ HloValue::HloValue(HloValue::Id id, HloInstruction* instruction,
                    const ShapeIndex& index, bool is_phi)
     : BufferValue(instruction, index, id),
       uses_([this] { return ComputeUses(); }),
-      is_phi_(is_phi) {
+      is_phi_(is_phi),
+      live_out_of_module_(false) {
   // The defining position is always the first element in the positions_ vector.
   positions_.push_back(HloPosition{instruction, index});
 }
@@ -103,8 +102,8 @@ std::string HloValue::ToString(int indent) const {
   } else {
     StrAppend(&out, indentation, " uses are not initialized yet.\n");
   }
-  StrAppend(&out, indentation,
-            " from instruction: ", instruction()->ToString());
+  StrAppend(&out, indentation, " from instruction: ", instruction()->ToString(),
+            "\n");
   return out;
 }
 
@@ -287,9 +286,6 @@ bool InstructionValueSet::IsAmbiguous() const {
 bool InstructionValueSet::AssignUnionOf(
     absl::Span<const InstructionValueSet* const> inputs) {
   CHECK_GT(inputs.size(), 0);
-  for (int i = 1; i < inputs.size(); ++i) {
-    DCHECK(ShapeUtil::Compatible(inputs[0]->shape(), inputs[i]->shape()));
-  }
   bool changed = false;
   for (auto& pair : *this) {
     const ShapeIndex& index = pair.first;

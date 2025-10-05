@@ -24,21 +24,20 @@ limitations under the License.
 
 #include "absl/log/log.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/service/executable.h"
-#include "xla/service/hlo_execution_profile.h"
 #include "xla/service/service_executable_run_options.h"
-#include "xla/statusor.h"
 #include "xla/stream_executor/device_memory.h"
 #include "xla/stream_executor/tpu/c_api_decl.h"
 #include "xla/stream_executor/tpu/tpu_executable_interface.h"
 #include "xla/stream_executor/tpu/tpu_executor_c_api.h"
 
-namespace xla {
+namespace xla::legacy {
 
-class TpuExecutable : public xla::TpuExecutableInterface {
+class TpuExecutable : public TpuExecutableInterface {
  public:
   TpuExecutable(SE_Executable* se_executable,
                 std::shared_ptr<HloModule> hlo_module)
@@ -49,8 +48,7 @@ class TpuExecutable : public xla::TpuExecutableInterface {
 
   absl::StatusOr<ExecutionOutput> ExecuteAsyncOnStream(
       const ServiceExecutableRunOptions* run_options,
-      std::vector<ExecutionInput> arguments,
-      HloExecutionProfile* hlo_execution_profile) override;
+      std::vector<ExecutionInput> arguments) override;
 
   absl::string_view fingerprint() const override;
 
@@ -75,6 +73,6 @@ class TpuExecutable : public xla::TpuExecutableInterface {
   SE_Executable* se_executable_;
 };
 
-}  // namespace xla
+}  // namespace xla::legacy
 
 #endif  // XLA_STREAM_EXECUTOR_TPU_TPU_EXECUTABLE_H_

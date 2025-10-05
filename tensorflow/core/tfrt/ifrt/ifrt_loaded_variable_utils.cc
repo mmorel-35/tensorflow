@@ -20,7 +20,6 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
-#include "absl/container/flat_hash_set.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -28,20 +27,20 @@ limitations under the License.
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "tensorflow/compiler/mlir/tfrt/transforms/ifrt/ifrt_types.h"
-#include "xla/hlo/ir/hlo_sharding.h"
 #include "xla/python/ifrt/array.h"
 #include "xla/python/ifrt/client.h"
-#include "xla/python/ifrt/future.h"
+#include "xla/tsl/concurrency/future.h"
 #include "xla/tsl/concurrency/ref_count.h"
+#include "xla/tsl/platform/errors.h"
+#include "xla/tsl/platform/statusor.h"
+#include "xla/tsl/platform/threadpool.h"
 #include "tensorflow/core/framework/resource_handle.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/platform/context.h"
 #include "tensorflow/core/tfrt/ifrt/ifrt_loaded_variable_registry.h"
 #include "tensorflow/core/tfrt/ifrt/ifrt_restore_tensor_registry.h"
 #include "tensorflow/core/tfrt/ifrt/sharding_utils.h"
-#include "tsl/platform/errors.h"
-#include "tsl/platform/statusor.h"
-#include "tsl/platform/threadpool.h"
 #include "tfrt/host_context/concurrent_work_queue.h"  // from @tf_runtime
 
 namespace tensorflow {
@@ -49,18 +48,14 @@ namespace ifrt_serving {
 
 namespace {
 
-absl::StatusOr<tsl::RCReference<xla::ifrt::Array>> LoadIfrtVariable(
+absl::StatusOr<xla::ifrt::ArrayRef> LoadIfrtVariable(
     std::shared_ptr<xla::ifrt::Client> ifrt_client,
     const tsl::thread::ThreadPool& thread_pool,
     const tensorflow::Tensor& variable,
-    const VariableDeviceShardingConfigProto& sharding_config) {
-  std::vector<int> device_ids{sharding_config.device_ids().begin(),
-                              sharding_config.device_ids().end()};
-  TF_ASSIGN_OR_RETURN(xla::HloSharding hlo_sharding,
-                      xla::HloSharding::FromProto(sharding_config.sharding()));
+    const VariableDeviceShardingConfig& sharding_config) {
   return tensorflow::ifrt_serving::MakeArrayFromTensor(
-      *ifrt_client, variable, sharding_config.device_ids(), hlo_sharding,
-      thread_pool);
+      *ifrt_client, variable, sharding_config.device_ids,
+      sharding_config.hlo_sharding, thread_pool);
 }
 
 }  // namespace
@@ -91,50 +86,50 @@ std::string GetRuntimeNameFromVarHandle(const ResourceHandle& handle) {
 }
 
 absl::Status AsyncLoadRestoredTensorAsIfrtLoadedVariable(
-    absl::string_view runtime_name,
+    absl::string_view tensor_name,
     std::shared_ptr<xla::ifrt::Client> ifrt_client,
     const tsl::thread::ThreadPool& thread_pool,
-    const ifrt_serving::IfrtRestoreTensorRegistry& ifrt_restore_tensor_registry,
-    ifrt_serving::IfrtLoadedVariableRegistry& ifrt_loaded_variable_registry,
+    const ifrt_serving::IfrtRestoreTensorRegistry& restore_tensor_registry,
+    ifrt_serving::IfrtLoadedVariableRegistry& loaded_variable_registry,
     tfrt::ConcurrentWorkQueue* checkpoint_loader_queue,
-    const VariableDeviceShardingConfigProto& sharding_config) {
-  absl::flat_hash_set<int> device_ids{sharding_config.device_ids().begin(),
-                                      sharding_config.device_ids().end()};
-  IfrtLoadedVariableRegistry::Key loaded_variable_key{
-      .device_ids = std::move(device_ids),
-      .input_name = std::string(runtime_name),
+    const VariableDeviceShardingConfig& sharding_config) {
+  IfrtLoadedVariableRegistry::Key key{
+      .device_ids = sharding_config.device_ids,
+      .input_name = std::string(tensor_name),
+      .hlo_sharding = sharding_config.hlo_sharding,
   };
-  if (ifrt_loaded_variable_registry.GetLoadedVariable(loaded_variable_key)
-          .ok()) {
-    VLOG(1) << "Found alread registered variable for " << runtime_name;
+
+  if (loaded_variable_registry.GetLoadedVariable(key).ok()) {
+    VLOG(1) << "Found alread registered variable for " << tensor_name;
     return absl::OkStatus();
   }
-  xla::ifrt::Future<tensorflow::Tensor> restored_tensor_future =
-      ifrt_restore_tensor_registry.GetRestoredTensor(runtime_name);
+
+  tsl::Future<tensorflow::Tensor> restored_tensor_future =
+      restore_tensor_registry.GetRestoredTensor(tensor_name);
   if (!restored_tensor_future.IsValid()) {
     return absl::InternalError(absl::StrCat(
-        "LoadVariableOp: failed to fetch variable tensor: ", runtime_name));
+        "LoadVariableOp: failed to fetch variable tensor: ", tensor_name));
   }
-  auto loaded_variable_promise =
-      xla::ifrt::Future<tsl::RCReference<xla::ifrt::Array>>::CreatePromise();
-  auto loaded_variable_future =
-      xla::ifrt::Future<tsl::RCReference<xla::ifrt::Array>>(
-          loaded_variable_promise);
+  auto [loaded_variable_promise, loaded_variable_future] =
+      tsl::Future<xla::ifrt::ArrayRef>::MakePromise();
   TF_ASSIGN_OR_RETURN(
       absl::StatusOr<ifrt_serving::DtypeAndShape> dtype_and_shape,
-      ifrt_restore_tensor_registry.GetDtypeAndShape(runtime_name));
-  TF_RETURN_IF_ERROR(ifrt_loaded_variable_registry.TryRegisterLoadedVariable(
-      loaded_variable_key,
+      restore_tensor_registry.GetDtypeAndShape(tensor_name));
+  TF_RETURN_IF_ERROR(loaded_variable_registry.TryRegisterLoadedVariable(
+      key,
       [&]() -> absl::StatusOr<
                 ifrt_serving::IfrtLoadedVariableRegistry::LoadedVariable> {
         return ifrt_serving::IfrtLoadedVariableRegistry::LoadedVariable(
             {.array = loaded_variable_future});
       }));
+
+  tensorflow::Context bg_context(tensorflow::ContextKind::kThread);
   restored_tensor_future.OnReady(
       [ifrt_client = std::move(ifrt_client), &thread_pool = thread_pool,
        checkpoint_loader_queue = checkpoint_loader_queue,
        sharding_config = sharding_config,
-       loaded_variable_promise = std::move(loaded_variable_promise)](
+       loaded_variable_promise = std::move(loaded_variable_promise),
+       bg_context = std::move(bg_context)](
           absl::StatusOr<tensorflow::Tensor> restored_tensor) mutable {
         if (!restored_tensor.ok()) {
           loaded_variable_promise.Set(restored_tensor.status());
@@ -146,12 +141,12 @@ absl::Status AsyncLoadRestoredTensorAsIfrtLoadedVariable(
             [ifrt_client = ifrt_client, &thread_pool = thread_pool,
              sharding_config = std::move(sharding_config),
              restored_tensor = std::move(*restored_tensor),
-             loaded_variable_promise =
-                 std::move(loaded_variable_promise)]() mutable {
-              absl::StatusOr<tsl::RCReference<xla::ifrt::Array>>
-                  variable_array =
-                      LoadIfrtVariable(ifrt_client, thread_pool,
-                                       restored_tensor, sharding_config);
+             loaded_variable_promise = std::move(loaded_variable_promise),
+             bg_context = std::move(bg_context)]() mutable {
+              tensorflow::WithContext wc(bg_context);
+              absl::StatusOr<xla::ifrt::ArrayRef> variable_array =
+                  LoadIfrtVariable(ifrt_client, thread_pool, restored_tensor,
+                                   sharding_config);
               loaded_variable_promise.Set(std::move(variable_array));
             });
       });

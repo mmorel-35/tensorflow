@@ -21,6 +21,7 @@ limitations under the License.
 #include "absl/status/status.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
+#include "absl/synchronization/notification.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/notification.h"
 #include "tensorflow/core/lib/core/threadpool.h"
@@ -33,8 +34,8 @@ namespace {
 
 TEST(TestReffedStatusCallback, CallsBackOK) {
   bool called = false;
-  Status status = absl::InvalidArgumentError("");
-  auto done = [&called, &status](const Status& s) {
+  absl::Status status = absl::InvalidArgumentError("");
+  auto done = [&called, &status](const absl::Status& s) {
     called = true;
     status = s;
   };
@@ -47,8 +48,8 @@ TEST(TestReffedStatusCallback, CallsBackOK) {
 
 TEST(TestReffedStatusCallback, CallsBackFail) {
   bool called = false;
-  Status status = absl::OkStatus();
-  auto done = [&called, &status](const Status& s) {
+  absl::Status status = absl::OkStatus();
+  auto done = [&called, &status](const absl::Status& s) {
     called = true;
     status = s;
   };
@@ -68,8 +69,8 @@ TEST(TestReffedStatusCallback, CallsBackFail) {
 
 TEST(TestReffedStatusCallback, RefMulti) {
   int called = false;
-  Status status = absl::OkStatus();
-  auto done = [&called, &status](const Status& s) {
+  absl::Status status = absl::OkStatus();
+  auto done = [&called, &status](const absl::Status& s) {
     called = true;
     status = s;
   };
@@ -90,10 +91,10 @@ TEST(TestReffedStatusCallback, RefMulti) {
 
 TEST(TestReffedStatusCallback, MultiThreaded) {
   std::atomic<int> num_called(0);
-  Status status;
-  Notification n;
+  absl::Status status;
+  absl::Notification n;
 
-  auto done = [&num_called, &status, &n](const Status& s) {
+  auto done = [&num_called, &status, &n](const absl::Status& s) {
     ++num_called;
     status = s;
     n.Notify();

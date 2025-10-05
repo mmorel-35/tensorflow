@@ -13,18 +13,37 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <memory>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include <gtest/gtest.h>
+#include "absl/memory/memory.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/string_view.h"
+#include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Target/TargetMachine.h"
+#include "llvm/TargetParser/Triple.h"
+#include "xla/backends/cpu/codegen/target_machine_features.h"
+#include "xla/hlo/ir/hlo_module.h"
+#include "xla/hlo/ir/hlo_module_group.h"
+#include "xla/hlo/testlib/hlo_hardware_independent_test_base.h"
+#include "xla/hlo/testlib/test.h"
+#include "xla/service/compiler.h"
 #include "xla/service/cpu/cpu_compiler.h"
 #include "xla/service/cpu/test_target_triple_helper.h"
-#include "xla/test.h"
-#include "xla/tests/hlo_test_base.h"
+#include "xla/util.h"
+#include "tsl/platform/statusor.h"
 
 namespace xla {
 namespace {
-class CodegenReduceOnArchWithNoVectorRegisters : public HloTestBase {};
+class CodegenReduceOnArchWithNoVectorRegisters
+    : public HloHardwareIndependentTestBase {};
 
 absl::StatusOr<unsigned int> GetTargetVectorRegisterByteSize(
     std::string triple) {
@@ -46,9 +65,10 @@ absl::StatusOr<unsigned int> GetTargetVectorRegisterByteSize(
 
   std::unique_ptr<llvm::TargetMachine> target_machine =
       absl::WrapUnique(target->createTargetMachine(
-          /*TT=*/triple, /*CPU=*/"", /*Features=*/"", llvm::TargetOptions{},
+          /*TT=*/llvm::Triple(triple), /*CPU=*/"", /*Features=*/"",
+          llvm::TargetOptions{},
           /*RM=*/std::nullopt));
-  cpu::LLVMTargetMachineFeatures target_machine_features(target_machine.get());
+  cpu::TargetMachineFeatures target_machine_features(target_machine.get());
   return target_machine_features.vector_register_byte_size(*function);
 }
 
@@ -72,8 +92,7 @@ ENTRY main {
   TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> hlo_module,
                           ParseAndReturnVerifiedModule(text));
   cpu::CpuCompiler cpu_compiler;
-  auto module_group = std::make_unique<HloModuleGroup>("group");
-  module_group->push_back(std::move(hlo_module));
+  auto module_group = std::make_unique<HloModuleGroup>(std::move(hlo_module));
 
   // Check that the GetTargetVectorRegisterByteSize is itself working.
   TF_ASSERT_OK_AND_ASSIGN(

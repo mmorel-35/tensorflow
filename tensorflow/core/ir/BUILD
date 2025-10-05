@@ -1,4 +1,5 @@
 load("@llvm-project//mlir:tblgen.bzl", "gentbl_cc_library", "td_library")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("//tensorflow:tensorflow.bzl", "tf_cc_test")
 load("//tensorflow:tensorflow.default.bzl", "get_compatible_with_portable")
 
@@ -23,16 +24,10 @@ td_library(
 
 gentbl_cc_library(
     name = "InterfacesIncGen",
-    tbl_outs = [
-        (
-            ["-gen-op-interface-decls"],
-            "interfaces.h.inc",
-        ),
-        (
-            ["-gen-op-interface-defs"],
-            "interfaces.cc.inc",
-        ),
-    ],
+    tbl_outs = {
+        "interfaces.h.inc": ["-gen-op-interface-decls"],
+        "interfaces.cc.inc": ["-gen-op-interface-defs"],
+    },
     tblgen = "@llvm-project//mlir:mlir-tblgen",
     td_file = "interfaces.td",
     deps = [
@@ -59,56 +54,38 @@ td_library(
 
 gentbl_cc_library(
     name = "DialectIncGen",
-    tbl_outs = [
-        (
-            [
-                "-gen-op-decls",
-                "-dialect",
-                "tfg",
-            ],
-            "ops.h.inc",
-        ),
-        (
-            [
-                "-gen-op-defs",
-                "-dialect",
-                "tfg",
-            ],
-            "ops.cc.inc",
-        ),
-        (
-            [
-                "-gen-dialect-decls",
-                "-dialect",
-                "tfg",
-            ],
-            "dialect.h.inc",
-        ),
-        (
-            [
-                "-gen-dialect-defs",
-                "-dialect",
-                "tfg",
-            ],
-            "dialect.cc.inc",
-        ),
-        (
-            [
-                "-gen-attrdef-decls",
-                "-attrdefs-dialect",
-                "tfg",
-            ],
-            "attributes.h.inc",
-        ),
-        (
-            [
-                "-gen-attrdef-defs",
-                "-attrdefs-dialect",
-                "tfg",
-            ],
-            "attributes.cc.inc",
-        ),
-    ],
+    tbl_outs = {
+        "ops.h.inc": [
+            "-gen-op-decls",
+            "-dialect",
+            "tfg",
+        ],
+        "ops.cc.inc": [
+            "-gen-op-defs",
+            "-dialect",
+            "tfg",
+        ],
+        "dialect.h.inc": [
+            "-gen-dialect-decls",
+            "-dialect",
+            "tfg",
+        ],
+        "dialect.cc.inc": [
+            "-gen-dialect-defs",
+            "-dialect",
+            "tfg",
+        ],
+        "attributes.h.inc": [
+            "-gen-attrdef-decls",
+            "-attrdefs-dialect",
+            "tfg",
+        ],
+        "attributes.cc.inc": [
+            "-gen-attrdef-defs",
+            "-attrdefs-dialect",
+            "tfg",
+        ],
+    },
     tblgen = "@llvm-project//mlir:mlir-tblgen",
     td_file = "ops.td",
     deps = [
@@ -145,6 +122,7 @@ cc_library(
         "@llvm-project//mlir:FunctionInterfaces",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:InferTypeOpInterface",
+        "@llvm-project//mlir:QuantOps",
         "@llvm-project//mlir:SideEffectInterfaces",
         "@llvm-project//mlir:Support",
     ],
@@ -157,6 +135,8 @@ cc_library(
     deps = [
         ":Dialect",
         "//tensorflow/core:framework",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Support",
     ],
 )
 
@@ -173,9 +153,12 @@ cc_library(
         "//tensorflow/core/ir/importexport:graphdef_export",
         "//tensorflow/core/ir/types:Dialect",
         "//tensorflow/core/platform:logging",
-        "//tensorflow/core/platform:types",
+        "//tensorflow/core/platform:status",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:DerivedAttributeOpInterface",
+        "@llvm-project//mlir:FunctionInterfaces",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:InferTypeOpInterface",
         "@llvm-project//mlir:Support",
@@ -222,7 +205,11 @@ tf_cc_test(
         "//tensorflow/core:ops",
         "//tensorflow/core:test",
         "//tensorflow/core:test_main",
+        "//tensorflow/core/platform:errors",
+        "@com_google_absl//absl/status",
+        "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:InferTypeOpInterface",
         "@llvm-project//mlir:Parser",
         "@llvm-project//mlir:Support",
     ],
@@ -268,5 +255,6 @@ tf_cc_test(
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Parser",
+        "@llvm-project//mlir:Support",
     ],
 )

@@ -15,15 +15,14 @@ limitations under the License.
 
 #include <optional>
 
-#include "xla/client/xla_computation.h"
 #include "xla/execution_options_util.h"
-#include "xla/service/despecializer.h"
-#include "xla/service/float_normalization.h"
+#include "xla/hlo/builder/xla_computation.h"
+#include "xla/hlo/testlib/test.h"
+#include "xla/hlo/transforms/despecializer.h"
+#include "xla/hlo/transforms/simplifiers/float_normalization.h"
 #include "xla/status_macros.h"
-#include "xla/test.h"
 #include "xla/tests/client_library_test_base.h"
 #include "xla/tests/hlo_test_base.h"
-#include "xla/tests/test_macros.h"
 
 namespace xla {
 namespace {
@@ -167,15 +166,10 @@ std::string BuildHloTextBatchGroupedConvolution2D(
       spec.window_dilation, spec.window_dilation, spec.output_batch);
 }
 
-XLA_TEST_P(BatchGroupedConvolution2DTest, DoIt) {
+TEST_P(BatchGroupedConvolution2DTest, DoIt) {
   const BatchGroupedConvolution2DSpec& spec = ::testing::get<0>(GetParam());
   bool use_bfloat16 = ::testing::get<1>(GetParam());
 
-#ifdef XLA_BACKEND_DOES_NOT_SUPPORT_BFLOAT16
-  if (use_bfloat16) {
-    return;
-  }
-#endif
 
   const std::string hlo_text = BuildHloTextBatchGroupedConvolution2D(
       spec, use_bfloat16, /*scheduled=*/false);
@@ -199,7 +193,7 @@ INSTANTIATE_TEST_CASE_P(
         ::testing::Bool()),
     BatchGroupedConvolution2DTestDataToString);
 
-XLA_TEST_F(HloTestBase, OutpuChannelsSmallerThanBatch) {
+TEST_F(HloTestBase, OutputChannelsSmallerThanBatch) {
   const std::string& hlo_string = R"(
 HloModule main, entry_computation_layout={(bf16[4,4,4,1]{3,2,1,0},bf16[2,2,1,2]{3,2,1,0})->bf16[2,2,2,2]{3,2,1,0}}
 
@@ -209,6 +203,45 @@ ENTRY %main.4 (Arg_0.1: bf16[4,4,4,1], Arg_1.2: bf16[2,2,1,2]) -> bf16[2,2,2,2] 
   ROOT %convolution.3 = bf16[2,2,2,2] convolution(bf16[4,4,4,1] %Arg_0.1, bf16[2,2,1,2] %Arg_1.2), window={size=2x2 stride=2x2}, dim_labels=b01f_01io->b01f, batch_group_count=2
 }
   )";
+  EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{0.01, 0.01}));
+}
+
+TEST_F(HloTestBase, DepthwiseBatchDot) {
+  const std::string hlo_string = R"(
+HloModule main, entry_computation_layout={(f32[16,3,3,64]{3,0,2,1},f32[16,2,3,64]{3,0,2,1})->f32[4,3,64,1]{2,3,1,0}}
+
+ENTRY main {
+  p0 = f32[16,3,3,64] parameter(0)
+  p1 = f32[16,2,3,64] parameter(1)
+  ROOT conv.1 = convolution(p0, p1), window={size=2x3 pad=1_1x0_0 lhs_dilate=1x3 rhs_dilate=1x2}, dim_labels=f01b_i01o->01fb, batch_group_count=64
+}
+)";
+  EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{0.01, 0.01}));
+}
+
+TEST_F(HloTestBase, DepthwiseOuterDot) {
+  const std::string hlo_string = R"(
+HloModule main, entry_computation_layout={(f32[16,3,1,64]{3,0,2,1},f32[16,2,3,64]{3,0,2,1})->f32[4,3,64,1]{2,3,1,0}}
+
+ENTRY main {
+  p0 = f32[16,3,1,64] parameter(0)
+  p1 = f32[16,2,3,64] parameter(1)
+  ROOT conv.1 = convolution(p0, p1), window={size=2x3 pad=1_1x2_2 lhs_dilate=1x1 rhs_dilate=1x1}, dim_labels=f01b_i01o->01fb, batch_group_count=64
+}
+)";
+  EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{0.01, 0.01}));
+}
+
+TEST_F(HloTestBase, DepthwiseBatchOuterDot) {
+  const std::string hlo_string = R"(
+HloModule main, entry_computation_layout={(f32[8,30,1,64,5]{3,0,2,1,4},f32[8,30,30,64,3]{3,0,2,1,4})->f32[30,30,64,1,11]{2,3,1,0,4}}
+
+ENTRY main {
+  p0 = f32[8,30,1,64,5] parameter(0)
+  p1 = f32[8,30,30,64,3] parameter(1)
+  ROOT conv.1 = convolution(p0, p1), window={size=30x30x3 pad=0_0x29_29x0_0 lhs_dilate=30x1x3 rhs_dilate=29x1x1}, dim_labels=f01b2_i01o2->01fb2, batch_group_count=64
+}
+)";
   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{0.01, 0.01}));
 }
 

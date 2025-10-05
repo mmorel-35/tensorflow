@@ -327,6 +327,7 @@ proto::EdgeTpuSettings ConvertEdgeTpuSettings(const EdgeTpuSettings& settings) {
       proto_config->set_inactive_timeout_us(config->inactive_timeout_us());
     }
   }
+  proto_settings.set_use_tpu_server(settings.use_tpu_server());
 
   return proto_settings;
 }
@@ -468,6 +469,10 @@ proto::MtkNeuronSettings ConvertMtkNeuronSettings(
   if (settings.neuron_config_path()) {
     proto_settings.set_neuron_config_path(settings.neuron_config_path()->str());
   }
+
+  proto_settings.set_inference_deadline_ms(settings.inference_deadline_ms());
+  proto_settings.set_inference_abort_time_ms(
+      settings.inference_abort_time_ms());
 
   return proto_settings;
 }

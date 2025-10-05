@@ -20,26 +20,68 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include <gtest/gtest.h>
 #include "absl/log/check.h"
 #include "absl/strings/ascii.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/strings/substitute.h"
-#include "Eigen/Core"  // from @eigen_archive
+#include "Eigen/Core"
 #include "xla/error_spec.h"
+#include "xla/hlo/ir/hlo_instruction.h"
+#include "xla/hlo/ir/hlo_module.h"
+#include "xla/hlo/ir/hlo_opcode.h"
+#include "xla/layout.h"
+#include "xla/layout_util.h"
 #include "xla/literal.h"
 #include "xla/literal_util.h"
 #include "xla/primitive_util.h"
 #include "xla/service/gpu/tests/gpu_codegen_test.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
+#include "xla/tsl/platform/statusor.h"
 #include "xla/types.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/platform/statusor.h"
 
 namespace xla {
 namespace gpu {
 namespace {
+
+class TypeSupportTest : public GpuCodegenTest,
+                        public ::testing::WithParamInterface<PrimitiveType> {};
+
+TEST_P(TypeSupportTest, SortSupportsType) {
+  constexpr char kHloTemplate[] = R"(
+compare {
+p.0.lhs = $0[] parameter(0)
+p.0.rhs = $0[] parameter(1)
+ROOT lt = pred[] compare(p.0.lhs, p.0.rhs), direction=LT
+}
+
+ENTRY test {
+p0 = $0[32]{0} parameter(0)
+ROOT sort = $0[32]{0} sort(p0), dimensions={0}, is_stable=true,
+to_apply=compare
+})";
+  std::string hlo = absl::Substitute(
+      kHloTemplate, primitive_util::LowercasePrimitiveTypeName(GetParam()));
+  EXPECT_TRUE(RunAndCompare(hlo, ErrorSpec{0, 0}));
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    , TypeSupportTest,
+    // 4bit types like U4, S4, or F4E2M1FN are currently not supported.
+    // F8E8M0FNU cannot represent NaNs and fails the test below.
+    ::testing::ValuesIn({
+        PRED,                               // boolean
+        S8,         S16,    S32,      S64,  // signed
+        U8,         U16,    U32,      U64,  // unsigned
+        F8E5M2,     F8E4M3, F8E4M3FN, F8E4M3B11FNUZ, F8E3M4, F8E5M2FNUZ,
+        F8E4M3FNUZ, F16,    BF16,     F32,           F64  // floating point
+    }),
+    [](const ::testing::TestParamInfo<TypeSupportTest::ParamType>& info) {
+      return primitive_util::LowercasePrimitiveTypeName(info.param);
+    });
 
 class SortingTest : public GpuCodegenTest {
  protected:
@@ -56,15 +98,66 @@ compare {
   ROOT lt = pred[] compare(p.0.lhs, p.0.rhs), direction=LT
 }
 
+
 ENTRY TestComputation {
   x = f32[3, 2]{1, 0} parameter(0)
-  x.copy = f32[3, 2]{0, 1} copy(x)
-  ROOT sort = f32[3, 2]{0, 1} sort(x.copy), dimensions={1}, to_apply=compare
+  tr = f32[2, 3]{1, 0} transpose(x), dimensions={1,0}
+  b = f32[3, 2]{0, 1} bitcast(tr)
+  ROOT sort = f32[3, 2]{0, 1} sort(b), dimensions={1}, to_apply=compare
 }
 
 )";
 
   EXPECT_TRUE(RunAndCompareNoHloPasses(hlo_text, ErrorSpec{1e-5, 1e-5}));
+}
+
+// Test that verifies the IgnoreMemorySpace option works correctly
+TEST_F(SortingTest, LayoutsInShapesEqualWithIgnoreMemorySpace) {
+  const char* hlo_text = R"(
+HloModule TestModule
+
+compare {
+  p.0.lhs = f32[] parameter(0)
+  p.0.rhs = f32[] parameter(1)
+  p.1.lhs = f32[] parameter(2)
+  p.1.rhs = f32[] parameter(3)
+  ROOT lt = pred[] compare(p.0.lhs, p.0.rhs), direction=LT
+}
+
+ENTRY TestComputation {
+  data = f32[6] parameter(0)
+
+  // Create two copies in different memory spaces
+  keys = f32[6] copy(data)
+  values = f32[6] copy(data)
+
+  // Sort operation with operands in different memory spaces
+  ROOT sort = (f32[6], f32[6]) sort(keys, values), dimensions={0}, to_apply=compare
+}
+)";
+
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
+                          ParseAndReturnVerifiedModule(hlo_text));
+
+  HloInstruction* values =
+      module->entry_computation()->GetInstructionWithName("values");
+  Shape values_shape = values->shape();
+  values_shape.mutable_layout()->set_memory_space(1);
+  *values->mutable_shape() = values_shape;
+
+  const HloInstruction* sort = module->entry_computation()->root_instruction();
+  EXPECT_EQ(sort->opcode(), HloOpcode::kSort);
+
+  const HloInstruction* keys = sort->operand(0);
+
+  EXPECT_FALSE(
+      LayoutUtil::LayoutsInShapesEqual(keys->shape(), values->shape()));
+  EXPECT_TRUE(LayoutUtil::LayoutsInShapesEqual(
+      keys->shape(), values->shape(), Layout::Equal().IgnoreMemorySpace()));
+
+  auto literal = LiteralUtil::CreateR1<float>({1.0, 6.0, 7.0, 0.0, 2.0, 5.0});
+  absl::StatusOr<Literal> executed = Execute(std::move(module), {&literal});
+  EXPECT_TRUE(executed.ok()) << executed.status().message();
 }
 
 // Size of the radix sort tests.
@@ -122,7 +215,7 @@ ENTRY %main {
 
   TF_ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnVerifiedModule(hlo));
   std::vector<Literal*> literals = {std::get<0>(GetParam()).get()};
-  auto result = ExecuteAndTransfer(std::move(module), literals);
+  TF_ASSERT_OK_AND_ASSIGN(Literal result, Execute(std::move(module), literals));
 
   bool has_diff = false;
   for (int i = 1; i < kRadixSortTestSize; ++i) {
@@ -138,6 +231,18 @@ class CubSortPairsTest
           std::tuple<std::shared_ptr<Literal>, PrimitiveType, bool>> {};
 
 TEST_P(CubSortPairsTest, SortPairs) {
+  // TODO(b/380814507): Remove the disabling part once fixed.
+  auto cc = backend()
+                .default_stream_executor()
+                ->GetDeviceDescription()
+                .cuda_compute_capability();
+  if (cc.IsAtLeastHopper() &&
+      std::get<0>(GetParam())->shape().element_type() == U16 &&
+      std::get<1>(GetParam()) == F64) {
+    GTEST_SKIP()
+        << "CUB sort does not work for pair sorting (U16, F64) on Hopper.";
+  }
+
   constexpr char kHloTemplate[] = R"(
 HloModule TestModule
 
@@ -160,8 +265,9 @@ ENTRY %main {
 
   TF_ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnVerifiedModule(hlo));
   std::vector<Literal*> literals = {std::get<0>(GetParam()).get()};
-  auto result_tuple = ExecuteAndTransfer(std::move(module), literals);
-  std::vector<Literal> result = result_tuple.DecomposeTuple();
+  TF_ASSERT_OK_AND_ASSIGN(Literal result_tuple,
+                          Execute(std::move(module), literals));
+  std::vector<Literal> result = std::move(result_tuple).DecomposeTuple();
 
   bool has_diff = false;
   for (int i = 1; i < kRadixSortTestSize; ++i) {

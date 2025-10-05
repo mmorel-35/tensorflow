@@ -23,12 +23,7 @@ limitations under the License.
 // 3. insert tosa.RESCALE int8 -> uint8 if original returned tensor is uint8
 // typed.
 
-#include <climits>
-#include <cstddef>
-#include <cstdint>
-#include <iterator>
 #include <memory>
-#include <numeric>
 #include <utility>
 
 #include "mlir/Dialect/Tosa/IR/TosaOps.h"  // from @llvm-project
@@ -113,7 +108,7 @@ class GenericTypeConvert : public ConversionPattern {
       TypeConverter::SignatureConversion result(newRegion->getNumArguments());
       (void)getTypeConverter()->convertSignatureArgs(
           newRegion->getArgumentTypes(), result);
-      rewriter.applySignatureConversion(newRegion, result);
+      rewriter.applySignatureConversion(&newRegion->front(), result);
     }
     Operation* newOp = rewriter.create(state);
     rewriter.replaceOp(op, newOp->getResults());

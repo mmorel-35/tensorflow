@@ -20,47 +20,44 @@ limitations under the License.
 #include <string>
 #include <utility>
 
+#include "xla/tests/xla_test_backend_predicates.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_replace.h"
+#include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "xla/client/xla_builder.h"
 #include "xla/error_spec.h"
+#include "xla/hlo/builder/xla_builder.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/hlo/ir/hlo_opcode.h"
+#include "xla/hlo/parser/hlo_parser.h"
+#include "xla/hlo/testlib/pattern_matcher_gmock.h"
+#include "xla/hlo/testlib/test.h"
+#include "xla/hlo/testlib/test_helpers.h"
+#include "xla/hlo/transforms/simplifiers/algebraic_simplifier.h"
+#include "xla/hlo/transforms/simplifiers/dynamic_dimension_simplifier.h"
+#include "xla/hlo/transforms/simplifiers/hlo_dce.h"
+#include "xla/hlo/transforms/simplifiers/tuple_simplifier.h"
 #include "xla/hlo/utils/hlo_matchers.h"
 #include "xla/literal.h"
 #include "xla/literal_util.h"
-#include "xla/service/algebraic_simplifier.h"
 #include "xla/service/dynamic_dimension_inference.h"
-#include "xla/service/dynamic_dimension_simplifier.h"
-#include "xla/service/hlo_dce.h"
-#include "xla/service/hlo_parser.h"
 #include "xla/service/pattern_matcher.h"
-#include "xla/service/pattern_matcher_gmock.h"
-#include "xla/service/tuple_simplifier.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
-#include "xla/status_macros.h"
-#include "xla/statusor.h"
-#include "xla/test.h"
-#include "xla/test_helpers.h"
-#include "xla/tests/client_library_test_base.h"
 #include "xla/tests/hlo_test_base.h"
-#include "xla/tests/literal_test_util.h"
 #include "xla/tests/llvm_irgen_test_base.h"
-#include "xla/tests/test_macros.h"
+#include "xla/tsl/lib/core/status_test_util.h"
+#include "xla/tsl/platform/errors.h"
+#include "xla/tsl/platform/status.h"
+#include "xla/tsl/platform/statusor.h"
+#include "xla/tsl/protobuf/error_codes.pb.h"
 #include "xla/util.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/lib/core/status_test_util.h"
-#include "tsl/platform/errors.h"
-#include "tsl/platform/status.h"
-#include "tsl/platform/statusor.h"
-#include "tsl/platform/test_benchmark.h"
-#include "tsl/protobuf/error_codes.pb.h"
 
 namespace xla {
 namespace {
@@ -78,7 +75,7 @@ OpDynamismSupport OpHasDynamismSupport(HloInstruction* hlo) {
   return OpDynamismSupport::kNoSupport;
 }
 
-absl::Status CustomCallDynamicDimensionInference(
+bool CustomCallDynamicDimensionInference(
     HloInstruction* hlo, DynamicDimensionInference* inferencer) {
   if (hlo->custom_call_target() == "OpWithDynamicLowering") {
     if (hlo->shape().IsTuple()) {
@@ -86,15 +83,17 @@ absl::Status CustomCallDynamicDimensionInference(
       HloInstruction* dynamic_size =
           inferencer->GetDynamicSize(hlo->mutable_operand(0), {1}, 0);
       inferencer->SetDynamicSize(hlo, {1}, 0, dynamic_size);
+      return true;
     } else {
       // Use the operand's dynamic size as output dynamic size.
       HloInstruction* dynamic_size =
           inferencer->GetDynamicSize(hlo->mutable_operand(0), {}, 0);
       inferencer->SetDynamicSize(hlo, {}, 0, dynamic_size);
+      return true;
     }
   }
 
-  return absl::OkStatus();
+  return false;
 }
 
 class DynamicPadderTest : public HloTestBase {
@@ -156,7 +155,10 @@ class MemoryAlignmentTest : public HloTestBase {};
 // Test that dynamic padder will not cause memory misalignment in CUDA
 // when the read or write address is not aligned with 32 bits.
 // TODO(b/203599920): Disabled on CPU due to ASAN test failure.
-TEST_F(MemoryAlignmentTest, DISABLED_ON_CPU(TestDataTypeFP16)) {
+TEST_F(MemoryAlignmentTest, TestDataTypeFP16) {
+  if (test::DeviceIs(test::kCpu)) {
+    GTEST_SKIP();
+  }
   const std::string hlo_text = R"(
     HloModule TestDataTypeFP16
 
@@ -351,7 +353,7 @@ ENTRY main {
 
   TF_ASSERT_OK(RunPadder(/*slice_dynamic_output=*/true).status());
   TF_ASSERT_OK(TupleSimplifier().Run(module_.get()).status());
-  XLA_LOG_LINES(0, module_->ToString());
+  XLA_LOG_LINES(INFO, module_->ToString());
 
   auto* root = module_->entry_computation()->root_instruction();
   EXPECT_THAT(root, op::Tuple(op::Constant(), op::Tuple()));
@@ -587,7 +589,7 @@ ENTRY main {
   module_ = GetHloModule(hlo_text);
 
   TF_ASSERT_OK(RunPadder(/*slice_dynamic_output=*/true).status());
-  XLA_LOG_LINES(0, module_->ToString());
+  XLA_LOG_LINES(INFO, module_->ToString());
   auto* root = module_->entry_computation()->root_instruction();
   EXPECT_EQ(root->shape(), ShapeUtil::MakeShape(F32, {32, 216}, {true, false}));
   // Find the while loop and ensure that the dynamic dimension size was added to
@@ -689,7 +691,7 @@ ENTRY main {
   };
   auto custom_call_handler = [](HloInstruction* hlo,
                                 DynamicDimensionInference* inference) {
-    return absl::OkStatus();
+    return false;
   };
   TF_ASSERT_OK(
       RunPadder(
@@ -697,7 +699,7 @@ ENTRY main {
           /*op_supports_dynamism_handler=*/std::move(op_supports_dynamism),
           /*custom_call_handler=*/std::move(custom_call_handler))
           .status());
-  XLA_LOG_LINES(1, module_->ToString());
+  XLA_VLOG_LINES(1, module_->ToString());
 
   for (HloComputation* computation : module_->computations()) {
     for (HloInstruction* instruction : computation->instructions()) {
@@ -751,9 +753,9 @@ class ExecutionTest : public HloTestBase {
         ParseAndReturnVerifiedModule(hlo_text).value();
     return module;
   }
-  Literal PadAndExecute(std::unique_ptr<HloModule> module,
-                        absl::Span<Literal* const> arguments,
-                        bool slice_dynamic_output = true) {
+  absl::StatusOr<Literal> PadAndExecute(std::unique_ptr<HloModule> module,
+                                        absl::Span<Literal* const> arguments,
+                                        bool slice_dynamic_output = true) {
     if (!slice_dynamic_output) {
       auto new_config = module->config();
       new_config.mutable_entry_computation_layout()
@@ -767,11 +769,11 @@ class ExecutionTest : public HloTestBase {
     TF_CHECK_OK(padder.Run(module.get()).status());
     HloDCE dce;
     TF_CHECK_OK(dce.Run(module.get()).status());
-    return ExecuteAndTransfer(std::move(module), arguments);
+    return Execute(std::move(module), {arguments});
   }
 };
 
-XLA_TEST_F(ExecutionTest, ScatterUpdate) {
+TEST_F(ExecutionTest, ScatterUpdate) {
   // Test that scattering on indices=[2] is same as scattering on indices=[4]
   // and dynamic dimension = 2
   const std::string hlo_text = R"(
@@ -809,9 +811,10 @@ ENTRY main {
       LiteralUtil::CreateR2<int32_t>({{10, 20, 30}, {70, 80, 90}});
   Literal dynamic_size = LiteralUtil::CreateR0<int32_t>(2);
 
-  Literal not_padded =
-      ExecuteAndTransfer(std::move(module_not_padded),
-                         {&operand, &scatter_indices, &updates, &dynamic_size});
+  TF_ASSERT_OK_AND_ASSIGN(
+      Literal not_padded,
+      Execute(std::move(module_not_padded),
+              {&operand, &scatter_indices, &updates, &dynamic_size}));
 
   // Pad input to 4.
   const std::string hlo_text_padded =
@@ -823,14 +826,15 @@ ENTRY main {
       {{10, 20, 30}, {70, 80, 90}, {30, 22, 11}, {-1, 20, -1}});
   DynamicPadder padder;
   TF_CHECK_OK(padder.Run(module_padded.get()).status());
-  Literal padded = PadAndExecute(
-      std::move(module_padded),
-      {&operand, &scatter_indices_padded, &updates_padded, &dynamic_size});
+  TF_ASSERT_OK_AND_ASSIGN(Literal padded,
+                          PadAndExecute(std::move(module_padded),
+                                        {&operand, &scatter_indices_padded,
+                                         &updates_padded, &dynamic_size}));
 
   EXPECT_EQ(padded, not_padded);
 }
 
-XLA_TEST_F(ExecutionTest, ScatterUpdateWindowDim) {
+TEST_F(ExecutionTest, ScatterUpdateWindowDim) {
   const std::string hlo_text = R"(
 HloModule ScatterUpdateWindowDim
 
@@ -864,14 +868,16 @@ ENTRY main {
   Literal updates =
       LiteralUtil::CreateR3<int32_t>({{{10}, {20}, {30}}, {{70}, {80}, {90}}});
 
-  Literal padded = PadAndExecute(std::move(hlo_module),
-                                 {&operand, &scatter_indices, &updates}, false);
+  TF_ASSERT_OK_AND_ASSIGN(
+      Literal padded,
+      PadAndExecute(std::move(hlo_module),
+                    {&operand, &scatter_indices, &updates}, false));
   Literal expected =
       LiteralUtil::CreateR3<int32_t>({{{10, 20, 30}, {70, 80, 90}}});
   EXPECT_EQ(padded, expected);
 }
 
-XLA_TEST_F(ExecutionTest, ScatterUpdateF32) {
+TEST_F(ExecutionTest, ScatterUpdateF32) {
   // Test that scattering on indices=[2] is same as scattering on indices=[4]
   // and dynamic dimension = 2
   const std::string hlo_text = R"(
@@ -912,9 +918,10 @@ ENTRY main {
   auto module_padded = GetHloModule(hlo_text);
   DynamicPadder padder;
   TF_CHECK_OK(padder.Run(module_padded.get()).status());
-  Literal not_padded =
+  TF_ASSERT_OK_AND_ASSIGN(
+      Literal not_padded,
       PadAndExecute(std::move(module_padded),
-                    {&operand, &scatter_indices, &updates, &dynamic_size});
+                    {&operand, &scatter_indices, &updates, &dynamic_size}));
   // Although we have two indices, only the first element is updated because of
   // padding.
   EXPECT_EQ(LiteralUtil::CreateR2<float>(
@@ -922,7 +929,7 @@ ENTRY main {
             not_padded);
 }
 
-XLA_TEST_F(ExecutionTest, WholeDimensionGather) {
+TEST_F(ExecutionTest, WholeDimensionGather) {
   // Second dimension (size 2) is dynamic, assuming real size is 1 and padded to
   // 2:
   //
@@ -967,7 +974,8 @@ ENTRY main {
   auto module = GetHloModule(hlo_text);
   DynamicPadder padder;
   TF_CHECK_OK(padder.Run(module.get()).status());
-  Literal result = PadAndExecute(std::move(module), {&operand});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}));
 
   // Only first element will be reduced.
   Literal expected = LiteralUtil::CreateR0<int32_t>(3);
@@ -975,7 +983,7 @@ ENTRY main {
   EXPECT_EQ(result, expected);
 }
 
-XLA_TEST_F(ExecutionTest, TwoDimensionReduce) {
+TEST_F(ExecutionTest, TwoDimensionReduce) {
   // Test that reducing on operand=[2,2] is same as reducing on operand=[4,4]
   // and dynamic dimension = 2
   const std::string hlo_text = R"(
@@ -1005,8 +1013,9 @@ ENTRY main {
   Literal operand = LiteralUtil::CreateR2<int32_t>({{1, 2}, {4, 5}});
   Literal dynamic_size = LiteralUtil::CreateR0<int32_t>(2);
 
-  Literal not_padded = ExecuteAndTransfer(std::move(module_not_padded),
-                                          {&operand, &dynamic_size});
+  TF_ASSERT_OK_AND_ASSIGN(
+      Literal not_padded,
+      Execute(std::move(module_not_padded), {&operand, &dynamic_size}));
 
   // Pad input to 4.
   const std::string hlo_text_padded =
@@ -1017,13 +1026,14 @@ ENTRY main {
       {{1, 2, 3, 4}, {4, 5, 6, 7}, {1, 2, 3, 4}, {4, 5, 6, 7}});
   DynamicPadder padder;
   TF_CHECK_OK(padder.Run(module_padded.get()).status());
-  Literal padded =
-      PadAndExecute(std::move(module_padded), {&operand_padded, &dynamic_size});
+  TF_ASSERT_OK_AND_ASSIGN(Literal padded,
+                          PadAndExecute(std::move(module_padded),
+                                        {&operand_padded, &dynamic_size}));
 
   EXPECT_EQ(padded, not_padded);
 }
 
-XLA_TEST_F(ExecutionTest, DynamicDimensionClamp) {
+TEST_F(ExecutionTest, DynamicDimensionClamp) {
   const std::string hlo_text = R"(
 HloModule TensorFlowTenaryV1
 
@@ -1049,7 +1059,8 @@ ENTRY main {
   Literal operand = LiteralUtil::CreateR1<int32_t>({1, 2, 3, 4, 5});
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}));
 
   // only first 3 elements will be reduced.
   Literal expected = LiteralUtil::CreateR0<int32_t>(6);
@@ -1057,7 +1068,7 @@ ENTRY main {
   EXPECT_EQ(result, expected);
 }
 
-XLA_TEST_F(ExecutionTest, DynamicConcat) {
+TEST_F(ExecutionTest, DynamicConcat) {
   // Concatting a list of {dynamic_operand, static_operand, dynamic_operand}.
   const std::string hlo_text = R"(
 HloModule DynamicConcat
@@ -1084,15 +1095,17 @@ ENTRY main {
       LiteralUtil::CreateR1<int32_t>({6, 7, -1});  // Dynamic operand.
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module),
-                                 {&operand_0, &operand_1, &operand_2}, false);
+  TF_ASSERT_OK_AND_ASSIGN(
+      Literal result,
+      PadAndExecute(std::move(module), {&operand_0, &operand_1, &operand_2},
+                    false));
   result.SetDynamicSize(0, 7);
   Literal expected = LiteralUtil::CreateR1<int32_t>({1, 2, 3, 4, 5, 6, 7});
 
   EXPECT_EQ(result, expected);
 }
 
-XLA_TEST_F(ExecutionTest, DynamicReverseSingleDim) {
+TEST_F(ExecutionTest, DynamicReverseSingleDim) {
   const std::string hlo_text = R"(
 HloModule DynamicConcat
 
@@ -1111,14 +1124,15 @@ ENTRY main {
       LiteralUtil::CreateR1<int32_t>({1, 2, -1});  // Dynamic operand.
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand_0}, false);
+  TF_ASSERT_OK_AND_ASSIGN(
+      Literal result, PadAndExecute(std::move(module), {&operand_0}, false));
   result.SetDynamicSize(0, 2);
   Literal expected = LiteralUtil::CreateR1<int32_t>({2, 1});
 
   EXPECT_EQ(result, expected);
 }
 
-XLA_TEST_F(ExecutionTest, DynamicReverseMultiDims) {
+TEST_F(ExecutionTest, DynamicReverseMultiDims) {
   const std::string hlo_text = R"(
 HloModule DynamicConcat
 
@@ -1139,7 +1153,8 @@ ENTRY main {
       {{1, 2, -1}, {3, 4, -1}, {-1, -1, -1}});  // Dynamic operand.
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand_0}, false);
+  TF_ASSERT_OK_AND_ASSIGN(
+      Literal result, PadAndExecute(std::move(module), {&operand_0}, false));
   result.SetDynamicSize(0, 2);
   result.SetDynamicSize(1, 2);
   Literal expected = LiteralUtil::CreateR2<int32_t>({{4, 3}, {2, 1}});
@@ -1147,7 +1162,7 @@ ENTRY main {
   EXPECT_EQ(result, expected);
 }
 
-XLA_TEST_F(ExecutionTest, DynamicDimensionReduce) {
+TEST_F(ExecutionTest, DynamicDimensionReduce) {
   const std::string hlo_text = R"(
 HloModule TensorFlowScatterV1
 
@@ -1172,7 +1187,8 @@ ENTRY main {
   Literal operand = LiteralUtil::CreateR1<int32_t>({1, 2, 3, 4, 5});
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}));
 
   // only first 3 elements will be reduced.
   Literal expected = LiteralUtil::CreateR0<int32_t>(6);
@@ -1180,7 +1196,7 @@ ENTRY main {
   EXPECT_EQ(result, expected);
 }
 
-XLA_TEST_F(ExecutionTest, InputMinorDimensionReshape) {
+TEST_F(ExecutionTest, InputMinorDimensionReshape) {
   const std::string hlo_text = R"(
 HloModule TensorFlowScatterV1
 
@@ -1207,7 +1223,8 @@ ENTRY main {
       {{{{1}, {2}, {3}, {4}, {5}}, {{2}, {4}, {6}, {7}, {8}}}});
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}));
 
   // Only the first 6 elements will be reduced.
   Literal expected = LiteralUtil::CreateR0<int32_t>(18);
@@ -1215,7 +1232,7 @@ ENTRY main {
   EXPECT_EQ(result, expected);
 }
 
-XLA_TEST_F(ExecutionTest, SliceSingleElement) {
+TEST_F(ExecutionTest, SliceSingleElement) {
   // Slicing out a single element is supported.
   const std::string hlo_text = R"(
 HloModule Slicing
@@ -1232,14 +1249,15 @@ ENTRY main {
   Literal operand = LiteralUtil::CreateR1<int32_t>({0, 1, 2, 3, 4});
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}));
 
   Literal expected = LiteralUtil::CreateR1<int32_t>({0});
 
   EXPECT_EQ(result, expected);
 }
 
-XLA_TEST_F(ExecutionTest, OutputMinorDimensionReshape) {
+TEST_F(ExecutionTest, OutputMinorDimensionReshape) {
   const std::string hlo_text = R"(
 HloModule TensorFlowScatterV1
 
@@ -1267,7 +1285,8 @@ ENTRY main {
       LiteralUtil::CreateR1<int32_t>({0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11});
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}));
 
   // After padding and reshape we have
   //
@@ -1286,7 +1305,7 @@ ENTRY main {
   EXPECT_EQ(result, expected);
 }
 
-XLA_TEST_F(ExecutionTest, OutputMinorDimensionReshapeWithUnchangedDimMajor) {
+TEST_F(ExecutionTest, OutputMinorDimensionReshapeWithUnchangedDimMajor) {
   const std::string hlo_text = R"(
 HloModule TensorFlowScatterV1
 
@@ -1314,7 +1333,8 @@ ENTRY main {
       {{0, 1, 2, 3, 4, 5}, {6, 7, 8, 9, 10, 11}});
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}));
 
   // After padding and reshape we have
   //
@@ -1331,7 +1351,7 @@ ENTRY main {
   EXPECT_EQ(result, expected);
 }
 
-XLA_TEST_F(ExecutionTest, OutputMinorDimensionReshapeWithUnchangedDimMinor) {
+TEST_F(ExecutionTest, OutputMinorDimensionReshapeWithUnchangedDimMinor) {
   const std::string hlo_text = R"(
 HloModule TensorFlowScatterV1
 
@@ -1359,7 +1379,8 @@ ENTRY main {
       {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {8, 9}, {10, 11}});
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}));
 
   // After padding and reshape we have
   //
@@ -1378,7 +1399,7 @@ ENTRY main {
   EXPECT_EQ(result, expected);
 }
 
-XLA_TEST_F(ExecutionTest, DynamicInputFeature) {
+TEST_F(ExecutionTest, DynamicInputFeature) {
   const std::string hlo_text = R"(
 HloModule DynamicInputFeature
 
@@ -1399,17 +1420,18 @@ ENTRY main {
   Literal operand = LiteralUtil::CreateR3<float>({{{1, 2, 3, 4, 5}}});
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}));
 
   Literal expected = LiteralUtil::CreateR3<float>({{{15}}});
 
   EXPECT_EQ(result, expected);
 }
 
-XLA_TEST_F(LlvmIrGenTestBase, LargeDynamicInput) {
-#ifndef XLA_TEST_BACKEND_GPU
-  GTEST_SKIP();
-#endif
+TEST_F(LlvmIrGenTestBase, LargeDynamicInput) {
+  if (!test::DeviceTypeIs(test::kGpu)) {
+    GTEST_SKIP();
+  }
   const std::string hlo_text = R"( // NOLINT: Will be executed for GPU.
 HloModule LargeDynamicInput
 
@@ -1425,14 +1447,19 @@ ENTRY main {
   ROOT out = reduce(param, zero), to_apply=add, dimensions={0,1,2,3,4,5,6,7}
 }
 )";
-
-  CompileAndVerifyIr(hlo_text, R"(
+  HloModuleConfig config;
+  auto debug_options = GetDebugOptionsForTest();
+  debug_options.set_xla_gpu_autotune_level(0);
+  config.set_debug_options(debug_options);
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
+                          ParseAndReturnVerifiedModule(hlo_text, config));
+  CompileAndVerifyIr(std::move(module), R"(
 CHECK: ret void
 )",
                      /*match_optimized_ir=*/true);
 }
 
-XLA_TEST_F(ExecutionTest, DynamicDimensionReshapeUnchanged) {
+TEST_F(ExecutionTest, DynamicDimensionReshapeUnchanged) {
   const std::string hlo_text = R"(
 HloModule TensorFlowScatterV1
 
@@ -1459,14 +1486,15 @@ ENTRY main {
       {{{{1}, {2}, {3}, {4}, {5}}, {{2}, {4}, {6}, {7}, {8}}}});
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}));
 
   Literal expected = LiteralUtil::CreateR1<int32_t>({6, 12});
 
   EXPECT_EQ(result, expected);
 }
 
-XLA_TEST_F(ExecutionTest, DegeneratedDimension) {
+TEST_F(ExecutionTest, DegeneratedDimension) {
   const std::string hlo_text = R"(
 HloModule TensorFlowScatterV1
 
@@ -1495,14 +1523,15 @@ ENTRY main {
       {{{{1}, {2}, {3}, {4}, {5}}, {{2}, {4}, {6}, {7}, {8}}}});
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}));
 
   Literal expected = LiteralUtil::CreateR0<int32_t>(0);
 
   EXPECT_EQ(result, expected);
 }
 
-XLA_TEST_F(ExecutionTest, ReshapeSplitCombineSameTime) {
+TEST_F(ExecutionTest, ReshapeSplitCombineSameTime) {
   // [<=4, 2, <=2]
   //       |
   //    Reshape
@@ -1547,7 +1576,8 @@ ENTRY main {
                                                     {{-1, -1}, {-1, -1}}});
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}));
 
   // Reshaping (with correct reshape rewriting) produces:
   // [[[0, 1, -1, -1], [-1, -1, -1, -1]], [[2, 3, -1, -1], [-1, -1, -1, -1]]]
@@ -1561,7 +1591,51 @@ ENTRY main {
   EXPECT_EQ(result, expected);
 }
 
-XLA_TEST_F(ExecutionTest, ReshapeComplicated) {
+TEST_F(ExecutionTest, DynamicDimensionReduceInCall) {
+  const std::string hlo_text = R"(
+HloModule TensorFlowScatterV1
+
+update_s32 (lhs: s32[], rhs: s32[]) -> s32[] {
+  lhs = s32[] parameter(0)
+  rhs = s32[] parameter(1)
+  ROOT add = s32[] add(lhs, rhs)
+}
+
+call_with_dynamic_dimension {
+  param = s32[<=5] parameter(0)
+  init = s32[] constant(0)
+  ROOT reduce = s32[] reduce(param, init),
+      dimensions={0},
+      to_apply=update_s32
+}
+
+ENTRY main {
+  param0 = s32[5] parameter(0)
+  param1 = s32[5] parameter(1)
+  const0 = s32[] constant(3)
+  const1 = s32[] constant(4)
+  param0_padded = s32[<=5] set-dimension-size(param0, const0), dimensions={0}
+  param1_padded = s32[<=5] set-dimension-size(param1, const1), dimensions={0}
+  reduced0 = s32[] call(param0_padded), to_apply=call_with_dynamic_dimension
+  reduced1 = s32[] call(param1_padded), to_apply=call_with_dynamic_dimension
+  ROOT add = s32[] add(reduced0, reduced1)
+}
+)";
+
+  // Input has upper bound of 5, dynamic dimension is 3.
+  Literal operand0 = LiteralUtil::CreateR1<int32_t>({1, 2, 3, 4, 5});
+  Literal operand1 = LiteralUtil::CreateR1<int32_t>({6, 7, 8, 9, 10});
+  auto module = GetHloModule(hlo_text);
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      Literal result, PadAndExecute(std::move(module), {&operand0, &operand1}));
+
+  Literal expected = LiteralUtil::CreateR0<int32_t>(36);
+
+  EXPECT_EQ(result, expected);
+}
+
+TEST_F(ExecutionTest, ReshapeComplicated) {
   // [2, <=4, 4]
   //       |
   //    Reshape
@@ -1601,7 +1675,8 @@ ENTRY main {
         {-1, -1, -1, -1},
         {-1, -1, -1, -1}}});
   auto module = GetHloModule(hlo_text);
-  Literal result = PadAndExecute(std::move(module), {&operand});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}));
 
   // Reshaping (with correct reshape rewriting) produces:
   // [[[1, 2], [3, 4], [5, 6], [7, 8], [9, 10], [11, 12], [13, 14], [15, 16]],
@@ -1615,7 +1690,7 @@ ENTRY main {
   EXPECT_EQ(result, expected);
 }
 
-XLA_TEST_F(ExecutionTest, WhileLoopStack) {
+TEST_F(ExecutionTest, WhileLoopStack) {
   // Push into a dynamic sized stack with iteration number:
   // init:
   // [[P, P],
@@ -1685,7 +1760,7 @@ ENTRY entry {
 
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result, PadAndExecute(std::move(module), {}));
 
   // Stack has three valid items in it:
   // [[0, 0],
@@ -1699,7 +1774,7 @@ ENTRY entry {
   EXPECT_EQ(result, expected);
 }
 
-XLA_TEST_F(ExecutionTest, DynamicAddWithImplicitBroadcast) {
+TEST_F(ExecutionTest, DynamicAddWithImplicitBroadcast) {
   const std::string hlo_text = R"(
 HloModule module
 
@@ -1729,7 +1804,7 @@ ENTRY entry {
 
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result, PadAndExecute(std::move(module), {}));
 
   // Array has two valid items in it:
   // [[3, 3],
@@ -1742,7 +1817,7 @@ ENTRY entry {
   EXPECT_EQ(result, expected);
 }
 
-XLA_TEST_F(ExecutionTest, DynamicAddWithImplicitSlice) {
+TEST_F(ExecutionTest, DynamicAddWithImplicitSlice) {
   const std::string hlo_text = R"(
 HloModule module
 
@@ -1770,7 +1845,7 @@ ENTRY entry {
 
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result, PadAndExecute(std::move(module), {}));
 
   // Array has two valid items in it:
   // [[3, 3],
@@ -1783,7 +1858,7 @@ ENTRY entry {
   EXPECT_EQ(result, expected);
 }
 
-XLA_TEST_F(ExecutionTest, DynamicStackPop) {
+TEST_F(ExecutionTest, DynamicStackPop) {
   // This tests the case where a static sized stack is popped by a dynamic
   // number of times.
 
@@ -1840,7 +1915,7 @@ ENTRY entry {
 
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result, PadAndExecute(std::move(module), {}));
 
   // Stack has two valid items in it:
   // [[1, 1],
@@ -1853,7 +1928,7 @@ ENTRY entry {
   EXPECT_EQ(result, expected);
 }
 
-XLA_TEST_F(ExecutionTest, DoubleDynamicDimension) {
+TEST_F(ExecutionTest, DoubleDynamicDimension) {
   const std::string hlo_text = R"(
 HloModule TensorFlowScatterV1
 
@@ -1883,7 +1958,8 @@ ENTRY main {
       {{{0, 1, 2}, {3, 4, 5}, {6, 7, 8}}, {{0, 1, 2}, {3, 4, 5}, {6, 7, 8}}});
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}));
 
   // Padded data looks like this (P is padding which is ignored).
   // [[0, 1, P]
@@ -1904,7 +1980,7 @@ ENTRY main {
   EXPECT_EQ(result, expected);
 }
 
-XLA_TEST_F(ExecutionTest, DynamicReshapeDoubleDynamicDimensions) {
+TEST_F(ExecutionTest, DynamicReshapeDoubleDynamicDimensions) {
   const std::string hlo_text = R"(
 HloModule TensorFlowScatterV1
 
@@ -1925,7 +2001,8 @@ ENTRY main {
       {{{0, 1, 2}, {3, 4, 5}, {6, 7, 8}}, {{0, 1, 2}, {3, 4, 5}, {6, 7, 8}}});
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand}, false);
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}, false));
   result.SetDynamicSize(0, 8);
   // Padded data looks like this (P is padding which is ignored).
   // [[0, 1, P]
@@ -1943,7 +2020,7 @@ ENTRY main {
   EXPECT_EQ(result, expected);
 }
 
-XLA_TEST_F(ExecutionTest, DynamicReshapeOutputDoubleDynamicDimensions) {
+TEST_F(ExecutionTest, DynamicReshapeOutputDoubleDynamicDimensions) {
   const std::string hlo_text = R"(
 HloModule TensorFlowScatterV1
 
@@ -1961,7 +2038,8 @@ ENTRY main {
 
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand}, false);
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}, false));
   VLOG(1) << " result: " << result.ToString();
   result.SetDynamicSize(1, 2);
   result.SetDynamicSize(2, 2);
@@ -1981,7 +2059,7 @@ ENTRY main {
   EXPECT_EQ(result, expected);
 }
 
-XLA_TEST_F(ExecutionTest, DynamicReshapeComplicated) {
+TEST_F(ExecutionTest, DynamicReshapeComplicated) {
   const std::string hlo_text = R"(
 HloModule TensorFlowScatterV1
 
@@ -2009,7 +2087,8 @@ ENTRY main {
 
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand}, false);
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}, false));
   result.SetDynamicSize(0, 3);
   result.SetDynamicSize(1, 6);
   Literal expected = LiteralUtil::CreateR2<int32_t>(
@@ -2017,7 +2096,7 @@ ENTRY main {
   EXPECT_EQ(result, expected);
 }
 
-XLA_TEST_F(ExecutionTest, SetGetDimensionSize) {
+TEST_F(ExecutionTest, SetGetDimensionSize) {
   const std::string hlo_text = R"(
 HloModule TensorFlowScatterV1
 
@@ -2035,7 +2114,8 @@ ENTRY main {
   Literal operand = LiteralUtil::CreateR1<int32_t>({1, 2, 3});
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand});
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand}));
 
   // Should return the size 2 instead of 3.
   Literal expected = LiteralUtil::CreateR0<int32_t>(2);
@@ -2043,7 +2123,7 @@ ENTRY main {
   EXPECT_EQ(result, expected);
 }
 
-XLA_TEST_F(ExecutionTest, DynamicSort) {
+TEST_F(ExecutionTest, DynamicSort) {
   const std::string hlo_text = R"(
 HloModule TEST
 
@@ -2072,14 +2152,15 @@ ENTRY main {
   Literal operand = LiteralUtil::CreateR1<int32_t>({1, 4, 3, 2});
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand},
-                                 /*slice_dynamic_output=*/false);
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand},
+                                        /*slice_dynamic_output=*/false));
   Literal expected = LiteralUtil::CreateR1<int32_t>({4, 3, 1, 2});
 
   EXPECT_EQ(result, expected);
 }
 
-XLA_TEST_F(ExecutionTest, DynamicPad) {
+TEST_F(ExecutionTest, DynamicPad) {
   const std::string hlo_text = R"(
 HloModule TEST
 
@@ -2111,14 +2192,15 @@ ENTRY main {
   // After padding head and tail with "2", the effective data will be [2, 1, 4,
   // 3, 2]
 
-  Literal result = PadAndExecute(std::move(module), {&operand},
-                                 /*slice_dynamic_output=*/false);
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand},
+                                        /*slice_dynamic_output=*/false));
   Literal expected = LiteralUtil::CreateR0<int32_t>(12);
 
   EXPECT_EQ(result, expected);
 }
 
-XLA_TEST_F(ExecutionTest, DynamicPadInteriorPadding) {
+TEST_F(ExecutionTest, DynamicPadInteriorPadding) {
   const std::string hlo_text = R"(
 HloModule TEST
 
@@ -2150,14 +2232,15 @@ ENTRY main {
 
   // After interior padding with "2", the effective data will be
   // [1, 2, 4, 2, 3]
-  Literal result = PadAndExecute(std::move(module), {&operand},
-                                 /*slice_dynamic_output=*/false);
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand},
+                                        /*slice_dynamic_output=*/false));
   Literal expected = LiteralUtil::CreateR0<int32_t>(12);
 
   EXPECT_EQ(result, expected);
 }
 
-XLA_TEST_F(ExecutionTest, DynamicConditionalDimension) {
+TEST_F(ExecutionTest, DynamicConditionalDimension) {
   const std::string hlo_text = R"(
 HloModule module
 
@@ -2200,14 +2283,15 @@ ENTRY entry {
   Literal operand = LiteralUtil::CreateR2<int32_t>({{0, 1}, {2, 3}, {4, 5}});
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand},
-                                 /*slice_dynamic_output=*/false);
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand},
+                                        /*slice_dynamic_output=*/false));
   Literal expected = LiteralUtil::CreateR1<int32_t>({4, 8});
 
   EXPECT_EQ(result, expected);
 }
 
-XLA_TEST_F(ExecutionTest, DynamicTupleSort) {
+TEST_F(ExecutionTest, DynamicTupleSort) {
   const std::string hlo_text = R"(
 HloModule TEST
 
@@ -2241,8 +2325,9 @@ ENTRY main {
   Literal operand = LiteralUtil::CreateR1<int32_t>({0, 4, 2});
   auto module = GetHloModule(hlo_text);
 
-  Literal result = PadAndExecute(std::move(module), {&operand},
-                                 /*slice_dynamic_output=*/false);
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          PadAndExecute(std::move(module), {&operand},
+                                        /*slice_dynamic_output=*/false));
   Literal expected = LiteralUtil::CreateR1<int32_t>({4, 0, 2});
 
   EXPECT_EQ(result, expected);
@@ -2360,6 +2445,23 @@ ENTRY gds {
   DynamicPadder pass(options);
   auto status = pass.Run(module.get()).status();
   EXPECT_TRUE(status.ok());
+}
+
+TEST_F(DynamicPadderTest, ShardingDynamicShapes) {
+  constexpr absl::string_view hlo = R"(
+HloModule main
+
+ENTRY main {
+  token.0 = after-all()
+  infeed_tuple.0 = (s32[<=32], token[]) infeed(token.0), sharding={{manual}, {manual}}
+  infeed.0 = get-tuple-element(infeed_tuple.0), index=0
+  ROOT sharding.0 = s32[<=32] custom-call(infeed.0), custom_call_target="Sharding", sharding={manual}
+}
+)";
+  TF_ASSERT_OK_AND_ASSIGN(module_, ParseAndReturnVerifiedModule(hlo));
+  TF_ASSERT_OK_AND_ASSIGN(bool changed,
+                          RunPadder(/*slice_dynamic_output=*/true));
+  EXPECT_FALSE(changed);
 }
 
 }  // namespace

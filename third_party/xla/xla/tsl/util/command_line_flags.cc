@@ -22,7 +22,7 @@ limitations under the License.
 #include <vector>
 
 #include "absl/strings/match.h"
-#include "tsl/platform/logging.h"
+#include "xla/tsl/platform/logging.h"
 #include "tsl/platform/str_util.h"
 #include "tsl/platform/stringpiece.h"
 #include "tsl/platform/stringprintf.h"
@@ -30,7 +30,7 @@ limitations under the License.
 namespace tsl {
 namespace {
 
-bool ParseStringFlag(StringPiece arg, StringPiece flag,
+bool ParseStringFlag(absl::string_view arg, absl::string_view flag,
                      const std::function<bool(string)>& hook,
                      bool* value_parsing_ok) {
   *value_parsing_ok = true;
@@ -43,7 +43,7 @@ bool ParseStringFlag(StringPiece arg, StringPiece flag,
   return false;
 }
 
-bool ParseInt32Flag(StringPiece arg, StringPiece flag,
+bool ParseInt32Flag(absl::string_view arg, absl::string_view flag,
                     const std::function<bool(int32_t)>& hook,
                     bool* value_parsing_ok) {
   *value_parsing_ok = true;
@@ -64,7 +64,7 @@ bool ParseInt32Flag(StringPiece arg, StringPiece flag,
   return false;
 }
 
-bool ParseInt64Flag(StringPiece arg, StringPiece flag,
+bool ParseInt64Flag(absl::string_view arg, absl::string_view flag,
                     const std::function<bool(int64_t)>& hook,
                     bool* value_parsing_ok) {
   *value_parsing_ok = true;
@@ -85,7 +85,7 @@ bool ParseInt64Flag(StringPiece arg, StringPiece flag,
   return false;
 }
 
-bool ParseBoolFlag(StringPiece arg, StringPiece flag,
+bool ParseBoolFlag(absl::string_view arg, absl::string_view flag,
                    const std::function<bool(bool)>& hook,
                    bool* value_parsing_ok) {
   *value_parsing_ok = true;
@@ -101,7 +101,8 @@ bool ParseBoolFlag(StringPiece arg, StringPiece flag,
     if (absl::EqualsIgnoreCase(arg, "true") || arg == "1") {
       *value_parsing_ok = hook(true);
       return true;
-    } else if (absl::EqualsIgnoreCase(arg, "false") || arg == "0") {
+    }
+    if (absl::EqualsIgnoreCase(arg, "false") || arg == "0") {
       *value_parsing_ok = hook(false);
       return true;
     } else {
@@ -115,7 +116,7 @@ bool ParseBoolFlag(StringPiece arg, StringPiece flag,
   return false;
 }
 
-bool ParseFloatFlag(StringPiece arg, StringPiece flag,
+bool ParseFloatFlag(absl::string_view arg, absl::string_view flag,
                     const std::function<bool(float)>& hook,
                     bool* value_parsing_ok) {
   *value_parsing_ok = true;
@@ -144,7 +145,9 @@ Flag::Flag(const char* name, int32_t* dst, const string& usage_text,
       type_(TYPE_INT32),
       int32_hook_([dst, dst_updated](int32_t value) {
         *dst = value;
-        if (dst_updated) *dst_updated = true;
+        if (dst_updated) {
+          *dst_updated = true;
+        }
         return true;
       }),
       int32_default_for_display_(*dst),
@@ -156,7 +159,9 @@ Flag::Flag(const char* name, int64_t* dst, const string& usage_text,
       type_(TYPE_INT64),
       int64_hook_([dst, dst_updated](int64_t value) {
         *dst = value;
-        if (dst_updated) *dst_updated = true;
+        if (dst_updated) {
+          *dst_updated = true;
+        }
         return true;
       }),
       int64_default_for_display_(*dst),
@@ -168,7 +173,9 @@ Flag::Flag(const char* name, float* dst, const string& usage_text,
       type_(TYPE_FLOAT),
       float_hook_([dst, dst_updated](float value) {
         *dst = value;
-        if (dst_updated) *dst_updated = true;
+        if (dst_updated) {
+          *dst_updated = true;
+        }
         return true;
       }),
       float_default_for_display_(*dst),
@@ -180,7 +187,9 @@ Flag::Flag(const char* name, bool* dst, const string& usage_text,
       type_(TYPE_BOOL),
       bool_hook_([dst, dst_updated](bool value) {
         *dst = value;
-        if (dst_updated) *dst_updated = true;
+        if (dst_updated) {
+          *dst_updated = true;
+        }
         return true;
       }),
       bool_default_for_display_(*dst),
@@ -192,7 +201,9 @@ Flag::Flag(const char* name, string* dst, const string& usage_text,
       type_(TYPE_STRING),
       string_hook_([dst, dst_updated](string value) {
         *dst = std::move(value);
-        if (dst_updated) *dst_updated = true;
+        if (dst_updated) {
+          *dst_updated = true;
+        }
         return true;
       }),
       string_default_for_display_(*dst),

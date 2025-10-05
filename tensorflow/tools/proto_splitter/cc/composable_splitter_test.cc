@@ -30,6 +30,7 @@ limitations under the License.
 #include "riegeli/bytes/fd_reader.h"  // from @riegeli
 #include "riegeli/bytes/string_reader.h"  // from @riegeli
 #include "riegeli/records/record_reader.h"  // from @riegeli
+#include "xla/tsl/lib/core/status_test_util.h"
 #include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/file_system_helper.h"
@@ -39,7 +40,6 @@ limitations under the License.
 #include "tensorflow/tools/proto_splitter/cc/util.h"
 #include "tensorflow/tools/proto_splitter/chunk.pb.h"
 #include "tensorflow/tools/proto_splitter/testdata/test_message.pb.h"
-#include "tsl/lib/core/status_test_util.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/status_matchers.h"
 #include "tsl/platform/statusor.h"
@@ -322,11 +322,12 @@ TEST(ComposableTest, ChildSplitterUnimplementedTest) {
   std::vector<FieldType> fields = {};
   RepeatedStringSplitter child(&message, &splitter, &fields);
 
-  EXPECT_THAT(child.Split(), StatusIs(absl::StatusCode::kUnimplemented,
-                                      HasSubstr("`Split` function behavior")));
+  EXPECT_THAT(child.Split(),
+              absl_testing::StatusIs(absl::StatusCode::kUnimplemented,
+                                     HasSubstr("`Split` function behavior")));
   EXPECT_THAT(child.Write("str"),
-              StatusIs(absl::StatusCode::kUnimplemented,
-                       HasSubstr("`Write` function behavior")));
+              absl_testing::StatusIs(absl::StatusCode::kUnimplemented,
+                                     HasSubstr("`Write` function behavior")));
 }
 
 class NoOpSplitter : public ComposableSplitter {

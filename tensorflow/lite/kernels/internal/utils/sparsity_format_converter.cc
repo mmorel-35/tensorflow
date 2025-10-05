@@ -15,9 +15,14 @@ limitations under the License.
 #include "tensorflow/lite/kernels/internal/utils/sparsity_format_converter.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <utility>
 #include <vector>
+
+#include "Eigen/Core"  // from @eigen_archive
+#include "tensorflow/lite/c/c_api_types.h"
+#include "tensorflow/lite/c/common.h"
 
 namespace tflite {
 namespace internal {

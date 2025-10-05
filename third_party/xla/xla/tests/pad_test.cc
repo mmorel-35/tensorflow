@@ -13,31 +13,32 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <array>
+#include <cstdint>
 #include <memory>
 #include <vector>
 
 #include "xla/array2d.h"
+#include "xla/array3d.h"
 #include "xla/array4d.h"
-#include "xla/client/lib/arithmetic.h"
-#include "xla/client/local_client.h"
-#include "xla/client/xla_builder.h"
+#include "xla/error_spec.h"
+#include "xla/hlo/builder/lib/arithmetic.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "xla/hlo/builder/xla_computation.h"
+#include "xla/layout.h"
+#include "xla/layout_util.h"
+#include "xla/literal_util.h"
 #include "xla/reference_util.h"
 #include "xla/tests/client_library_test_base.h"
-#include "xla/tests/literal_test_util.h"
-#include "xla/tests/test_macros.h"
+#include "xla/util.h"
 #include "xla/xla_data.pb.h"
 #include "tsl/platform/test.h"
 
 namespace xla {
 namespace {
 
-#ifdef XLA_BACKEND_SUPPORTS_BFLOAT16
-// Tests both F32 and BF16.
-static std::array<bool, 2> use_bfloat16_params{false, true};
-#else
-// Only tests F32.
-static std::array<bool, 1> use_bfloat16_params{false};
-#endif
+static std::array<PrimitiveType, 4> test_type_params{F32, BF16, F8E5M2,
+                                                     F8E4M3FN};
 
 class PadTest : public ClientLibraryTestBase {
  protected:
@@ -68,21 +69,15 @@ class PadTest : public ClientLibraryTestBase {
 };
 
 class PadTestFloat : public PadTest,
-                     public ::testing::WithParamInterface<bool> {
+                     public ::testing::WithParamInterface<PrimitiveType> {
  protected:
-  PadTestFloat() { set_use_bfloat16(GetParam()); }
+  PadTestFloat() { set_float_type(GetParam()); }
 
-  ErrorSpec DefaultErrorSpec() const {
-    if (use_bfloat16()) {
-      return ErrorSpec(1e-3, 1e-3);
-    } else {
-      return ErrorSpec(1e-5, 1e-5);
-    }
-  }
+  ErrorSpec DefaultErrorSpec() const { return ErrorSpec(1e-5, 1e-5); }
 };
 
 // Tests a Pad() with a zero-element input and output.
-XLA_TEST_P(PadTestFloat, Pad1DS0ToS0Array) {
+TEST_P(PadTestFloat, Pad1DS0ToS0Array) {
   XlaBuilder b(TestName());
   // Set up the padding configuration {low: 0, high: 0, interior: 0}.
   PaddingConfig padding_config;
@@ -97,7 +92,7 @@ XLA_TEST_P(PadTestFloat, Pad1DS0ToS0Array) {
 }
 
 // Tests a Pad() with a zero-element input but a non-zero-element output.
-XLA_TEST_P(PadTestFloat, Pad1DS0ToS5Array) {
+TEST_P(PadTestFloat, Pad1DS0ToS5Array) {
   XlaBuilder b(TestName());
   // Set up the padding configuration {low: 3, high: 0, interior: 1}.
   PaddingConfig padding_config;
@@ -112,7 +107,7 @@ XLA_TEST_P(PadTestFloat, Pad1DS0ToS5Array) {
                              DefaultErrorSpec());
 }
 
-XLA_TEST_P(PadTestFloat, Pad1DS3Array) {
+TEST_P(PadTestFloat, Pad1DS3Array) {
   XlaBuilder b(TestName());
   // Set up the padding configuration {low: 3, high: 0, interior: 1}.
   PaddingConfig padding_config;
@@ -127,7 +122,7 @@ XLA_TEST_P(PadTestFloat, Pad1DS3Array) {
   ComputeAndCompareR1<float>(&b, expected, {}, DefaultErrorSpec());
 }
 
-XLA_TEST_P(PadTestFloat, Pad4D_2x0x3x2_FloatArray) {
+TEST_P(PadTestFloat, Pad4D_2x0x3x2_FloatArray) {
   XlaBuilder b(TestName());
   Pad(AddParam(Array4D<float>(2, 0, 3, 2), &b),
       AddParam(LiteralUtil::CreateR0<float>(1.5), &b),
@@ -222,7 +217,7 @@ TEST_P(PadTestFloat, Pad4DFloatArrayMinorFirstSmall) {
   ComputeAndCompareR4<float>(&b, expected_array, {}, ErrorSpec(0.0001));
 }
 
-XLA_TEST_P(PadTestFloat, Pad4DFloatArrayMinorFirstNonTrivialMinorDimensions) {
+TEST_P(PadTestFloat, Pad4DFloatArrayMinorFirstNonTrivialMinorDimensions) {
   XlaBuilder b(TestName());
 
   PaddingConfig padding_config;
@@ -265,7 +260,7 @@ XLA_TEST_P(PadTestFloat, Pad4DFloatArrayMinorFirstNonTrivialMinorDimensions) {
   ComputeAndCompareR4<float>(&b, expected_array, {}, ErrorSpec(0.0001));
 }
 
-XLA_TEST_F(PadTest, Pad4DU8Array) {
+TEST_F(PadTest, Pad4DU8Array) {
   XlaBuilder b(TestName());
   auto input = std::make_unique<Array4D<uint8_t>>(1, 1, 3, 2);
   Array2D<uint8_t> input_xy({
@@ -289,7 +284,7 @@ XLA_TEST_F(PadTest, Pad4DU8Array) {
   ComputeAndCompareR4<uint8_t>(&b, *expected, {});
 }
 
-XLA_TEST_F(PadTest, Pad4DPredArray) {
+TEST_F(PadTest, Pad4DPredArray) {
   XlaBuilder b(TestName());
 
   // Since bool is currently not well supported, use Broadcast operation to
@@ -316,7 +311,7 @@ XLA_TEST_F(PadTest, Pad4DPredArray) {
   ComputeAndCompareR4<int32_t>(&b, *expected, {});
 }
 
-XLA_TEST_P(PadTestFloat, Large2DPad) {
+TEST_P(PadTestFloat, Large2DPad) {
   XlaBuilder b(TestName());
 
   auto ones = std::make_unique<Array2D<float>>(4, 4);
@@ -335,7 +330,7 @@ XLA_TEST_P(PadTestFloat, Large2DPad) {
   ComputeAndCompareR2<float>(&b, *expected, {}, DefaultErrorSpec());
 }
 
-XLA_TEST_P(PadTestFloat, AllTypes2DPad) {
+TEST_P(PadTestFloat, AllTypes2DPad) {
   XlaBuilder b(TestName());
 
   constexpr int64_t in_rows = 35;
@@ -357,7 +352,7 @@ XLA_TEST_P(PadTestFloat, AllTypes2DPad) {
   ComputeAndCompareR2<float>(&b, *expected, {}, DefaultErrorSpec());
 }
 
-XLA_TEST_P(PadTestFloat, High2DPad) {
+TEST_P(PadTestFloat, High2DPad) {
   XlaBuilder b(TestName());
 
   constexpr int64_t in_rows = 129;
@@ -384,7 +379,7 @@ XLA_TEST_P(PadTestFloat, High2DPad) {
   ComputeAndCompareR2<float>(&b, *expected, {}, DefaultErrorSpec());
 }
 
-XLA_TEST_P(PadTestFloat, NegativePadding2D) {
+TEST_P(PadTestFloat, NegativePadding2D) {
   XlaBuilder b(TestName());
 
   constexpr int64_t in_rows = 129;
@@ -412,7 +407,7 @@ XLA_TEST_P(PadTestFloat, NegativePadding2D) {
   ComputeAndCompareR2<float>(&b, *expected, {}, DefaultErrorSpec());
 }
 
-XLA_TEST_P(PadTestFloat, NegativeAndInteriorPadding2D) {
+TEST_P(PadTestFloat, NegativeAndInteriorPadding2D) {
   XlaBuilder b(TestName());
 
   constexpr int64_t in_rows = 8;
@@ -441,7 +436,7 @@ XLA_TEST_P(PadTestFloat, NegativeAndInteriorPadding2D) {
 }
 
 // Regression test for b/31827337.
-XLA_TEST_P(PadTestFloat, ReducePad) {
+TEST_P(PadTestFloat, ReducePad) {
   XlaBuilder b(TestName());
   auto ones = std::make_unique<Array4D<float>>(2, 2, 2, 2);
   ones->Fill(1.0);
@@ -464,7 +459,7 @@ XLA_TEST_P(PadTestFloat, ReducePad) {
 }
 
 INSTANTIATE_TEST_CASE_P(PadTestFloatInstantiation, PadTestFloat,
-                        ::testing::ValuesIn(use_bfloat16_params));
+                        ::testing::ValuesIn(test_type_params));
 
 }  // namespace
 }  // namespace xla

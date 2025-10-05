@@ -25,6 +25,7 @@ limitations under the License.
 
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
+#include "absl/synchronization/notification.h"
 #include "tensorflow/c/c_api.h"
 #include "tensorflow/c/c_api_internal.h"
 #include "tensorflow/c/c_api_macros.h"
@@ -50,7 +51,6 @@ limitations under the License.
 #include "tensorflow/core/framework/resource_mgr.h"
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/types.h"
-#include "tensorflow/core/platform/notification.h"
 #include "tensorflow/core/protobuf/config.pb.h"
 
 // Required for IS_MOBILE_PLATFORM definition
@@ -59,11 +59,11 @@ limitations under the License.
 #if !defined(IS_MOBILE_PLATFORM) && !defined(IS_SLIM_BUILD)
 #include "tensorflow/c/experimental/stream_executor/stream_executor_internal.h"
 #include "xla/stream_executor/stream.h"
+#include "xla/tsl/framework/device_id_utils.h"
+#include "xla/tsl/platform/statusor.h"
 #include "tensorflow/core/common_runtime/next_pluggable_device/c/tf_rendezvous_c_api.h"
 #include "tensorflow/core/common_runtime/next_pluggable_device/c/tf_rendezvous_c_api_internal.h"
 #include "tensorflow/core/framework/device.h"
-#include "tsl/framework/device_id_utils.h"
-#include "tsl/platform/statusor.h"
 #endif  // !defined(IS_MOBILE_PLATFORM) && !defined(IS_SLIM_BUILD)
 
 // This file forms the basis of a stable ABI for third-party kernel
@@ -246,7 +246,7 @@ class CAsyncOpKernel : public AsyncOpKernel {
   }
 
   void Compute(OpKernelContext* ctx) override {
-    Notification n;
+    absl::Notification n;
     ComputeAsync(ctx, [&n]() { n.Notify(); });
     n.WaitForNotification();
   }
@@ -794,10 +794,7 @@ int TF_GetDeviceId(TF_OpKernelContext* ctx) {
 #else
   const auto* device = reinterpret_cast<const tensorflow::Device*>(
       device_base->UnderlyingDevice());
-  const absl::StatusOr<int> id = tsl::GetDeviceIdFromDeviceParsedName(
-      device->parsed_name(), tensorflow::DeviceType(device->device_type()));
-  if (!id.ok()) return -1;
-  return *id;
+  return tsl::GetDeviceIdFromDeviceParsedName(device->parsed_name());
 #endif  // defined(IS_MOBILE_PLATFORM) || defined(IS_SLIM_BUILD)
 }
 
@@ -878,8 +875,8 @@ TF_Tensor* TF_ForwardInputOrAllocateOutput(
   TF_SetStatus(status, TF_OK, "");
   auto* cc_ctx = reinterpret_cast<::tensorflow::OpKernelContext*>(context);
 
-  tensorflow::gtl::ArraySlice<int> input_indices_array(
-      candidate_input_indices, num_candidate_input_indices);
+  absl::Span<const int> input_indices_array(candidate_input_indices,
+                                            num_candidate_input_indices);
   tensorflow::gtl::ArraySlice<const int64_t> output_dimarray(
       reinterpret_cast<const int64_t*>(output_dims), output_num_dims);
   tensorflow::Tensor* output_tensor_pointer;

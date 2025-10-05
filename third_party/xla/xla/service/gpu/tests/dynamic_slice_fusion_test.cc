@@ -13,19 +13,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include <cstdint>
-#include <functional>
 #include <utility>
 
-#include "absl/algorithm/container.h"
 #include "absl/status/status.h"
 #include "xla/error_spec.h"
 #include "xla/ffi/ffi.h"
 #include "xla/ffi/ffi_api.h"
-#include "xla/primitive_util.h"
+#include "xla/stream_executor/device_memory.h"
 #include "xla/stream_executor/stream.h"
-#include "xla/tests/hlo_test_base.h"
-#include "tsl/platform/test.h"
+#include "xla/tests/hlo_pjrt_test_base.h"
+#include "xla/tsl/platform/test.h"
 
 namespace xla {
 namespace gpu {
@@ -37,7 +34,7 @@ static constexpr char kPlatform[] = "CUDA";
 static constexpr char kPlatform[] = "ROCM";
 #endif
 
-class DynamicSliceFusionTest : public HloTestBase {};
+class DynamicSliceFusionTest : public HloPjRtTestBase {};
 
 TEST_F(DynamicSliceFusionTest, GemmSlice) {
   const char* hlo_reference = R"(
@@ -148,10 +145,9 @@ TEST_F(DynamicSliceFusionTest, GemmSlice) {
 
 static absl::Status Memcpy(se::Stream* stream, ffi::AnyBuffer src,
                            ffi::Result<ffi::AnyBuffer> dst) {
-  return stream->MemcpyD2D(
-      &dst->data, src.data,
-      absl::c_accumulate(src.dimensions, 1.0, std::multiplies<int64_t>()) *
-          primitive_util::ByteWidth(src.dtype));
+  se::DeviceMemoryBase dst_mem = dst->device_memory();
+  se::DeviceMemoryBase src_mem = src.device_memory();
+  return stream->MemcpyD2D(&dst_mem, src_mem, src_mem.size());
 }
 
 XLA_FFI_DEFINE_HANDLER(kMemcpy, Memcpy,

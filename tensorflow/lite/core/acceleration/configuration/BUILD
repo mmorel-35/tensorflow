@@ -1,3 +1,5 @@
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_cc//cc:cc_test.bzl", "cc_test")
 load("//tensorflow:tensorflow.default.bzl", "get_compatible_with_portable")
 load("//tensorflow/lite:special_rules.bzl", "nnapi_plugin_impl_visibility_allowlist", "xnnpack_plugin_impl_visibility_allowlist")
 load("//tensorflow/lite/core:special_rules.bzl", "delegate_registry_visibility_allowlist")
@@ -19,6 +21,7 @@ cc_library(
     deps = [
         "//tensorflow/lite/acceleration/configuration:configuration_fbs",
         "//tensorflow/lite/core/c:common",
+        "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/synchronization",
     ],
 )
@@ -38,6 +41,7 @@ cc_library(
         "//tensorflow/lite/core/c:common",
         "//tensorflow/lite/delegates/nnapi:nnapi_delegate",
         "//tensorflow/lite/nnapi:nnapi_implementation_headers",
+        "//tensorflow/lite/nnapi:nnapi_lib",
         "@com_google_absl//absl/memory",
     ],
     alwayslink = 1,  # For registration to always run.
@@ -61,6 +65,9 @@ cc_test(
         "//tensorflow/lite/delegates/nnapi:nnapi_delegate",
         "//tensorflow/lite/delegates/nnapi:nnapi_delegate_mock_test",
         "//tensorflow/lite/kernels:test_util",
+        "//tensorflow/lite/nnapi:nnapi_implementation_headers",
+        "//tensorflow/lite/nnapi:nnapi_lib",
+        "//tensorflow/lite/schema:schema_fbs",
         "@com_google_googletest//:gtest_main",
         "@flatbuffers",
     ],
@@ -76,6 +83,7 @@ cc_library(
     deps = [
         "//tensorflow/lite/core/acceleration/configuration/c:stable_delegate",
         "//tensorflow/lite/core/shims:tflite_use_opaque_delegate",  # buildcleaner: keep
+        "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/synchronization",
     ],
 )
@@ -85,6 +93,7 @@ cc_test(
     srcs = ["stable_delegate_registry_test.cc"],
     deps = [
         ":stable_delegate_registry",
+        "//tensorflow/lite/core/acceleration/configuration/c:stable_delegate",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -99,7 +108,9 @@ cc_library(
     deps = [
         "//tensorflow/lite:minimal_logging",
         "//tensorflow/lite/acceleration/configuration:configuration_fbs",
+        "//tensorflow/lite/c:c_api_types",
         "//tensorflow/lite/core/acceleration/configuration:delegate_registry",
+        "//tensorflow/lite/core/c:common",
         "//tensorflow/lite/delegates/xnnpack:xnnpack_delegate",
         "@com_google_absl//absl/base:log_severity",
         "@com_google_absl//absl/memory",

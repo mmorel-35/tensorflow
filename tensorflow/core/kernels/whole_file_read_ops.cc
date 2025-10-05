@@ -35,7 +35,8 @@ limitations under the License.
 namespace tensorflow {
 
 template <typename T>
-static Status ReadEntireFile(Env* env, const string& filename, T* contents) {
+static absl::Status ReadEntireFile(Env* env, const string& filename,
+                                   T* contents) {
   std::unique_ptr<RandomAccessFile> file;
   TF_RETURN_IF_ERROR(env->NewRandomAccessFile(filename, &file));
   io::RandomAccessInputStream input_stream(file.get());
@@ -47,11 +48,11 @@ static Status ReadEntireFile(Env* env, const string& filename, T* contents) {
 class WholeFileReader : public ReaderBase {
  public:
   WholeFileReader(Env* env, const string& node_name)
-      : ReaderBase(strings::StrCat("WholeFileReader '", node_name, "'")),
+      : ReaderBase(absl::StrCat("WholeFileReader '", node_name, "'")),
         env_(env) {}
 
-  Status ReadLocked(tstring* key, tstring* value, bool* produced,
-                    bool* at_end) override {
+  absl::Status ReadLocked(tstring* key, tstring* value, bool* produced,
+                          bool* at_end) override {
     *key = current_work();
     TF_RETURN_IF_ERROR(ReadEntireFile(env_, *key, value));
     *produced = true;
@@ -61,14 +62,14 @@ class WholeFileReader : public ReaderBase {
 
   // Stores state in a ReaderBaseState proto, since WholeFileReader has
   // no additional state beyond ReaderBase.
-  Status SerializeStateLocked(tstring* state) override {
+  absl::Status SerializeStateLocked(tstring* state) override {
     ReaderBaseState base_state;
     SaveBaseState(&base_state);
     SerializeToTString(base_state, state);
     return absl::OkStatus();
   }
 
-  Status RestoreStateLocked(const tstring& state) override {
+  absl::Status RestoreStateLocked(const tstring& state) override {
     ReaderBaseState base_state;
     if (!ParseProtoUnlimited(&base_state, state)) {
       return errors::InvalidArgument("Could not parse state for ", name(), ": ",

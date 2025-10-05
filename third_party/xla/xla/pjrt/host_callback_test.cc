@@ -15,15 +15,21 @@ limitations under the License.
 
 #include "xla/pjrt/host_callback.h"
 
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <utility>
 
 #include <gtest/gtest.h>
+#include "absl/log/check.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "absl/synchronization/notification.h"
+#include "xla/future.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/tests/literal_test_util.h"
-#include "tsl/lib/core/status_test_util.h"
+#include "xla/tsl/lib/core/status_test_util.h"
+#include "xla/xla_data.pb.h"
 
 namespace xla {
 namespace {
@@ -59,11 +65,11 @@ class TestStream : public CopyToDeviceStream {
         chunk_(chunk),
         done_(done) {}
 
-  PjRtFuture<> AddChunk(PjRtChunk chunk) override {
+  Future<> AddChunk(PjRtChunk chunk) override {
     CHECK(!done_.HasBeenNotified());
     chunk_ = std::move(chunk);
     done_.Notify();
-    return PjRtFuture<>(absl::OkStatus());
+    return Future<>(absl::OkStatus());
   }
 
  private:

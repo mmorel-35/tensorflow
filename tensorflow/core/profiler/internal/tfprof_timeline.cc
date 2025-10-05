@@ -126,7 +126,7 @@ void ChromeTraceFormatter::EmitCounter(
       bytes -= it->first;
     }
   }
-  args2[std::string("Not Displayed")] =
+  args2["Not Displayed"] =
       Json::Value(absl::StrFormat("%.2f MB", bytes / 1000000.0));
   event2["args"] = args2;
   events_.push_back(event2);
@@ -331,7 +331,7 @@ void Timeline::GenerateCodeTimeline(const CodeNode* node) {
 
 void Timeline::OutputTimeline() {
   std::string outfile = absl::StrFormat("%s_%d", outfile_, step());
-  Status s =
+  absl::Status s =
       WriteStringToFile(Env::Default(), outfile, chrome_formatter_.Format());
   if (!s.ok()) {
     absl::FPrintF(stderr, "Failed to write timeline file: %s\nError: %s\n",

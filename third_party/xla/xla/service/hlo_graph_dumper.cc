@@ -31,7 +31,6 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_sharding.h"
 #include "xla/shape.h"
-#include "xla/statusor.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/file_system.h"
 #include "tsl/platform/statusor.h"
@@ -74,12 +73,12 @@ limitations under the License.
 #include "xla/service/pattern_matcher.h"
 #include "xla/shape_util.h"
 #include "xla/stream_executor/dnn.h"
+#include "xla/tsl/lib/gtl/map_util.h"
+#include "xla/tsl/lib/io/zlib_compression_options.h"
+#include "xla/tsl/lib/io/zlib_outputbuffer.h"
 #include "xla/types.h"
 #include "xla/util.h"
 #include "xla/window_util.h"
-#include "tsl/lib/gtl/map_util.h"
-#include "tsl/lib/io/zlib_compression_options.h"
-#include "tsl/lib/io/zlib_outputbuffer.h"
 #include "tsl/platform/base64.h"
 #include "tsl/platform/env.h"
 #include "tsl/platform/numbers.h"
@@ -573,6 +572,15 @@ stylesheet=<
   if (computation_->IsFusionComputation()) {
     StrAppend(&graph_label, " (in fusion instruction ",
               computation_->FusionInstruction()->name(), ")");
+  } else if (computation_->IsEntryComputation()) {
+    StrAppend(&graph_label, "<br/>ENTRY computation");
+  } else if (!computation_->caller_computations().empty()) {
+    std::string callers =
+        absl::StrJoin(computation_->caller_instructions(), ", ",
+                      [](std::string* out, const HloInstruction* instr) {
+                        absl::StrAppend(out, instr->name());
+                      });
+    StrAppend(&graph_label, "<br/>Caller instructions: ", callers);
   }
 
   // Create CSS rules that say, when you hover over the given node or cluster,
@@ -680,7 +688,7 @@ bool HloDotDumper::ShouldShowSubcomputation(const HloComputation* subcomp) {
     return false;
   }
 
-  if (subcomp->WhileCallInstruction() != nullptr &&
+  if (!subcomp->caller_instructions(HloOpcode::kWhile).empty() &&
       !hlo_render_options_.show_while_subcomputations) {
     return false;
   }
@@ -1132,9 +1140,13 @@ ColorScheme HloDotDumper::GetInstructionColor(const HloInstruction* instr) {
   // (eg, parameter).
   switch (instr->opcode()) {
     case HloOpcode::kAbs:
+    case HloOpcode::kAsin:
+    case HloOpcode::kAcos:
+    case HloOpcode::kAcosh:
     case HloOpcode::kAdd:
     case HloOpcode::kAnd:
     case HloOpcode::kAtan2:
+    case HloOpcode::kAtanh:
     case HloOpcode::kBitcastConvert:
     case HloOpcode::kCeil:
     case HloOpcode::kClamp:
@@ -1143,6 +1155,7 @@ ColorScheme HloDotDumper::GetInstructionColor(const HloInstruction* instr) {
     case HloOpcode::kComplex:
     case HloOpcode::kConvert:
     case HloOpcode::kCos:
+    case HloOpcode::kCosh:
     case HloOpcode::kDivide:
     case HloOpcode::kErf:
     case HloOpcode::kExp:
@@ -1179,6 +1192,7 @@ ColorScheme HloDotDumper::GetInstructionColor(const HloInstruction* instr) {
     case HloOpcode::kLogistic:
     case HloOpcode::kSign:
     case HloOpcode::kSin:
+    case HloOpcode::kSinh:
     case HloOpcode::kSlice:
     case HloOpcode::kSort:
     case HloOpcode::kTopK:
@@ -1231,6 +1245,8 @@ ColorScheme HloDotDumper::GetInstructionColor(const HloInstruction* instr) {
       return GetInstructionColor(instr->async_wrapped_instruction());
     case HloOpcode::kConvolution:
     case HloOpcode::kDot:
+    case HloOpcode::kRaggedDot:
+    case HloOpcode::kScaledDot:
     case HloOpcode::kFft:
     case HloOpcode::kTriangularSolve:
     case HloOpcode::kCholesky:
@@ -1267,6 +1283,7 @@ ColorScheme HloDotDumper::GetInstructionColor(const HloInstruction* instr) {
     case HloOpcode::kInfeed:
     case HloOpcode::kOutfeed:
     case HloOpcode::kPartitionId:
+    case HloOpcode::kRaggedAllToAll:
     case HloOpcode::kRecv:
     case HloOpcode::kRecvDone:
     case HloOpcode::kSend:
@@ -1308,8 +1325,8 @@ std::string HloDotDumper::GetInstructionNodeLabel(const HloInstruction* instr) {
                  ? ""
                  : StrCat(":", xla::ToString(instr->fusion_kind())));
   // If the name does not contain the opcode, render both.
-  return StrFormat("<b>%s</b><br/>%s", HtmlLikeStringSanitize(extended_opcode),
-                   HtmlLikeStringSanitize(instr->name()));
+  return StrFormat("<b>%s</b><br/>%s", HtmlLikeStringSanitize(instr->name()),
+                   HtmlLikeStringSanitize(extended_opcode));
 }
 
 std::string HloDotDumper::GetInstructionNodeMetadata(
@@ -1450,10 +1467,66 @@ std::string HloDotDumper::GetInstructionNodeBackendConfig(
   return StrCat("backend_config=\"", instr->raw_backend_config_string(), "\"");
 }
 
+// Returns the op that produced the given instruction's input, ignoring
+// uninteresting ops like get-tuple-element.
+const HloInstruction* GetInterestingProducer(const HloInstruction* instr) {
+  std::vector<int64_t> tuple_index;
+  while (true) {
+    switch (instr->opcode()) {
+      case HloOpcode::kBitcast:
+      case HloOpcode::kCopy:
+        // Ignore data-movement instructions and move on.
+        instr = instr->operand(0);
+        break;
+      case HloOpcode::kGetTupleElement:
+        // Ignore get-tuple-element instructions but remember the tuple index.
+        tuple_index.push_back(instr->tuple_index());
+        instr = instr->operand(0);
+        break;
+      case HloOpcode::kTuple:
+        if (tuple_index.empty()) {
+          // Return the tuple itself, since we have not encountered a
+          // corresponding get-tuple-element before.
+          return instr;
+        }
+        // Resolve the tuple index and move on.
+        if (instr->operand_count() <= tuple_index.back()) {
+          LOG(ERROR) << "Tuple index " << tuple_index.back()
+                     << " is out of bounds for " << instr->ToString();
+          return instr;
+        }
+        instr = instr->operand(tuple_index.back());
+        tuple_index.pop_back();
+        break;
+      case HloOpcode::kCall:
+        // Move on from the root of the called computation.
+        instr = instr->to_apply()->root_instruction();
+        break;
+      default:
+        // Consider this instructions interesting and return it.
+        return instr;
+    }
+  }
+}
+
 std::string HloDotDumper::GetInstructionNodeExtraInfo(
     const HloInstruction* instr) {
   std::vector<std::string> lines;
 
+  // Inside a kCall op's called computation, annotate each parameter with the
+  // name of the instruction that produced it.
+  std::optional<HloInstruction*> caller =
+      instr->parent()->GetUniqueCaller(HloOpcode::kCall);
+  if (caller.has_value() && instr->opcode() == HloOpcode::kParameter) {
+    const HloInstruction* operand =
+        caller.value()->operand(instr->parameter_number());
+    const HloInstruction* producer = GetInterestingProducer(operand);
+    lines.push_back(StrFormat(
+        "<i>from %s in %s</i>", HtmlLikeStringSanitize(producer->name()),
+        producer->parent()->IsEntryComputation()
+            ? "the ENTRY computation"
+            : HtmlLikeStringSanitize(producer->parent()->name())));
+  }
   // Get the instruction's extra attributes excluding the names of its
   // subcomputations, since those are drawn explicitly in the graph.
   for (const auto& line : instr->ExtraAttributesToString(
@@ -1485,10 +1558,10 @@ std::string HloDotDumper::GetInstructionNodeExtraInfo(
     // layout on tuples or tensors with just one dimension (which only have one
     // possible layout) to avoid visual noise.
     bool shape_is_multidim = false;
-    ShapeUtil::ForEachSubshape(instr->shape(),
-                               [&](const Shape& s, const ShapeIndex&) {
-                                 shape_is_multidim |= s.dimensions_size() > 1;
-                               });
+    ShapeUtil::ForEachSubshape(
+        instr->shape(), [&](const Shape& s, const ShapeIndex&) {
+          shape_is_multidim |= s.IsArray() && s.dimensions().size() > 1;
+        });
     std::string instr_shape;
     if (instr->opcode() != HloOpcode::kTuple && shape_is_multidim) {
       instr_shape = ShapeUtil::HumanStringWithLayout(instr->shape());
@@ -1612,6 +1685,57 @@ const HloInstruction* HloDotDumper::GetNodeForEdge(
   return instr;
 }
 
+// Detect if an instruction is an AsyncCollectiveFusion parameter that is
+// implementation details.
+bool IsAcfPrameter(const xla::HloInstruction* instruction) {
+  // Parameter is fused
+  if (instruction->opcode() != xla::HloOpcode::kParameter ||
+      !instruction->IsFused())
+    return false;
+
+  // Parameter piped through and is only consumed by 1 user
+  // Parameter 0 consumed by both root and all-gather will always persist.
+  if (instruction->user_count() != 1) return false;
+
+  const xla::HloComputation* parent_computation = instruction->parent();
+  int64_t parameter_number = instruction->parameter_number();
+  xla::HloInstruction* fusion_instruction =
+      parent_computation->FusionInstruction();
+  const xla::HloInstruction* parameterOperand =
+      fusion_instruction->operand(parameter_number);
+  // Operand is get-tuple-element
+  if (parameterOperand->opcode() != xla::HloOpcode::kGetTupleElement) {
+    return false;
+  }
+
+  const xla::HloInstruction* gteOperand = parameterOperand->operand(0);
+  if (gteOperand->opcode() != xla::HloOpcode::kFusion) {
+    return false;
+  }
+
+  constexpr absl::string_view kAcfComputationName = "async_collective_fusion";
+  constexpr absl::string_view kAcsInstructionName = "AsyncCollectiveStart";
+  constexpr absl::string_view kAcdInstructionName = "AsyncCollectiveDone";
+  auto src_instruction =
+      gteOperand->fused_instructions_computation()->root_instruction();
+  // (1) Parameter is fused into AsyncCollectiveFusion, operand is gte from
+  // AsyncCollectiveStart custom call and user is the root node of ACF
+  // (2) Parameter is mapped from Params in AsyncCollectiveFusion - operand is
+  // gte from ACF, and user is AsyncCollectiveDone custom call
+  return (absl::StartsWith(parent_computation->name(), kAcfComputationName) &&
+          src_instruction->IsCustomCall(kAcsInstructionName) &&
+          instruction->users()[0] == parent_computation->root_instruction()) ||
+         (instruction->users()[0]->IsCustomCall(kAcdInstructionName) &&
+          absl::StartsWith(gteOperand->fused_instructions_computation()->name(),
+                           kAcfComputationName));
+}
+
+// Rules to filter out input nodes (no operands) that are implementation
+// details.
+bool ShouldFilterInputNode(const HloInstruction* instr) {
+  return IsAcfPrameter(instr);
+}
+
 // Gets a NodeFilter that includes roughly all instructions whose distance from
 // root is <= radius.
 NodeFilter MakeNodeRadiusAroundFilter(
@@ -1628,7 +1752,7 @@ NodeFilter MakeNodeRadiusAroundFilter(
     std::tie(instr, depth) = worklist.front();
     worklist.pop_front();
 
-    nodes[instr] = kNormalNode;
+    nodes[instr] = ShouldFilterInputNode(instr) ? kHideNode : kNormalNode;
     if (depth == radius) {
       continue;
     }
@@ -1730,7 +1854,8 @@ NodeFilter MakeNodeRadiusAroundFilter(
           return it->second;
         }
         // Show all nodes in subcomputations.
-        if (instr->parent() != root->parent()) {
+        if (instr->parent() != root->parent() &&
+            !ShouldFilterInputNode(instr)) {
           return kNormalNode;
         }
         return kHideNode;
@@ -1840,7 +1965,7 @@ static std::pair<int, int> FusionVisualizerStateKey(
 static absl::StatusOr<std::string> CompressAndEncode(absl::string_view input) {
   class WritableStringFile : public tsl::WritableFile {
    public:
-    explicit WritableStringFile(std::string* data) : data_(data){};
+    explicit WritableStringFile(std::string* data) : data_(data) {};
     ~WritableStringFile() override = default;
 
     absl::Status Append(absl::string_view data) override {
@@ -2100,7 +2225,7 @@ static std::string GraphTitle(const HloComputation& computation) {
 
 absl::StatusOr<std::string> WrapFusionExplorer(
     const HloComputation& computation) {
-  absl::MutexLock lock(&fusion_visualizer_state_mu);
+  absl::MutexLock lock(fusion_visualizer_state_mu);
   const FusionVisualizerProgress& visualizer_progress =
       fusion_visualizer_states[FusionVisualizerStateKey(computation)];
   return WrapFusionExplorer(visualizer_progress, GraphTitle(computation));
@@ -2136,7 +2261,7 @@ static absl::StatusOr<std::string> WrapDotInFormat(
 
 void RegisterGraphToURLRenderer(
     std::function<absl::StatusOr<std::string>(absl::string_view)> renderer) {
-  absl::MutexLock lock(&url_renderer_mu);
+  absl::MutexLock lock(url_renderer_mu);
   if (url_renderer != nullptr) {
     LOG(WARNING) << "Multiple calls to RegisterGraphToURLRenderer. Last call "
                     "wins, but because order of initialization in C++ is "
@@ -2152,7 +2277,7 @@ void RegisterFusionState(const HloComputation& computation,
                          absl::string_view label,
                          const HloInstruction& consumer,
                          const HloInstruction* producer) {
-  absl::MutexLock lock(&fusion_visualizer_state_mu);
+  absl::MutexLock lock(fusion_visualizer_state_mu);
   FusionVisualizerProgress& fusion_progress =
       fusion_visualizer_states[FusionVisualizerStateKey(computation)];
 
@@ -2185,7 +2310,7 @@ absl::StatusOr<std::string> RenderGraph(
     HloRenderOptions hlo_render_options,
     std::optional<absl::flat_hash_map<const HloInstruction*, ColorStats>>
         color_map) {
-  absl::MutexLock lock(&url_renderer_mu);
+  absl::MutexLock lock(url_renderer_mu);
   if (format == RenderedGraphFormat::kUrl && url_renderer == nullptr) {
     return Unavailable("Can't render as URL; no URL renderer was registered.");
   }
@@ -2242,7 +2367,7 @@ absl::StatusOr<std::string> RenderNeighborhoodAround(
     const absl::flat_hash_set<const HloInstruction*>& boundary,
     std::optional<absl::flat_hash_map<const HloInstruction*, ColorStats>>
         color_map) {
-  absl::MutexLock lock(&url_renderer_mu);
+  absl::MutexLock lock(url_renderer_mu);
   if (format == RenderedGraphFormat::kUrl && url_renderer == nullptr) {
     return FailedPrecondition(
         "Can't render as URL; no URL renderer was registered.");
@@ -2262,7 +2387,7 @@ absl::StatusOr<std::string> RenderNeighborhoodAround(
 absl::StatusOr<std::string> RenderAllPathsFromTo(
     const HloInstruction& from, const HloInstruction& to, int64_t max_nodes,
     RenderedGraphFormat format, HloRenderOptions hlo_render_options) {
-  absl::MutexLock lock(&url_renderer_mu);
+  absl::MutexLock lock(url_renderer_mu);
   if (format == RenderedGraphFormat::kUrl && url_renderer == nullptr) {
     return FailedPrecondition(
         "Can't render as URL; no URL renderer was registered.");

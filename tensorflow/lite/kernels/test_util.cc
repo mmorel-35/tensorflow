@@ -18,6 +18,7 @@ limitations under the License.
 #include <stdint.h>
 
 #include <algorithm>
+#include <cmath>
 #include <complex>
 #include <functional>
 #include <map>
@@ -30,6 +31,14 @@ limitations under the License.
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include "absl/base/casts.h"
+#include "absl/base/const_init.h"
+#include "absl/base/no_destructor.h"
+#include "absl/base/thread_annotations.h"
+#include "absl/strings/str_cat.h"
+#include "absl/strings/str_format.h"
+#include "absl/strings/str_replace.h"
+#include "absl/synchronization/mutex.h"
 #include "flatbuffers/flatbuffers.h"  // from @flatbuffers
 #include "tensorflow/lite/core/api/op_resolver.h"
 #include "tensorflow/lite/core/c/common.h"
@@ -48,21 +57,165 @@ limitations under the License.
 #include "tensorflow/lite/string_type.h"
 #include "tensorflow/lite/string_util.h"
 #include "tensorflow/lite/tools/logging.h"
+#include "tensorflow/lite/tools/serialization/writer_lib.h"
 #include "tensorflow/lite/tools/versioning/op_version.h"
 #include "tensorflow/lite/version.h"
 #include "tsl/platform/logging.h"
 
 namespace tflite {
 
+using ::testing::Eq;
+using ::testing::FloatEq;
 using ::testing::FloatNear;
 using ::testing::Matcher;
 
+namespace {
+
+// Converts an integer from the sign-and-magnitude representation to
+// the biased representation.  More precisely, let N be 2 to the
+// power of (kBitCount - 1), an integer x is represented by the
+// unsigned number x + N.
+//
+// For instance,
+//
+//   -N + 1 (the most negative number representable using
+//          sign-and-magnitude) is represented by 1;
+//   0      is represented by N; and
+//   N - 1  (the biggest number representable using
+//          sign-and-magnitude) is represented by 2N - 1.
+//
+// Read https://en.wikipedia.org/wiki/Signed_number_representations
+// for more details on signed number representations.
+uint32_t SignAndMagnitudeToBiased(uint32_t sam) {
+  constexpr uint32_t kSignBitMask = 1u << 31;
+  if (kSignBitMask & sam) {
+    // sam represents a negative number.
+    return ~sam + 1;
+  } else {
+    // sam represents a positive number.
+    return kSignBitMask | sam;
+  }
+}
+// Given two numbers in the sign-and-magnitude representation,
+// returns the distance between them as an unsigned number.
+uint32_t DistanceBetweenSignAndMagnitudeNumbers(uint32_t sam1, uint32_t sam2) {
+  uint32_t biased1 = SignAndMagnitudeToBiased(sam1);
+  uint32_t biased2 = SignAndMagnitudeToBiased(sam2);
+  return (biased1 >= biased2) ? (biased1 - biased2) : (biased2 - biased1);
+}
+// Returns true if and only if lhs is at most max_ulps ULP's away from rhs.
+// In particular, this function:
+//
+//   - returns true if both numbers are NAN.
+//   - returns false if exact one of numbers is NAN.
+//   - treats really large numbers as almost equal to infinity.
+//   - thinks +0.0 and -0.0 are 0 ULP's apart.
+bool AlmostEquals(float lhs, float rhs, uint32_t max_ulps) {
+  if (std::isnan(lhs) || std::isnan(rhs)) {
+    return std::isnan(lhs) && std::isnan(rhs);
+  }
+
+  return DistanceBetweenSignAndMagnitudeNumbers(
+             absl::bit_cast<uint32_t>(lhs), absl::bit_cast<uint32_t>(rhs)) <=
+         max_ulps;
+}
+
+MATCHER_P3(FloatAbsRelNear, value, max_abs_err, max_rel_err, "") {
+  auto matcher =
+      FloatNear(value, std::max(max_abs_err, std::abs(max_rel_err * value)));
+  return ::testing::ExplainMatchResult(matcher, arg, result_listener);
+}
+
+MATCHER(Fp16Eq, "") {
+  // FP16 only has 10 bits precision while FP32 has 23 bits precision. Thus, to
+  // check if results of FP16 are almost equal, we could check the result is
+  // within 4 * 2^13 ULPs of FP32, which equals to 4 ULPs of FP16.
+  constexpr uint32_t fp16_ulps_in_fp32 = 4 * (1 << 13);
+  float actual = std::get<0>(arg);
+  float expected = std::get<1>(arg);
+  // The minimum exponent of FP16 is 2^-14, which means the minimum ULP of FP16
+  // is 2^-24. Therefore, when expected is less than 2^-14, i.e. a subnormal
+  // FP16 number, the minimum ULP of FP16 should be used instead of ULP of FP32.
+  if (std::abs(expected) < 0x1p-14) {
+    return std::abs(actual - expected) <= 4 * 0x1p-24;
+  }
+  return AlmostEquals(actual, expected, fp16_ulps_in_fp32);
+}
+
+// Returns the name of the dumped model. The name is in the format of
+// DTS-<test_suite_name>-<test_name>-<model_serial>.tflite. The model serial
+// number is used to distinguish different models dumped in the same test.
+// Returns empty string when there is no test info.
+std::string GetDumpedModelName() {
+  // The mutex is used to ensure thread safety for mutil-threaded tests. Notice
+  // that it doesn't work for running tests in parallel, which users should
+  // avoid when dumping models.
+  static absl::Mutex mutex(absl::kConstInit);
+  static absl::NoDestructor<std::string> previous_test_name ABSL_GUARDED_BY(
+      mutex);
+  static int model_serial ABSL_GUARDED_BY(mutex) = 0;
+  absl::MutexLock lock(mutex);
+
+  const testing::TestInfo* test_info =
+      ::testing::UnitTest::GetInstance()->current_test_info();
+  if (test_info == nullptr) {
+    return "";
+  }
+  std::string current_test_name =
+      absl::StrFormat("%s-%s", test_info->test_suite_name(), test_info->name());
+  // Reset serial number when running a new test.
+  if (*previous_test_name != current_test_name) {
+    *previous_test_name = current_test_name;
+    model_serial = 0;
+  }
+  model_serial++;
+
+  std::string raw_output_file_name =
+      absl::StrFormat("DTS-%s-%d.tflite", current_test_name, model_serial);
+  // Unix file name should not contain "/".
+  std::string output_file_name =
+      absl::StrReplaceAll(raw_output_file_name, {{"/", "_"}});
+  return output_file_name;
+}
+
+}  // namespace
+
+bool AllowFp16PrecisionForFp32() {
+  return tflite::KernelTestDelegateProviders::Get()->ConstParams().Get<bool>(
+      tflite::KernelTestDelegateProviders::kAllowFp16PrecisionForFp32);
+}
+
+Matcher<std::tuple<float, float>> FloatingPointEq() {
+  if (AllowFp16PrecisionForFp32()) {
+    return Fp16Eq();
+  }
+  return Eq();
+}
+
+Matcher<std::tuple<float, float>> FloatingPointAlmostEq() {
+  if (AllowFp16PrecisionForFp32()) {
+    return Fp16Eq();
+  }
+  return FloatEq();
+}
+
 std::vector<Matcher<float>> ArrayFloatNear(const std::vector<float>& values,
-                                           float max_abs_error) {
+                                           float max_abs_err,
+                                           float fp16_max_abs_err,
+                                           float max_rel_err,
+                                           float fp16_max_rel_err) {
+  if (AllowFp16PrecisionForFp32()) {
+    if (fp16_max_abs_err == kFpErrorAuto) {
+      max_abs_err = std::max(max_abs_err, std::sqrt(max_abs_err));
+    } else {
+      max_abs_err = fp16_max_abs_err;
+    }
+    max_rel_err = fp16_max_rel_err;
+  }
   std::vector<Matcher<float>> matchers;
   matchers.reserve(values.size());
   for (const float& v : values) {
-    matchers.emplace_back(FloatNear(v, max_abs_error));
+    matchers.emplace_back(FloatAbsRelNear(v, max_abs_err, max_rel_err));
   }
   return matchers;
 }
@@ -83,7 +236,9 @@ std::vector<Matcher<std::complex<float>>> ArrayComplex64Near(
 
 int SingleOpModel::AddInput(const TensorData& t) {
   int id = 0;
-  if (t.per_channel_quantization) {
+  if (t.per_block_quantization != 0) {
+    id = AddTensorPerBlockQuant(t);
+  } else if (t.per_channel_quantization) {
     id = AddTensorPerChannelQuant(t);
   } else {
     id = AddTensor<float>(t, nullptr, 0);
@@ -454,7 +609,40 @@ int SingleOpModel::CountNumberOfDelegatedPartitions() const {
   return CountPartitionsDelegatedTo(interpreter_.get(), delegate_);
 }
 
-SingleOpModel::~SingleOpModel() { ValidateAcceleration(); }
+void SingleOpModel::MaybeDumpModel() {
+  std::string dump_directory(
+      tflite::KernelTestDelegateProviders::Get()
+          ->ConstParams()
+          .Get<std::string>(
+              tflite::KernelTestDelegateProviders::kDumpTFLiteModelDir));
+  // If no path provided, we don't need to dump the model.
+  if (dump_directory.empty()) {
+    return;
+  }
+
+  // If the interpreter is not initialized, there is no model to be dumped.
+  if (interpreter_ == nullptr) {
+    TFLITE_LOG(INFO) << "Interpreter is not initialized, skipping model dump.";
+    return;
+  }
+
+  std::string output_file_name = GetDumpedModelName();
+  if (output_file_name.empty()) {
+    return;
+  }
+  // Save the model to file
+  std::string output_file_path =
+      absl::StrCat(dump_directory, "/", output_file_name);
+  TFLITE_LOG(INFO) << "Saving model to " << output_file_path;
+  if (ModelWriter(interpreter_.get()).Write(output_file_path) != kTfLiteOk) {
+    TFLITE_LOG(ERROR) << "Failed to save model to " << output_file_path;
+  }
+}
+
+SingleOpModel::~SingleOpModel() {
+  MaybeDumpModel();
+  ValidateAcceleration();
+}
 
 void MultiOpModel::AddBuiltinOp(
     BuiltinOperator type, BuiltinOptions builtin_options_type,

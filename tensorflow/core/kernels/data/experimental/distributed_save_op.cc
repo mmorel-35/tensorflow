@@ -20,6 +20,7 @@ limitations under the License.
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/time/time.h"
+#include "xla/tsl/lib/io/compression.h"
 #include "tensorflow/core/data/serialization_utils.h"
 #include "tensorflow/core/data/service/common.pb.h"
 #include "tensorflow/core/data/service/dispatcher_client.h"
@@ -28,7 +29,6 @@ limitations under the License.
 #include "tensorflow/core/framework/dataset.h"
 #include "tensorflow/core/framework/metrics.h"
 #include "tensorflow/core/protobuf/snapshot.pb.h"
-#include "tsl/lib/io/compression.h"
 
 namespace tensorflow {
 namespace data {
@@ -78,8 +78,8 @@ void DistributedSaveOp::Compute(OpKernelContext* ctx) {
   SerializationContext::Params params(ctx);
   SerializationContext serialization_ctx(params);
   DatasetDef dataset_def;
-  Status s = AsGraphDef(dataset, std::move(serialization_ctx),
-                        dataset_def.mutable_graph());
+  absl::Status s = AsGraphDef(dataset, std::move(serialization_ctx),
+                              dataset_def.mutable_graph());
   if (!s.ok()) {
     OP_REQUIRES_OK(
         ctx,
@@ -110,7 +110,7 @@ void DistributedSaveOp::Compute(OpKernelContext* ctx) {
       grpc_util::Retry(
           [&]() { return client.Snapshot(dataset_def, directory, metadata); },
           /*description=*/
-          strings::StrCat("save with tf.data service dispatcher at ", address),
+          absl::StrCat("save with tf.data service dispatcher at ", address),
           deadline_micros));
   metrics::RecordTFDataServiceSnapshotOp(directory, kDistributedSave);
 }

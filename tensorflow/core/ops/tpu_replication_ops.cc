@@ -13,9 +13,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include "absl/status/status.h"
+#include "xla/tsl/platform/errors.h"
 #include "tensorflow/core/framework/common_shape_fns.h"
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/shape_inference.h"
+#include "tensorflow/core/framework/tensor_shape.h"
 
 namespace tensorflow {
 
@@ -35,6 +38,7 @@ REGISTER_OP("TPUReplicateMetadata")
     .Attr("step_marker_location: string = \"STEP_MARK_AT_ENTRY\"")
     .Attr("allow_soft_placement: bool = false")
     .Attr("use_spmd_for_xla_partitioning: bool = false")
+    .Attr("use_shardy_partitioner: bool = false")
     .Attr("tpu_compile_options_proto: string = \"\"")
     .SetShapeFn(shape_inference::UnknownShape);
 
@@ -114,6 +118,7 @@ REGISTER_OP("_TPUReplicate")
     .Attr("allow_soft_placement: bool = false")
     .Attr("num_distributed_variables: int = 0")
     .Attr("use_spmd_for_xla_partitioning: bool = false")
+    .Attr("use_shardy_partitioner: bool = false")
     .Attr("tpu_compile_options_proto: string = \"\"")
     .Input("inputs: Tinputs")
     .Input("broadcast_inputs: Tbroadcast_inputs")
@@ -121,5 +126,19 @@ REGISTER_OP("_TPUReplicate")
     .Input("guaranteed_constants: Tguaranteed_constants")
     .Output("outputs: output_types")
     .SetShapeFn(shape_inference::UnknownShape);
+
+REGISTER_OP("TPUDummyInput")
+    .Output("output: dtype")
+    .Attr("dtype: {float, bfloat16}")
+    .Attr("shape: shape")
+    .SetDoNotOptimize()
+    .SetShapeFn([](InferenceContext* c) {
+      TensorShape shape;
+      ShapeHandle shape_handle;
+      TF_RETURN_IF_ERROR(c->GetAttr("shape", &shape));
+      TF_RETURN_IF_ERROR(c->MakeShapeFromTensorShape(shape, &shape_handle));
+      c->set_output(0, shape_handle);
+      return absl::OkStatus();
+    });
 
 }  // namespace tensorflow

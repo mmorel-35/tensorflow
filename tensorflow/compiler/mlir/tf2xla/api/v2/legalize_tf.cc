@@ -17,35 +17,37 @@ limitations under the License.
 
 #include <memory>
 #include <string>
-#include <string_view>
 #include <variant>
 #include <vector>
 
 #include "absl/log/log.h"
 #include "absl/status/status.h"
-#include "absl/strings/str_cat.h"
+#include "absl/strings/string_view.h"
 #include "absl/types/variant.h"
 #include "llvm/ADT/ScopeExit.h"
+#include "llvm/ADT/StringRef.h"
+#include "mlir/Pass/Pass.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tensorflow/utils/dump_mlir_util.h"
-#include "tensorflow/compiler/mlir/tf2xla/api/v1/compile_mlir_util.h"
+#include "tensorflow/compiler/mlir/tensorflow/utils/serialize_mlir_module_utils.h"
 #include "tensorflow/compiler/mlir/tf2xla/api/v1/compile_tf_graph.h"
 #include "tensorflow/compiler/mlir/tf2xla/internal/compilation_timer.h"
-#include "tensorflow/compiler/mlir/tf2xla/internal/legalize_tf_mlir.h"
 #include "tensorflow/compiler/mlir/tf2xla/internal/legalize_tf_to_hlo.h"
+#include "tensorflow/compiler/mlir/tf2xla/internal/reproducer.pb.h"
 #include "tensorflow/compiler/tf2xla/layout_util.h"
 #include "tensorflow/compiler/tf2xla/xla_helpers.h"
+#include "xla/client/compile_only_client.h"
 #include "xla/hlo/ir/hlo_module.h"
+#include "xla/shape.h"
+#include "xla/tsl/framework/device_type.h"
+#include "xla/tsl/lib/monitoring/sampler.h"
+#include "xla/tsl/platform/errors.h"
+#include "xla/tsl/platform/statusor.h"
 #include "xla/xla.pb.h"
-#include "tensorflow/core/framework/metrics.h"
-#include "tensorflow/core/graph/graph.h"
+#include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/platform/status.h"
 #include "tensorflow/core/tpu/kernels/tpu_compile_op_support.h"
 #include "tensorflow/core/util/debug_data_dumper.h"
-#include "tensorflow/core/util/dump_graph.h"
-#include "tsl/lib/monitoring/sampler.h"
-#include "tsl/platform/error_logging.h"
-#include "tsl/platform/errors.h"
-#include "tsl/platform/statusor.h"
+#include "tsl/platform/protobuf.h"
 
 namespace tensorflow {
 namespace tf2xla {
@@ -77,35 +79,49 @@ bool ShouldFallbackToGraphCompiler(
          ConfigProto::Experimental::MLIR_BRIDGE_ROLLOUT_DISABLED;
 }
 
+std::string ComputationToString(const MlirToHloArgs computation) {
+  if (computation.mlir_module_op.has_value()) {
+    return SerializeMlirModule(computation.mlir_module_op.value());
+  }
+  return std::string(computation.mlir_module);
+}
+
 void DumpComputationInput(
+    const tpu::TPUCompileMetadataProto& metadata,
+    const std::vector<tensorflow::TensorShape>& arg_shapes,
     const std::variant<tpu::MlirToHloArgs, tpu::FunctionToHloArgs>
         computation) {
   if (!VLOG_IS_ON(2)) {
     return;
   }
 
+  tensorflow::mlir::tf2xla::internal::LegalizeMlirToHloReproducer reproducer;
+  *reproducer.mutable_compile_metadata() = metadata;
+  for (const auto& shape : arg_shapes) {
+    shape.AsProto(reproducer.add_input_shapes());
+  }
+
   switch (computation.index()) {
     case 0:
-      VLOG(2) << "LegalizeMlirToHlo with MLIR computation input: "
-              << std::get<0>(computation).mlir_module;
+      reproducer.set_mlir_module(ComputationToString(std::get<0>(computation)));
       break;
     case 1: {
       auto input = std::get<1>(computation);
-      Graph g(input.flib_def);
-      VLOG(2) << "LegalizeMlirToHlo with FLIB computation input: "
-              << DumpGraphToFile(
-                     absl::StrCat("legalize_mlir_hlo_computation_input_",
-                                  input.function->name()),
-                     g, std::get<1>(computation).flib_def);
+      *reproducer.mutable_function_def_library() = input.flib_def->ToProto();
     } break;
     default:
       VLOG(2) << "LegalizeMlirToHlo computation input: unknown";
       break;
   }
+
+  std::string string_reproducer;
+  tensorflow::protobuf::TextFormat::PrintToString(reproducer,
+                                                  &string_reproducer);
+  DumpRawStringToFile("legalize_tf_reproducer.textproto", string_reproducer);
 }
 
-Status DumpHloCompilationResult(std::string_view name,
-                                XlaCompilationResult* compilation_result) {
+absl::Status DumpHloCompilationResult(
+    absl::string_view name, XlaCompilationResult* compilation_result) {
   if (!VLOG_IS_ON(2) &&
       !DEBUG_DATA_DUMPER()->ShouldDump(std::string(name), kDebugGroupMain)) {
     return absl::OkStatus();
@@ -137,7 +153,7 @@ absl::StatusOr<tensorflow::XlaCompilationResult> LegalizeMlirToHlo(
     const std::variant<tpu::MlirToHloArgs, tpu::FunctionToHloArgs>& computation,
     const tpu::TPUCompileMetadataProto& metadata, bool use_tuple_args,
     llvm::StringRef device_type,
-    std::vector<std::unique_ptr<mlir::Pass>>& custom_legalization_passes,
+    std::vector<std::unique_ptr<::mlir::Pass>>& custom_legalization_passes,
     XlaShapeLayoutHelpers::ShapeDeterminationFns shape_determination_fns,
     const std::vector<tensorflow::TensorShape>& arg_shapes,
     std::vector<tpu::ShardingAndIndex>* arg_core_mapping,
@@ -151,14 +167,14 @@ absl::StatusOr<tensorflow::XlaCompilationResult> LegalizeMlirToHlo(
 
   auto compilation_result = std::make_unique<XlaCompilationResult>();
 
-  DumpComputationInput(computation);
+  DumpComputationInput(metadata, arg_shapes, computation);
 
   // If there are no MLIR args, compile the given function in the library.
   if (ShouldFallbackToGraphCompiler(computation)) {
     TF_RETURN_IF_ERROR(tf2xla::v1::CompileTensorflowGraphToHlo(
         computation, metadata, use_tuple_args, shape_determination_fns,
-        arg_shapes, arg_core_mapping, per_core_arg_shapes, client,
-        compilation_result.get()));
+        arg_shapes, tsl::DeviceType(device_type.str()), arg_core_mapping,
+        per_core_arg_shapes, client, compilation_result.get()));
 
     DumpHloCompilationResult("legalize_tf_fallback.hlo",
                              compilation_result.get())

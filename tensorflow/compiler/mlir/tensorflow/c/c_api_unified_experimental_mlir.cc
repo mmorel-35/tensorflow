@@ -13,14 +13,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <cassert>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
 #include <utility>
 
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
+#include "absl/types/span.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/iterator_range.h"
 #include "llvm/Support/raw_ostream.h"
@@ -52,19 +56,21 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_types.h"
 #include "tensorflow/compiler/mlir/tensorflow/transforms/passes.h"
-#include "tensorflow/compiler/mlir/tensorflow/translate/export_graphdef.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/convert_type.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/dump_mlir_util.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/error_util.h"
+#include "tensorflow/compiler/mlir/tf2xla/api/v2/tf_executor_to_graph.h"
+#include "xla/tsl/platform/errors.h"
+#include "xla/tsl/platform/statusor.h"
+#include "tensorflow/core/framework/full_type.pb.h"
 #include "tensorflow/core/framework/function.h"
+#include "tensorflow/core/framework/function.pb.h"
 #include "tensorflow/core/framework/node_def_util.h"
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/lib/llvm_rtti/llvm_rtti.h"
 #include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/refcount.h"
-#include "tsl/platform/errors.h"
-#include "tsl/platform/statusor.h"
 
 namespace mlir {
 namespace TF {
@@ -112,8 +118,7 @@ class MlirTensor : public TracingTensorHandle {
     return type;
   }
 
-  tensorflow::Status Shape(
-      tensorflow::PartialTensorShape* shape) const override {
+  absl::Status Shape(tensorflow::PartialTensorShape* shape) const override {
     // TODO(b/173074167): Implement this and enable tests in
     // unified_api_test.cc.
     return Unimplemented("MlirTensor::Shape is not implemented yet.");
@@ -264,9 +269,8 @@ class MlirFunctionContext : public TracingContext {
     RegisterDialects(*context_);
     // TODO(aminim) figure out the location story here
     module_ = ModuleOp::create(builder_.getUnknownLoc());
-    func_ = func::FuncOp::create(
-        builder_.getUnknownLoc(), name,
-        builder_.getFunctionType(std::nullopt, std::nullopt));
+    func_ = func::FuncOp::create(builder_.getUnknownLoc(), name,
+                                 builder_.getFunctionType({}, {}));
     module_->push_back(func_);
     builder_ = OpBuilder::atBlockBegin(func_.addEntryBlock());
   }
@@ -564,7 +568,8 @@ MlirFunction::GetFunctionRecord() {
 
   tensorflow::FunctionDef fdef;
   TF_RETURN_IF_ERROR(
-      ConvertMlirFunctionToFunctionLibraryDef(func_, configs, &fdef));
+      tensorflow::tf2xla::v2::ConvertMlirFunctionToFunctionLibraryDef(
+          func_, configs, &fdef));
   func_record_ = tensorflow::core::RefCountPtr<tensorflow::FunctionRecord>(
       new tensorflow::FunctionRecord(std::move(fdef), {}, true));
 

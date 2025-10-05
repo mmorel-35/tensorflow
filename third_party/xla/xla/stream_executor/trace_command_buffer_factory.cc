@@ -22,7 +22,7 @@ limitations under the License.
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "xla/stream_executor/command_buffer.h"
-#include "xla/stream_executor/stream_executor_interface.h"
+#include "xla/stream_executor/stream_executor.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/statusor.h"
 
@@ -34,6 +34,7 @@ TraceCommandBufferFactory::Create(
     absl::AnyInvocable<absl::Status(Stream*)> function,
     CommandBuffer::Mode mode) {
   TF_ASSIGN_OR_RETURN(auto stream, executor->CreateStream());
+  stream->SetName("Command buffer tracer");
   return TraceCommandBufferFactory::Create(executor, stream.get(),
                                            std::move(function), mode);
 }

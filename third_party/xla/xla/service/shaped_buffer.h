@@ -16,16 +16,18 @@ limitations under the License.
 #ifndef XLA_SERVICE_SHAPED_BUFFER_H_
 #define XLA_SERVICE_SHAPED_BUFFER_H_
 
-#include <memory>
+#include <optional>
 #include <ostream>
 #include <string>
+#include <utility>
 
-#include "absl/types/span.h"
+#include "absl/log/check.h"
+#include "absl/status/statusor.h"
+#include "xla/shape.h"
 #include "xla/shape_tree.h"
 #include "xla/shape_util.h"
-#include "xla/statusor.h"
+#include "xla/stream_executor/device_memory.h"
 #include "xla/stream_executor/device_memory_allocator.h"
-#include "xla/stream_executor/stream_executor.h"
 #include "xla/xla_data.pb.h"
 
 namespace xla {
@@ -42,14 +44,18 @@ class ShapedBuffer {
   // both the on-host and on-device shape are required. The on-device shape
   // determines the number of device allocations (DeviceMemoryBase) held by the
   // ShapedBuffer.
-  ShapedBuffer(Shape on_device_shape, int device_ordinal);
+  // Specify `physical_device_ordinal` if multiple devices share the same
+  // physical device, e.g., virtual GPUs.
+  ShapedBuffer(Shape on_device_shape, int device_ordinal,
+               int physical_device_ordinal = -1);
 
   // TODO(b/170310047): remove this overload.
-  ShapedBuffer(Shape on_host_shape, Shape on_device_shape, int device_ordinal);
+  ShapedBuffer(Shape on_host_shape, Shape on_device_shape, int device_ordinal,
+               int physical_device_ordinal = -1);
 
   // Movable, but not copyable.
-  ShapedBuffer(ShapedBuffer&& s);
-  ShapedBuffer& operator=(ShapedBuffer&&);
+  ShapedBuffer(ShapedBuffer&& s) noexcept;
+  ShapedBuffer& operator=(ShapedBuffer&&) noexcept;
   ShapedBuffer(const ShapedBuffer&) = delete;
   ShapedBuffer& operator=(const ShapedBuffer&) = delete;
 
@@ -61,13 +67,16 @@ class ShapedBuffer {
 
   // Returns the shape of the on-host representation of the data held by this
   // ShapedBuffer.
-  const Shape& on_host_shape() const { return on_host_shape_; }
+  const Shape& on_host_shape() const {
+    return on_host_shape_ ? *on_host_shape_ : on_device_shape_;
+  }
 
   // Returns the shape of the on-device representation of the data held by this
   // ShapedBuffer.
   const Shape& on_device_shape() const { return on_device_shape_; }
 
   int device_ordinal() const { return device_ordinal_; }
+  int physical_device_ordinal() const { return physical_device_ordinal_; }
 
   // Return the root buffer of the shape (shape index {}).
   const se::DeviceMemoryBase& root_buffer() const {
@@ -101,7 +110,11 @@ class ShapedBuffer {
     CHECK(ShapeUtil::EqualStructure(on_device_shape, on_device_shape_))
         << "Structures are not the same. new: " << on_device_shape
         << ", old: " << on_device_shape_;
-    on_host_shape_ = ShapeUtil::DeviceShapeToHostShape(on_device_shape);
+    if (!ShapeUtil::DeviceShapeIsHostShape(on_device_shape)) {
+      on_host_shape_ = ShapeUtil::DeviceShapeToHostShape(on_device_shape);
+    } else {
+      on_host_shape_ = std::nullopt;
+    }
     on_device_shape_ = on_device_shape;
     buffers_.replace_shape_ptr(on_device_shape_);
   }
@@ -123,13 +136,16 @@ class ShapedBuffer {
   std::string ToString() const;
 
  protected:
-  Shape on_host_shape_;
+  // The shape of the data on the host. If not set, the on-device shape is
+  // assumed to be the same as the on-host shape.
+  std::optional<Shape> on_host_shape_;
 
   // The shape of the data on the device.
   Shape on_device_shape_;
 
   // The device the memory is allocated on.
   int device_ordinal_;
+  int physical_device_ordinal_;
 
   // The tree of device buffers. Its shape is on_device_shape().
   ShapeTree<se::DeviceMemoryBase> buffers_;
@@ -150,11 +166,13 @@ class ScopedShapedBuffer : public ShapedBuffer {
   // Creates a ScopedShapedBuffer with null DeviceMemoryBases at each index.
   explicit ScopedShapedBuffer(Shape on_device_shape,
                               se::DeviceMemoryAllocator* allocator,
-                              int device_ordinal);
+                              int device_ordinal,
+                              int physical_device_ordinal = -1);
   // TODO(b/170310047): remove this overload.
   explicit ScopedShapedBuffer(Shape on_host_shape, Shape on_device_shape,
                               se::DeviceMemoryAllocator* allocator,
-                              int device_ordinal);
+                              int device_ordinal,
+                              int physical_device_ordinal = -1);
 
   // Create a ScopedShapedBuffer by taking over the memory from the incoming
   // ShapedBuffer.
@@ -162,8 +180,8 @@ class ScopedShapedBuffer : public ShapedBuffer {
                               se::DeviceMemoryAllocator* allocator);
 
   // Movable, but not copyable.
-  ScopedShapedBuffer(ScopedShapedBuffer&& s);
-  ScopedShapedBuffer& operator=(ScopedShapedBuffer&&);
+  ScopedShapedBuffer(ScopedShapedBuffer&& s) noexcept;
+  ScopedShapedBuffer& operator=(ScopedShapedBuffer&&) noexcept;
   ScopedShapedBuffer(const ScopedShapedBuffer&) = delete;
   ScopedShapedBuffer& operator=(const ScopedShapedBuffer&) = delete;
 

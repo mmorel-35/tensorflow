@@ -39,6 +39,7 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/quantization/stablehlo/cc/io.h"
 #include "tensorflow/compiler/mlir/quantization/stablehlo/cc/pass_pipeline.h"
 #include "tensorflow/compiler/mlir/quantization/stablehlo/cc/types.h"
+#include "tensorflow/compiler/mlir/quantization/stablehlo/quantization_config.pb.h"
 #include "tensorflow/compiler/mlir/quantization/tensorflow/cc/convert_asset_args.h"
 #include "tensorflow/compiler/mlir/quantization/tensorflow/cc/run_passes.h"
 #include "tensorflow/compiler/mlir/quantization/tensorflow/exported_model.pb.h"
@@ -47,16 +48,16 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/quantization/tensorflow/python/unfreeze_constants.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_saved_model.h"
 #include "tensorflow/compiler/mlir/tensorflow/transforms/passes.h"
-#include "tensorflow/compiler/mlir/tensorflow/translate/export_graphdef.h"
 #include "tensorflow/compiler/mlir/tensorflow/translate/mlir_roundtrip_flags.h"
+#include "tensorflow/compiler/mlir/tf2xla/api/v2/tf_executor_to_graph.h"
+#include "xla/tsl/platform/errors.h"
+#include "xla/tsl/platform/statusor.h"
 #include "tensorflow/core/framework/function.h"
 #include "tensorflow/core/framework/function.pb.h"
 #include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/graph/graph.h"
 #include "tensorflow/core/protobuf/meta_graph.pb.h"
 #include "tensorflow/core/protobuf/saver.pb.h"
-#include "tsl/platform/errors.h"
-#include "tsl/platform/statusor.h"
 
 namespace mlir::quant::stablehlo {
 namespace {
@@ -67,7 +68,6 @@ using ::mlir::tf_saved_model::kTfSavedModelInitializerRestoreType;
 using ::stablehlo::quantization::QuantizationConfig;
 using ::stablehlo::quantization::io::GetLocalTmpFileName;
 using ::tensorflow::AssetFileDef;
-using ::tensorflow::ConvertMlirToGraph;
 using ::tensorflow::FunctionDefLibrary;
 using ::tensorflow::FunctionLibraryDefinition;
 using ::tensorflow::Graph;
@@ -156,8 +156,8 @@ ExportedModel CreateExportedModelFromGraphDef(
     const std::vector<AssetFileDef>& asset_file_defs) {
   ExportedModel exported_model{};
   *exported_model.mutable_graph_def() = graph_def;
-  exported_model.set_init_node_name(std::string(init_node_name));
-  exported_model.set_checkpoint_dir(std::string(checkpoint_dir));
+  exported_model.set_init_node_name(init_node_name);
+  exported_model.set_checkpoint_dir(checkpoint_dir);
 
   exported_model.mutable_function_aliases()->insert(function_aliases.begin(),
                                                     function_aliases.end());
@@ -175,7 +175,7 @@ ExportedModel CreateExportedModelFromGraphDef(
 
 void AddExportPasses(mlir::PassManager& pm,
                      const bool duplicate_shape_determining_constants) {
-  AddCallModuleSerializationPasses(pm);
+  quant::stablehlo::AddCallModuleSerializationPasses(pm);
   if (duplicate_shape_determining_constants) {
     pm.addNestedPass<mlir::func::FuncOp>(
         mlir::quant::CreateDuplicateShapeDeterminingConstantsPass());
@@ -240,8 +240,8 @@ absl::StatusOr<ExportedModel> ConvertMlirModuleToExportedModel(
                                      FunctionDefLibrary()};
   std::unique_ptr<Graph> graph;
   absl::flat_hash_set<Node*> control_ret_nodes{};
-  TF_RETURN_IF_ERROR(ConvertMlirToGraph(module_op, config, &graph, &flib_def,
-                                        &control_ret_nodes));
+  TF_RETURN_IF_ERROR(tensorflow::tf2xla::v2::ConvertTfExecutorToGraph(
+      module_op, config, &graph, &flib_def, &control_ret_nodes));
 
   GraphDef graph_def{};
   graph->ToGraphDef(&graph_def);

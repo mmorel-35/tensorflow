@@ -94,7 +94,7 @@ void UpdateCompileOptions(AotOptions& options) {
       !options.graph_execution_options->enable_mlrt;
 }
 
-Status CompileTfGraphToHlo(
+absl::Status CompileTfGraphToHlo(
     const FunctionLibraryDefinition* flib_def, const NameAttrList& function,
     int graph_def_version, const std::vector<XlaCompiler::Argument>& args,
     bool has_ref_vars, bool may_alias_resource_update,
@@ -132,7 +132,7 @@ std::string GetNodeName(const std::string& signature_node_name) {
   return signature_node_name.substr(0, node_name_len - 2);
 }
 
-Status UpdateGraphDefWithInputShapes(
+absl::Status UpdateGraphDefWithInputShapes(
     MetaGraphDef& meta_graph_def,
     const absl::flat_hash_map<std::string, tensorflow::TensorShapeProto>&
         input_shapes,
@@ -307,7 +307,9 @@ AotCompileToGpuPjRtExecutable(
       flib_def, function, graph_def_version, args, has_ref_vars,
       may_alias_resource_update, &options, compilation_result));
 
-  xla::Compiler::TargetConfig gpu_config(gpu_target_config);
+  TF_ASSIGN_OR_RETURN(
+      xla::Compiler::TargetConfig gpu_config,
+      xla::Compiler::TargetConfig::FromProto(gpu_target_config));
   xla::StreamExecutorGpuCompiler pjrt_gpu_compiler;
   // Create a trivial topology, which won't be used.
   xla::StreamExecutorGpuTopologyDescription topology(xla::CudaId(),
@@ -336,9 +338,9 @@ absl::StatusOr<std::string> AotCompileToGpuPjRtLoadedExecutableWithDevice(
 
   const xla::CompileOptions pjrt_options =
       GetPjRtCompileOptions(options, **compilation_result);
-  TF_ASSIGN_OR_RETURN(
-      auto executable,
-      se_client->Compile(*((*compilation_result)->computation), pjrt_options));
+  TF_ASSIGN_OR_RETURN(auto executable,
+                      se_client->CompileAndLoad(
+                          *((*compilation_result)->computation), pjrt_options));
   return se_client->SerializeExecutable(*executable);
 }
 

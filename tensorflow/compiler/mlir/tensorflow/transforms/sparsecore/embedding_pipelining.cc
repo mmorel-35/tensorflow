@@ -148,6 +148,7 @@ return selected_results
 #include "mlir/Pass/Pass.h"  // from @llvm-project
 #include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "mlir/Support/LogicalResult.h"  // from @llvm-project
+#include "mlir/Transforms/Inliner.h"  // from @llvm-project
 #include "mlir/Transforms/InliningUtils.h"  // from @llvm-project
 #include "mlir/Transforms/RegionUtils.h"  // from @llvm-project
 #include "tensorflow/compiler/jit/flags.h"
@@ -164,6 +165,8 @@ static constexpr char kEmbeddingPipeliningInlineAttr[] =
     "_embedding_pipelining_inline";
 static constexpr char kEmbeddingForward[] = "forward";
 static constexpr char kEmbeddingBackward[] = "backward";
+static constexpr char kEmbeddingForwardSequential[] = "forward_sequential";
+static constexpr char kEmbeddingBackwardSequential[] = "backward_sequential";
 static constexpr char kDevice[] = "device";
 static constexpr char kLower[] = "_lower_using_switch_merge";
 static constexpr llvm::StringRef kTpuCompilationStatus =
@@ -202,15 +205,19 @@ bool UseEmbeddingPipelining(ModuleOp& module) {
     LOG(INFO) << "Embedding pipelining disabled via flag.";
     return false;
   }
-  // Detect summaries by looking for key Ops in the graph. It would be better to
-  // do this via operator attributes rather than looking for a specific op.
-  WalkResult walk_result = module.walk([&](Operation* op) -> WalkResult {
-    if (llvm::isa<TF::WriteSummaryOp>(op)) return WalkResult::interrupt();
-    return WalkResult::advance();
-  });
-  if (walk_result.wasInterrupted()) {
-    LOG(INFO) << "TF summaries detected - disabling embedding pipelining.";
-    return false;
+
+  if (tensorflow::GetBuildXlaOpsPassFlags()
+          ->tf_xla_disable_full_embedding_pipelining_with_summaries) {
+    // Detect summaries by looking for key Ops in the graph. It would be better
+    // to do this via operator attributes rather than looking for a specific op.
+    WalkResult walk_result =
+        module.walk([&](TF::WriteSummaryOp op) -> WalkResult {
+          return WalkResult::interrupt();
+        });
+    if (walk_result.wasInterrupted()) {
+      LOG(WARNING) << "TF summaries detected - disabling embedding pipelining.";
+      return false;
+    }
   }
   LOG(INFO) << "Embedding pipelining rewrite enabled.";
   return true;
@@ -390,10 +397,10 @@ struct Inliner : public InlinerInterface {
          func.getRegion().getOps<TF::GlobalIterIdOp>()) {
       auto loc = global_iter_id_op->getLoc();
       builder.setInsertionPointAfter(global_iter_id_op);
-      auto offset = builder.create<TF::ConstOp>(
-          loc, builder.getI64IntegerAttr(offset_value));
-      auto new_global_iter_id = builder.create<TF::AddV2Op>(
-          loc, global_iter_id_op->getResultTypes(),
+      auto offset = TF::ConstOp::create(
+          builder, loc, builder.getI64IntegerAttr(offset_value));
+      auto new_global_iter_id = TF::AddV2Op::create(
+          builder, loc, global_iter_id_op->getResultTypes(),
           global_iter_id_op->getResult(0), offset->getResult(0));
       global_iter_id_op->getResult(0).replaceAllUsesExcept(
           new_global_iter_id->getResult(0), new_global_iter_id);
@@ -416,6 +423,7 @@ struct Inliner : public InlinerInterface {
   LogicalResult InlineCallsInFunc(func::FuncOp func,
                                   bool inline_all_funcs = false) {
     llvm::SetVector<Operation*> ops_to_erase;
+    InlinerConfig config;
     for (auto caller :
          func.getRegion().getOps<TF::StatefulPartitionedCallOp>()) {
       if (!inline_all_funcs &&
@@ -435,7 +443,8 @@ struct Inliner : public InlinerInterface {
       auto callee =
           llvm::dyn_cast<func::FuncOp>(symbol_table.lookup(caller.getF()));
       auto& src_region = callee.getRegion();
-      auto result = inlineCall(*this, caller, callee, &src_region, true);
+      auto result = inlineCall(*this, config.getCloneCallback(), caller, callee,
+                               &src_region, true);
       if (failed(result)) {
         func.emitError("Inliner failed");
         return result;
@@ -627,8 +636,9 @@ TF::StatefulPartitionedCallOp MakeFuncCaller(mlir::OpBuilder& builder,
   auto symbol =
       mlir::SymbolRefAttr::get(builder.getContext(), func.getSymName());
   auto result_types = func.getResultTypes();
-  auto caller = builder.create<TF::StatefulPartitionedCallOp>(
-      loc, result_types, operands, symbol,
+  auto caller = TF::StatefulPartitionedCallOp::create(
+      builder, loc, result_types, operands, /*arg_attrs=*/nullptr,
+      /*res_attrs=*/nullptr, symbol,
       /*config=*/builder.getStringAttr(""),
       /*config_proto=*/builder.getStringAttr(""),
       /*executor_type=*/builder.getStringAttr(""));
@@ -651,8 +661,9 @@ func::FuncOp CreateFnWithSignature(ModuleOp module, SymbolTable& symbol_table,
   auto in_types = GetValueTypes(inputs);
   auto out_types = GetValueTypes(outputs);
   builder.setInsertionPointToEnd(&module.getBodyRegion().back());
-  auto func_op = builder.create<func::FuncOp>(
-      module.getLoc(), name, builder.getFunctionType(in_types, out_types));
+  auto func_op =
+      func::FuncOp::create(builder, module.getLoc(), name,
+                           builder.getFunctionType(in_types, out_types));
   func_op.setPrivate();
   symbol_table.insert(func_op);
   return func_op;
@@ -695,7 +706,7 @@ TF::StatefulPartitionedCallOp EncapsulateOpsInFunc(
                                new_func.getBody());
 
   builder.setInsertionPointToEnd(block);
-  builder.create<func::ReturnOp>(parent_func.getLoc(), outputs.getArrayRef());
+  func::ReturnOp::create(builder, parent_func.getLoc(), outputs.getArrayRef());
 
   // Replace the original 'outputs' values with the result of the call to the
   // new function.
@@ -946,21 +957,22 @@ LogicalResult FindForwardPassOps(OpBuilder& builder,
       builder.setInsertionPointAfter(op);
       std::vector<Type> types(num_replicas, result.getType());
       TF::TPUReplicatedOutputOp replicated_output =
-          builder.create<TF::TPUReplicatedOutputOp>(op->getLoc(),
-                                                    TypeRange(types), result);
+          TF::TPUReplicatedOutputOp::create(builder, op->getLoc(),
+                                            TypeRange(types), result);
       new_forward_ops.insert(replicated_output);
       // TODO(bfontain): Check for other attributes.
       replicated_output->setAttr(kDevice, builder.getStringAttr(""));
-      TF::TPUReplicatedInputOp input = builder.create<TF::TPUReplicatedInputOp>(
-          op->getLoc(), result.getType(), replicated_output.getResults());
+      TF::TPUReplicatedInputOp input = TF::TPUReplicatedInputOp::create(
+          builder, op->getLoc(), result.getType(),
+          replicated_output.getResults());
       input->setAttr(kDevice, builder.getStringAttr(""));
       mlir::Value new_value = input.getOutput();
 
       if (mlir::isa<TF::TPUAnnotateTensorsWithDynamicShapeOp>(
               result.getDefiningOp())) {
         TF::TPUAnnotateTensorsWithDynamicShapeOp annotate_op =
-            builder.create<TF::TPUAnnotateTensorsWithDynamicShapeOp>(
-                op->getLoc(), result.getType(), new_value,
+            TF::TPUAnnotateTensorsWithDynamicShapeOp::create(
+                builder, op->getLoc(), result.getType(), new_value,
                 result.getDefiningOp()->getAttrs());
         for (auto [operation, index] : out_of_region_use) {
           if (!backward_pass_ops.contains(operation)) {
@@ -1065,12 +1077,12 @@ LogicalResult FindBackwardPassOps(
     builder.setInsertionPointAfter(value.getDefiningOp());
     std::vector<Type> types(num_replicas, value.getType());
     Location loc = value.getDefiningOp()->getLoc();
-    TF::TPUReplicatedOutputOp output =
-        builder.create<TF::TPUReplicatedOutputOp>(loc, TypeRange(types), value);
+    TF::TPUReplicatedOutputOp output = TF::TPUReplicatedOutputOp::create(
+        builder, loc, TypeRange(types), value);
     // TODO(bfontain): Check for other attributes.
     output->setAttr(kDevice, builder.getStringAttr(""));
-    TF::TPUReplicatedInputOp input = builder.create<TF::TPUReplicatedInputOp>(
-        loc, value.getType(), output.getResults());
+    TF::TPUReplicatedInputOp input = TF::TPUReplicatedInputOp::create(
+        builder, loc, value.getType(), output.getResults());
     input->setAttr(kDevice, builder.getStringAttr(""));
     value.replaceUsesWithIf(input.getOutput(), [&](OpOperand& use) {
       return backward_pass_ops.contains(use.getOwner());
@@ -1268,10 +1280,11 @@ void AddAssertion(OpBuilder& builder, Location& loc, Value cond,
   if (!kDoAssertions) return;
   auto shape_type =
       RankedTensorType::get({1}, builder.getType<TF::StringType>());
-  auto msg = builder.create<TF::ConstOp>(
-      loc, DenseStringElementsAttr::get(shape_type,
-                                        llvm::ArrayRef<StringRef>{message}));
-  builder.create<TF::AssertOp>(loc, cond, msg.getResult());
+  auto msg =
+      TF::ConstOp::create(builder, loc,
+                          DenseStringElementsAttr::get(
+                              shape_type, llvm::ArrayRef<StringRef>{message}));
+  TF::AssertOp::create(builder, loc, cond, msg.getResult());
 }
 
 LogicalResult StartStep0(OpBuilder& builder, Location& loc,
@@ -1346,7 +1359,7 @@ LogicalResult StartStep0(OpBuilder& builder, Location& loc,
   std::vector<Value> results;
   Append(results, new_forward->getResults());
   Append(results, new_core_tpu->getResults());
-  func_builder.create<func::ReturnOp>(loc, results);
+  func::ReturnOp::create(func_builder, loc, results);
 
   // Inline any StatefulPartitionCall Ops.
   auto result = Inliner(builder, symbol_table).InlineCallsInFunc(then_func);
@@ -1404,7 +1417,7 @@ LogicalResult StartStep1(OpBuilder& builder, Location& loc,
   auto new_forward = func_builder.insert(callers.forward->clone(ir_map));
 
   // Add the function return;
-  func_builder.create<func::ReturnOp>(loc, new_forward->getResults());
+  func::ReturnOp::create(func_builder, loc, new_forward->getResults());
 
   // Inline any StatefulPartitionCall Ops.
   auto result = Inliner(builder, symbol_table).InlineCallsInFunc(then_func);
@@ -1471,7 +1484,7 @@ LogicalResult FinishStepNm2(OpBuilder& builder, Location& loc,
 
   // Add the function return;
   func_builder.setInsertionPointAfter(new_backward);
-  func_builder.create<func::ReturnOp>(loc, new_backward->getResults());
+  func::ReturnOp::create(func_builder, loc, new_backward->getResults());
 
   // Inline any StatefulPartitionCall Ops.
   auto result = Inliner(builder, symbol_table).InlineCallsInFunc(then_func);
@@ -1541,7 +1554,7 @@ LogicalResult FinishStepNm1(OpBuilder& builder, Location& loc,
   std::vector<Value> results;
   Append(results, new_core_tpu->getResults());
   Append(results, new_backward->getResults());
-  func_builder.create<func::ReturnOp>(loc, results);
+  func::ReturnOp::create(func_builder, loc, results);
 
   // Inline any StatefulPartitionCall Ops.
   auto result = Inliner(builder, symbol_table).InlineCallsInFunc(then_func);
@@ -1700,24 +1713,35 @@ void EmbeddingPipeliningPass::runOnOperation() {
   // Find all ops that we know compose the embedding forward and backward pass.
   // These ops are only tagged if one enables the
   // `pipeline_execution_with_tensor_core` flag in the mid-level API.
+  bool sequencing_requested = false;
   WalkResult walk_result = module.walk([&](Operation* op) -> WalkResult {
     if (op->hasAttr(kEmbeddingPipelining)) {
       const std::string region =
           op->getAttrOfType<StringAttr>(kEmbeddingPipelining).getValue().str();
       if (region == kEmbeddingForward) {
         forward_pass_ops.insert(op);
+        op->removeAttr(kEmbeddingPipelining);
       } else if (region == kEmbeddingBackward) {
         backward_pass_ops.insert(op);
+        op->removeAttr(kEmbeddingPipelining);
+      } else if (region == kEmbeddingForwardSequential ||
+                 region == kEmbeddingBackwardSequential) {
+        sequencing_requested = true;
       } else {
         return op->emitOpError()
                << "embedding op has unknown " << kEmbeddingPipelining
                << " attribute value " << region << ".";
       }
-      op->removeAttr(kEmbeddingPipelining);
     }
     return WalkResult::advance();
   });
   if (walk_result.wasInterrupted()) return signalPassFailure();
+
+  if (sequencing_requested) {
+    LOG(INFO) << "EmbeddingSequencingPass requested, skipping "
+                 "EmbeddingPipeliningPass";
+    return;
+  }
 
   // If there are no forward pass ops, there is no SC, so we end early.
   if (forward_pass_ops.empty()) {
@@ -2056,7 +2080,7 @@ void EmbeddingPipeliningPass::runOnOperation() {
   //****************************************************************************
   // Build the cond function body. All we need is a ReturnOp that returns C_i
   // which is the last argument.
-  cond_builder.create<func::ReturnOp>(loc, cond.getArgument(C_index_i));
+  func::ReturnOp::create(cond_builder, loc, cond.getArgument(C_index_i));
 
   //****************************************************************************
   // Build the internals of the new tf.While op's body function.
@@ -2173,8 +2197,8 @@ void EmbeddingPipeliningPass::runOnOperation() {
   auto new_body_return_types = GetValueTypes(new_body_results);
 
   body_builder.setInsertionPointAfter(cond_caller_ip1);
-  body_builder.create<func::ReturnOp>(orig_while_op->getLoc(),
-                                      new_body_results.getArrayRef());
+  func::ReturnOp::create(body_builder, orig_while_op->getLoc(),
+                         new_body_results.getArrayRef());
 
   // Finally, create the new tf.WhileOp.
   builder.setInsertionPoint(orig_while_op);
@@ -2187,8 +2211,8 @@ void EmbeddingPipeliningPass::runOnOperation() {
                                 : orig_while_op.getParallelIterations();
   LOG(INFO) << "Setting parallel_iterations_flag to "
             << parallel_iterations_flag;
-  auto new_while_op = builder.create<TF::WhileOp>(
-      orig_while_op->getLoc(), new_body_return_types,
+  auto new_while_op = TF::WhileOp::create(
+      builder, orig_while_op->getLoc(), new_body_return_types,
       new_while_operands.getArrayRef(), cond.getSymName(), body.getSymName(),
       /*parallel_iterations=*/parallel_iterations,
       /*is_stateless=*/false,

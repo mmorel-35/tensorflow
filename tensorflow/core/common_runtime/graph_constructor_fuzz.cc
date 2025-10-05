@@ -21,6 +21,8 @@ limitations under the License.
 #include <vector>
 
 #include "fuzztest/fuzztest.h"
+#include "absl/strings/string_view.h"
+#include "google/protobuf/io/tokenizer.h"
 #include "tensorflow/core/common_runtime/graph_constructor.h"
 #include "tensorflow/core/public/session.h"
 
@@ -39,7 +41,7 @@ void FuzzGraphEndToEndSimpleFixedInput(const GraphDef& graph_def) {
   // Load an arbitrary graph and run a session on it using simple input.
   ImportGraphDefOptions options;
   auto graph = std::make_unique<Graph>(OpRegistry::Global());
-  Status status =
+  absl::Status status =
       ImportGraphDef(options, graph_def, graph.get(), nullptr, nullptr);
   if (!status.ok()) {
     return;
@@ -77,7 +79,7 @@ void FuzzGraphEndToEndAllStatic(const GraphDef& graph_def) {
   // to explore any arbitrary graph computation.
   ImportGraphDefOptions options;
   auto graph = std::make_unique<Graph>(OpRegistry::Global());
-  Status status =
+  absl::Status status =
       ImportGraphDef(options, graph_def, graph.get(), nullptr, nullptr);
   if (!status.ok()) {
     return;
@@ -114,12 +116,8 @@ class EmptyErrorCollector : public protobuf::io::ErrorCollector {
  public:
   EmptyErrorCollector() {}
   ~EmptyErrorCollector() override {}
-  void AddError(int line, int column, const std::string& message) override {
-    // log error
-  }
-  void AddWarning(int line, int column, const std::string& message) override {
-    // log warning
-  }
+  void RecordError(int line, protobuf::io::ColumnNumber column,
+                   absl::string_view message) override {}
 };
 
 std::vector<std::string> ops = {
@@ -353,7 +351,7 @@ void FuzzGraphEndToEndFDP(std::vector<uint8_t> data) {
   }
 
   std::unique_ptr<Graph> graph = std::make_unique<Graph>(OpRegistry::Global());
-  Status s = ImportGraphDef(opts, gdef_, graph.get(), nullptr, nullptr);
+  absl::Status s = ImportGraphDef(opts, gdef_, graph.get(), nullptr, nullptr);
   if (!s.ok()) {
     return;
   }

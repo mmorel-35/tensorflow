@@ -15,14 +15,12 @@ limitations under the License.
 
 #include "xla/stream_executor/tpu/tpu_platform.h"
 
-#include <cstddef>
 #include <cstdint>
-#include <cstdlib>
-#include <map>
 #include <memory>
 #include <string>
 #include <utility>
 
+#include "absl/log/check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/synchronization/mutex.h"
@@ -56,29 +54,10 @@ TpuPlatform* TpuPlatform::GetRegisteredPlatform() {
   return tpu_registered_platform;
 }
 
-absl::Status TpuPlatform::Initialize(
-    const std::map<std::string, std::string>& platform_options) {
+absl::Status TpuPlatform::Initialize() {
   StatusHelper status;
-
-  size_t options_size = platform_options.size();
-  const char** options_key =
-      static_cast<const char**>(malloc(sizeof(const char*) * options_size));
-  const char** options_value =
-      static_cast<const char**>(malloc(sizeof(const char*) * options_size));
-
-  size_t i = 0;
-  for (const auto& option : platform_options) {
-    options_key[i] = option.first.c_str();
-    options_value[i] = option.second.c_str();
-    i++;
-  }
-
   stream_executor::tpu::ExecutorApiFn()->TpuPlatform_InitializeFn(
-      platform_, options_size, options_key, options_value, status.c_status);
-
-  free(options_key);
-  free(options_value);
-
+      platform_, status.c_status);
   return status.status();
 }
 
@@ -96,32 +75,23 @@ int TpuPlatform::VisibleDeviceCount() const {
       ->TpuPlatform_VisibleDeviceCountFn(platform_);
 }
 
-absl::StatusOr<::stream_executor::StreamExecutor*> TpuPlatform::GetExecutor(
-    const ::stream_executor::StreamExecutorConfig& config) {
+absl::StatusOr<::stream_executor::StreamExecutor*>
+TpuPlatform::ExecutorForDevice(int ordinal) {
   return executor_cache_.GetOrCreate(
-      config, [&]() { return GetUncachedExecutor(config); });
+      ordinal, [this, ordinal]() { return GetUncachedExecutor(ordinal); });
 }
 
 absl::StatusOr<std::unique_ptr<::stream_executor::StreamExecutor>>
-TpuPlatform::GetUncachedExecutor(
-    const ::stream_executor::StreamExecutorConfig& config) {
-  SE_StreamExecutorConfig* c_config = stream_executor::tpu::ExecutorApiFn()
-                                          ->TpuStreamExecutorConfig_DefaultFn();
-
-  stream_executor::tpu::ExecutorApiFn()->TpuStreamExecutorConfig_SetOrdinalFn(
-      c_config, config.ordinal);
-
+TpuPlatform::GetUncachedExecutor(int ordinal) {
   StatusHelper status;
   SE_StreamExecutor* executor =
       stream_executor::tpu::ExecutorApiFn()->TpuPlatform_GetExecutorFn(
-          platform_, c_config, status.c_status);
-  stream_executor::tpu::ExecutorApiFn()->TpuStreamExecutorConfig_FreeFn(
-      c_config);
+          platform_, ordinal, status.c_status);
   if (!status.ok()) {
     return status.status();
   }
   return std::make_unique<stream_executor::tpu::TpuExecutor>(this, executor,
-                                                             config.ordinal);
+                                                             ordinal);
 }
 
 ::stream_executor::Platform::Id TpuPlatform::id() const {
@@ -135,7 +105,7 @@ bool TpuPlatform::ShouldRegisterTpuDeviceToDeviceCopy() {
       ->TpuPlatform_ShouldRegisterTpuDeviceToDeviceCopyFn(platform_);
 }
 
-const tensorflow::tpu::TpuTopologyPtr TpuPlatform::GetTopologyPtr() {
+const SE_TpuTopology* TpuPlatform::GetTopologyPtr() {
   return stream_executor::tpu::ExecutorApiFn()->TpuPlatform_GetTopologyPtrFn(
       platform_);
 }
@@ -153,17 +123,17 @@ TpuRuntimeVersion TpuPlatform::version() const {
 }
 
 void TpuPlatform::InsertEvent(stream_executor::Event* key, SE_Event* val) {
-  absl::MutexLock lock(&event_map_mu_);
+  absl::MutexLock lock(event_map_mu_);
   event_map_[key] = val;
 }
 
 SE_Event* TpuPlatform::LookupEvent(stream_executor::Event* key) {
-  absl::ReaderMutexLock lock(&event_map_mu_);
+  absl::ReaderMutexLock lock(event_map_mu_);
   return event_map_.at(key);
 }
 
 void TpuPlatform::EraseEvent(stream_executor::Event* key) {
-  absl::MutexLock lock(&event_map_mu_);
+  absl::MutexLock lock(event_map_mu_);
   event_map_.erase(key);
 }
 

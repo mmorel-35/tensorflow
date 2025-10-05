@@ -17,16 +17,23 @@ limitations under the License.
 
 #include <optional>
 
+#include "llvm/Support/Casting.h"
+#include "mlir/IR/Block.h"  // from @llvm-project
+#include "mlir/IR/Builders.h"  // from @llvm-project
+#include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
 #include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
+#include "mlir/IR/Operation.h"  // from @llvm-project
 #include "mlir/Support/LLVM.h"  // from @llvm-project
-#include "tensorflow/compiler/mlir/tensorflow/ir/tf_device.h"
-#include "tensorflow/compiler/mlir/tensorflow/utils/convert_tensor.h"
+#include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
 #include "xla/mlir_hlo/utils/convert_op_folder.h"
-#include "tensorflow/dtensor/cc/constants.h"
+#include "tensorflow/core/platform/errors.h"
+#include "tensorflow/core/platform/types.h"
+#include "tensorflow/dtensor/cc/dstatus.h"
 #include "tensorflow/dtensor/cc/tensor_layout.h"
 #include "tensorflow/dtensor/mlir/dtensor_location.h"
 #include "tensorflow/dtensor/mlir/layout_parsing.h"
 #include "tensorflow/dtensor/mlir/shape_utils.h"
+#include "tensorflow/dtensor/mlir/spmd_expander_common.h"
 #include "tensorflow/dtensor/mlir/value_utils.h"
 
 namespace tensorflow {
@@ -75,10 +82,10 @@ StatusOr<mlir::Operation*> FillSPMDExpander::ExpandOp(mlir::Operation* op) {
 
   auto location = DT_LOC(op);
   auto num_shards =
-      builder.create<mlir::TF::ConstOp>(location, target_type_attr);
+      mlir::TF::ConstOp::create(builder, location, target_type_attr);
   // Divide the global shape by the sharding spec.
-  auto div = builder.create<mlir::TF::DivOp>(location, original_fill.getDims(),
-                                             num_shards.getResult());
+  auto div = mlir::TF::DivOp::create(builder, location, original_fill.getDims(),
+                                     num_shards.getResult());
   // Copy over static shape information if available
   auto global_output_type =
       mlir::cast<mlir::TensorType>(original_fill.getResult().getType());
@@ -86,8 +93,8 @@ StatusOr<mlir::Operation*> FillSPMDExpander::ExpandOp(mlir::Operation* op) {
       auto local_type,
       LocalTypeFromGlobalType(output_layout.value(), global_output_type));
 
-  auto new_fill = builder.create<mlir::TF::FillOp>(
-      location, local_type, div.getResult(), original_fill.getValue());
+  auto new_fill = mlir::TF::FillOp::create(
+      builder, location, local_type, div.getResult(), original_fill.getValue());
   original_fill.getResult().replaceAllUsesWith(new_fill.getOutput());
   original_fill.erase();
   return InferSPMDExpandedLocalShape(new_fill);

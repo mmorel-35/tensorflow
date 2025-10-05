@@ -32,27 +32,27 @@ namespace tensorflow {
 namespace graph_transforms {
 
 // Declare here, so we don't need a public header.
-Status QuantizeNodes(const GraphDef& input_graph_def,
-                     const TransformFuncContext& context,
-                     GraphDef* output_graph_def);
-Status RemoveRedundantQuantizations(const GraphDef& input_graph_def,
-                                    const TransformFuncContext& context,
-                                    GraphDef* output_graph_def);
-Status QuantizePlaceholders(const GraphDef& input_graph_def,
-                            const TransformFuncContext& context,
-                            GraphDef* output_graph_def);
-Status ConvertFakeQuantsToRequantize(const GraphDef& input_graph_def,
-                                     const TransformFuncContext& context,
-                                     GraphDef* output_graph_def);
-Status MergeAdjacentRequantizes(const GraphDef& input_graph_def,
-                                const TransformFuncContext& context,
-                                GraphDef* output_graph_def);
-Status HoistFakeQuants(const GraphDef& input_graph_def,
-                       const TransformFuncContext& context,
-                       GraphDef* output_graph_def);
-Status MergeDuplicateNodes(const GraphDef& input_graph_def,
+absl::Status QuantizeNodes(const GraphDef& input_graph_def,
                            const TransformFuncContext& context,
                            GraphDef* output_graph_def);
+absl::Status RemoveRedundantQuantizations(const GraphDef& input_graph_def,
+                                          const TransformFuncContext& context,
+                                          GraphDef* output_graph_def);
+absl::Status QuantizePlaceholders(const GraphDef& input_graph_def,
+                                  const TransformFuncContext& context,
+                                  GraphDef* output_graph_def);
+absl::Status ConvertFakeQuantsToRequantize(const GraphDef& input_graph_def,
+                                           const TransformFuncContext& context,
+                                           GraphDef* output_graph_def);
+absl::Status MergeAdjacentRequantizes(const GraphDef& input_graph_def,
+                                      const TransformFuncContext& context,
+                                      GraphDef* output_graph_def);
+absl::Status HoistFakeQuants(const GraphDef& input_graph_def,
+                             const TransformFuncContext& context,
+                             GraphDef* output_graph_def);
+absl::Status MergeDuplicateNodes(const GraphDef& input_graph_def,
+                                 const TransformFuncContext& context,
+                                 GraphDef* output_graph_def);
 
 class QuantizeNodesTest : public ::testing::Test {
  protected:
@@ -121,8 +121,8 @@ class QuantizeNodesTest : public ::testing::Test {
       const std::vector<string>& output_names, float range_min,
       float range_max) {
     TransformFuncContext context;
-    context.params["input_min"] = {strings::StrCat(range_min)};
-    context.params["input_max"] = {strings::StrCat(range_max)};
+    context.params["input_min"] = {absl::StrCat(range_min)};
+    context.params["input_max"] = {absl::StrCat(range_max)};
 
     std::vector<std::pair<string, Tensor>> quantized_inputs;
     for (const std::pair<string, Tensor>& float_input : float_inputs) {
@@ -145,8 +145,8 @@ class QuantizeNodesTest : public ::testing::Test {
       const std::vector<string>& output_names, float range_min, float range_max,
       GraphDef* quantized_graph_def) {
     TransformFuncContext context;
-    context.params["fallback_min"] = {strings::StrCat(range_min)};
-    context.params["fallback_max"] = {strings::StrCat(range_max)};
+    context.params["fallback_min"] = {absl::StrCat(range_min)};
+    context.params["fallback_max"] = {absl::StrCat(range_max)};
     TestTransformedVersusFloatGraph(QuantizeNodes, float_graph_def,
                                     float_inputs, float_inputs, output_names,
                                     context, 2.0, quantized_graph_def);

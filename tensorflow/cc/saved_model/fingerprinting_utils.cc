@@ -29,6 +29,7 @@ limitations under the License.
 #include "riegeli/bytes/fd_reader.h"  // from @riegeli
 #include "riegeli/records/record_reader.h"  // from @riegeli
 #include "tensorflow/cc/saved_model/constants.h"
+#include "tensorflow/cc/saved_model/fingerprinting_x_platform_utils.h"
 #include "tensorflow/core/framework/function.pb.h"
 #include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/framework/op_def.pb.h"
@@ -473,6 +474,8 @@ absl::StatusOr<FingerprintDef> CreateFingerprintDefCpb(
 
   fingerprint_def.set_checkpoint_hash(HashCheckpointIndexFile(export_dir));
 
+  // Assign a random UUID to the fingerprint.
+  fingerprint_def.set_uuid(fingerprinting::CreateRandomUUID());
   reader.Close();
 
   // Set version of the fingerprint.

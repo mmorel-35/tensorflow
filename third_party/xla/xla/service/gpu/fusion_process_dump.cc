@@ -16,11 +16,12 @@ limitations under the License.
 #include "xla/service/gpu/fusion_process_dump.h"
 
 #include <string>
-#include <string_view>
 #include <utility>
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/inlined_vector.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "xla/hlo/ir/hlo_computation.h"
@@ -29,14 +30,13 @@ limitations under the License.
 #include "xla/service/gpu/fusion_process_dump.pb.h"
 #include "xla/stream_executor/device_description.h"
 #include "xla/tools/hlo_module_loader.h"
+#include "xla/tsl/platform/env.h"
+#include "xla/tsl/platform/errors.h"
+#include "xla/tsl/platform/status.h"
+#include "xla/tsl/platform/statusor.h"
 #include "xla/util.h"
-#include "tsl/platform/env.h"
-#include "tsl/platform/errors.h"
-#include "tsl/platform/logging.h"
 #include "tsl/platform/path.h"
 #include "tsl/platform/protobuf.h"  // IWYU pragma: keep
-#include "tsl/platform/status.h"
-#include "tsl/platform/statusor.h"
 
 namespace xla {
 namespace gpu {
@@ -46,7 +46,7 @@ namespace {
 HloInstruction* AddFusionInstruction(HloInstruction* producer,
                                      HloInstruction* consumer,
                                      HloComputation* computation,
-                                     std::string_view fusion_name) {
+                                     absl::string_view fusion_name) {
   if (consumer->opcode() == HloOpcode::kFusion) {
     return consumer;
   }
@@ -66,7 +66,7 @@ HloInstruction* AddFusionInstruction(HloInstruction* producer,
 
 HloInstruction* Fuse(HloInstruction* producer, HloInstruction* consumer,
                      HloComputation* computation,
-                     std::string_view fusion_name) {
+                     absl::string_view fusion_name) {
   HloInstruction* fusion_instruction =
       AddFusionInstruction(producer, consumer, computation, fusion_name);
   if (producer->opcode() == HloOpcode::kFusion) {
@@ -136,8 +136,9 @@ absl::StatusOr<FusionProcessDump> FusionProcessDump::LoadFromProto(
       LoadModuleFromData(fusion_process_dump_proto.hlo_module_before_fusion(),
                          /*format=*/"txt"));
 
-  se::DeviceDescription gpu_device_info(
-      fusion_process_dump_proto.gpu_device_info());
+  TF_ASSIGN_OR_RETURN(se::DeviceDescription gpu_device_info,
+                      se::DeviceDescription::FromProto(
+                          fusion_process_dump_proto.gpu_device_info()));
 
   absl::flat_hash_map<std::string, HloComputation*>
       instruction_name_to_computation_map;

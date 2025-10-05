@@ -1,6 +1,7 @@
 # Description:
 #   TensorFlow Lite minimal example.
 
+load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
 load("//tensorflow/lite:build_def.bzl", "tflite_linkopts")
 
 package(
@@ -23,6 +24,7 @@ cc_binary(
     }),
     deps = [
         "//tensorflow/lite:framework",
+        "//tensorflow/lite/core:cc_api_stable",
         "//tensorflow/lite/kernels:builtin_ops",
     ],
 )

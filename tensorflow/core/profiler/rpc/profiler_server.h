@@ -15,17 +15,15 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_PROFILER_RPC_PROFILER_SERVER_H_
 #define TENSORFLOW_CORE_PROFILER_RPC_PROFILER_SERVER_H_
 
-#include <memory>
-
 #include "grpcpp/grpcpp.h"
-#include "tensorflow/core/platform/types.h"
-#include "tsl/profiler/protobuf/profiler_service.grpc.pb.h"
-#include "tsl/profiler/rpc/profiler_server.h"
+#include "absl/base/macros.h"
+#include "xla/tsl/profiler/rpc/profiler_server.h"
 
 namespace tensorflow {
 namespace profiler {
 
-using tsl::profiler::ProfilerServer;  // NOLINT
+using ProfilerServer ABSL_DEPRECATE_AND_INLINE() =
+    tsl::profiler::ProfilerServer;  // NOLINT
 
 }  // namespace profiler
 }  // namespace tensorflow

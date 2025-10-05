@@ -14,6 +14,7 @@
 # ==============================================================================
 
 load("//tensorflow:strict.default.bzl", "py_strict_binary", "py_strict_library")
+load("//tensorflow/core/platform:build_config_root.bzl", "if_pywrap")
 
 # Building blocks for generating accuracy validation metric graphs.
 load("//tensorflow/lite/experimental/acceleration/mini_benchmark:build_defs.bzl", "validation_model", "validation_test")
@@ -35,7 +36,6 @@ py_strict_library(
     srcs = [
         "kl_divergence.py",
     ],
-    srcs_version = "PY3",
     visibility = ["//visibility:public"],
     deps = [
         "//tensorflow:tensorflow_py",
@@ -45,13 +45,14 @@ py_strict_library(
 py_strict_binary(
     name = "mobilenet",
     srcs = ["mobilenet.py"],
-    python_version = "PY3",
-    srcs_version = "PY3",
     deps = [
         ":kl_divergence",
         "//tensorflow:tensorflow_py",
+        "//tensorflow/lite/python:lite",
         "//tensorflow/lite/tools:flatbuffer_utils",
-    ],
+    ] + if_pywrap(
+        if_true = ["//tensorflow/python:_pywrap_tensorflow"],
+    ),
 )
 
 genrule(
@@ -90,13 +91,14 @@ validation_test(
 py_strict_binary(
     name = "blazeface_metrics",
     srcs = ["blazeface_metrics.py"],
-    python_version = "PY3",
-    srcs_version = "PY3",
     deps = [
         ":kl_divergence",
         "//tensorflow:tensorflow_py",
+        "//tensorflow/lite/python:lite",
         "//tensorflow/lite/tools:flatbuffer_utils",
-    ],
+    ] + if_pywrap(
+        if_true = ["//tensorflow/python:_pywrap_tensorflow"],
+    ),
 )
 
 genrule(

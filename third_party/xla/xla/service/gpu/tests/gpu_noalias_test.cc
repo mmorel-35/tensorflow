@@ -16,6 +16,7 @@ limitations under the License.
 #include <memory>
 #include <utility>
 
+#include <gtest/gtest.h>
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/service/gpu/tests/gpu_codegen_test.h"
@@ -50,12 +51,18 @@ TEST_F(GpuNoAliasTest, Concat) {
   // - After optimizations we have "concatenate(x, y, x)".
   // - We only pass the same parameters once, so the kernel will have these
   // parameters: (x, y, output), and all of them will be noalias.
-  auto expected_ir = is_built_with_rocm_ ? R"(
-CHECK: define amdgpu_kernel void @{{[a-zA-Z0-9_]+}}(ptr noalias align 16 dereferenceable(16) %arg0, ptr noalias align 16 dereferenceable(16) %arg1, ptr noalias align 128 dereferenceable(48) %arg2) #0
-  )"
-                                         : R"(
-CHECK: define void @{{[a-zA-Z0-9_]+}}(ptr noalias align 16 dereferenceable(16) %arg0, ptr noalias align 16 dereferenceable(16) %arg1, ptr noalias align 128 dereferenceable(48) %arg2)
+  const char* expected_ir;
+  if (is_built_with_rocm_) {
+    expected_ir = R"(
+CHECK: define amdgpu_kernel void @{{[a-zA-Z0-9_]+}}(ptr noalias align 16 dereferenceable(16) %{{[a-zA-Z0-9_]+}}, ptr noalias align 16 dereferenceable(16) %{{[a-zA-Z0-9_]+}}, ptr noalias align 256 dereferenceable(48) %{{[a-zA-Z0-9_]+}}) #0
   )";
+  } else if (is_built_with_sycl_) {
+    expected_ir = R"(CHECK: define spir_kernel {{.*}})";
+  } else {
+    expected_ir = R"(
+CHECK: define ptx_kernel void @{{[a-zA-Z0-9_]+}}(ptr noalias align 16 dereferenceable(16) %{{[a-zA-Z0-9_]+}}, ptr noalias align 16 dereferenceable(16) %{{[a-zA-Z0-9_]+}}, ptr noalias align 256 dereferenceable(48) %{{[a-zA-Z0-9_]+}})
+  )";
+  }
   CompileAndVerifyIr(std::move(hlo_module), expected_ir,
                      /*match_optimized_ir=*/false);
 }

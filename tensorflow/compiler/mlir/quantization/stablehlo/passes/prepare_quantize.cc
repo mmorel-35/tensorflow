@@ -17,7 +17,7 @@ limitations under the License.
 
 #include "mlir/Dialect/Arith/IR/Arith.h"  // from @llvm-project
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
-#include "mlir/Dialect/Quant/QuantOps.h"  // from @llvm-project  // IWYU pragma: keep
+#include "mlir/Dialect/Quant/IR/Quant.h"  // from @llvm-project  // IWYU pragma: keep
 #include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
 #include "mlir/IR/BuiltinOps.h"  // from @llvm-project
 #include "mlir/IR/MLIRContext.h"  // from @llvm-project
@@ -30,7 +30,7 @@ limitations under the License.
 #include "mlir/Support/TypeID.h"  // from @llvm-project
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"  // from @llvm-project
 #include "stablehlo/dialect/StablehloOps.h"  // from @stablehlo
-#include "tensorflow/compiler/mlir/lite/quantization/ir/QuantOps.h"
+#include "tensorflow/compiler/mlir/quantization/common/ir/QuantOps.h"
 #include "tensorflow/compiler/mlir/quantization/common/quantization_lib/quantization_driver.h"
 #include "tensorflow/compiler/mlir/quantization/common/quantization_lib/quantization_utils.h"
 #include "tensorflow/compiler/mlir/quantization/stablehlo/ops/stablehlo_op_quant_spec.h"
@@ -83,19 +83,19 @@ class PrepareQuantizePass
 // lost for %2. This pattern avoids that by converting from f32 -> qtype2
 // directly.
 class MergeConsecutiveQuantizeCast
-    : public mlir::OpRewritePattern<quantfork::QuantizeCastOp> {
+    : public mlir::OpRewritePattern<mlir::quant::ir::QuantizeCastOp> {
  public:
   explicit MergeConsecutiveQuantizeCast(MLIRContext* context)
-      : OpRewritePattern<quantfork::QuantizeCastOp>(context) {}
+      : OpRewritePattern<mlir::quant::ir::QuantizeCastOp>(context) {}
 
  private:
-  LogicalResult matchAndRewrite(quantfork::QuantizeCastOp q_op,
+  LogicalResult matchAndRewrite(mlir::quant::ir::QuantizeCastOp q_op,
                                 PatternRewriter& rewriter) const override {
     auto preceding_qcast =
-        q_op.getArg().getDefiningOp<quantfork::QuantizeCastOp>();
+        q_op.getArg().getDefiningOp<mlir::quant::ir::QuantizeCastOp>();
     if (!preceding_qcast) return failure();
 
-    auto new_qcast = rewriter.create<quantfork::QuantizeCastOp>(
+    auto new_qcast = rewriter.create<mlir::quant::ir::QuantizeCastOp>(
         q_op.getLoc(), q_op.getType(), preceding_qcast.getArg());
     new_qcast->setAttr(kVolatileOpAttrName, rewriter.getUnitAttr());
     q_op->replaceAllUsesWith(new_qcast);
@@ -152,8 +152,8 @@ void PrepareQuantizePass::runOnOperation() {
     RewritePatternSet patterns(ctx);
     // Convert quant stats to int8 quantization parameters.
     // Currently, only activation stats are imported, so narrow_range = false.
-    patterns.add<quant::ConvertStatsToQDQs<quantfork::QuantizeCastOp,
-                                           quantfork::DequantizeCastOp>>(
+    patterns.add<ConvertStatsToQDQs<mlir::quant::ir::QuantizeCastOp,
+                                    mlir::quant::ir::DequantizeCastOp>>(
         bit_width_,
         /*narrow_range=*/false,
         /*is_signed=*/true,
@@ -162,7 +162,7 @@ void PrepareQuantizePass::runOnOperation() {
     // deal with the arith::ConstantOp instances.
     patterns.add<ConvertTFConstOpToArithConstOp>(ctx);
     patterns.add<ConvertStablehloConstToArithConstOp>(ctx);
-    if (failed(applyPatternsAndFoldGreedily(func_op, std::move(patterns)))) {
+    if (failed(applyPatternsGreedily(func_op, std::move(patterns)))) {
       signalPassFailure();
     }
 
@@ -180,7 +180,7 @@ void PrepareQuantizePass::runOnOperation() {
     patterns_2
         .add<MergeConsecutiveQuantizeCast, ConvertArithConstToStablehloConstOp>(
             ctx);
-    if (failed(applyPatternsAndFoldGreedily(func_op, std::move(patterns_2)))) {
+    if (failed(applyPatternsGreedily(func_op, std::move(patterns_2)))) {
       signalPassFailure();
     }
   }

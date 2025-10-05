@@ -61,7 +61,7 @@ TEST(ValidateGraphDefTest, GraphWithUnspecifiedDefaultAttr) {
   GraphDef graph_def;
   auto parser = protobuf::TextFormat::Parser();
   CHECK(parser.MergeFromString(graph_def_str, &graph_def)) << graph_def_str;
-  Status s = graph::ValidateGraphDef(graph_def, *OpRegistry::Global());
+  absl::Status s = graph::ValidateGraphDef(graph_def, *OpRegistry::Global());
   EXPECT_FALSE(s.ok());
   EXPECT_TRUE(absl::StrContains(s.ToString(), "NodeDef missing attr"));
 
@@ -84,7 +84,7 @@ TEST(ValidateGraphDefTest, GraphWithUnspecifiedRequiredAttr) {
   GraphDef graph_def;
   auto parser = protobuf::TextFormat::Parser();
   CHECK(parser.MergeFromString(graph_def_str, &graph_def)) << graph_def_str;
-  Status s = graph::ValidateGraphDef(graph_def, *OpRegistry::Global());
+  absl::Status s = graph::ValidateGraphDef(graph_def, *OpRegistry::Global());
   EXPECT_FALSE(s.ok());
   EXPECT_TRUE(absl::StrContains(s.ToString(), "NodeDef missing attr"));
 
@@ -225,13 +225,13 @@ Node* AddNodeFromNodeDef(Graph& graph, const string& name,
                          const string& node_type, int num_inputs) {
   auto builder = NodeDefBuilder(name, node_type);
   for (int i = 0; i < num_inputs; ++i) {
-    builder = builder.Input(strings::StrCat("node_", i), i, DT_FLOAT);
+    builder = builder.Input(absl::StrCat("node_", i), i, DT_FLOAT);
   }
 
   NodeDef node_def;
   TF_CHECK_OK(builder.Finalize(&node_def));
 
-  Status s;
+  absl::Status s;
   Node* node = graph.AddNode(node_def, &s);
   TF_CHECK_OK(s);
   return node;
@@ -249,7 +249,7 @@ TEST(ValidateGraphHasNoCycleTest, CycleFails) {
 
   EXPECT_THAT(
       graph::ValidateGraphHasNoCycle(graph),
-      tsl::testing::StatusIs(
+      absl_testing::StatusIs(
           tsl::error::Code::INVALID_ARGUMENT,
           ::testing::ContainsRegex("Graph is invalid, contains a cycle")));
 }

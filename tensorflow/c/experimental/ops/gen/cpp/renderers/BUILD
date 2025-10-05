@@ -1,3 +1,4 @@
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load(
     "//tensorflow:tensorflow.bzl",
     "tf_cc_tests",
@@ -16,13 +17,17 @@ cc_library(
         exclude = ["*_test.cc"],
     ),
     hdrs = glob(["*.h"]),
-    visibility = ["//tensorflow/c/experimental/ops/gen/cpp:__pkg__"],
+    visibility = [
+        "//tensorflow/c/experimental/ops/gen:__pkg__",
+        "//tensorflow/c/experimental/ops/gen/cpp:__pkg__",
+    ],
     deps = [
         "//tensorflow/c/experimental/ops/gen/common",
         "//tensorflow/c/experimental/ops/gen/cpp/views",
         "//tensorflow/core:framework_internal",
         "//tensorflow/core:lib",
         "//tensorflow/core:lib_internal",
+        "@com_google_absl//absl/log",
         "@com_google_absl//absl/strings",
     ],
     alwayslink = 1,

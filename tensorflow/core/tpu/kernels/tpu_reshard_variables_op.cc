@@ -26,6 +26,7 @@ limitations under the License.
 #include "tensorflow/compiler/tf2xla/shape_util.h"
 #include "tensorflow/compiler/tf2xla/tf2xla_util.h"
 #include "xla/service/maybe_owning_device_memory.h"
+#include "xla/shape.h"
 #include "xla/stream_executor/device_memory_allocator.h"
 #include "xla/stream_executor/tpu/tpu_executor.h"
 #include "xla/stream_executor/tpu/tpu_executor_interface.h"
@@ -67,7 +68,7 @@ void TPUReshardVariablesOpKernel::ComputeAsync(OpKernelContext* context,
   done();
 }
 
-Status TPUReshardVariablesOpKernel::DoWork(OpKernelContext* context) {
+absl::Status TPUReshardVariablesOpKernel::DoWork(OpKernelContext* context) {
   VLOG(1) << "Cloud TPU: TPUReshardVariablesOpKernel::DoWork";
   TF_RET_CHECK(context->input_dtype(num_vars_) == DT_STRING);
   const Tensor* new_format_key;
@@ -124,7 +125,7 @@ Status TPUReshardVariablesOpKernel::DoWork(OpKernelContext* context) {
   return absl::OkStatus();
 }
 
-Status TPUReshardVariablesOpKernel::DoTpuExecute(
+absl::Status TPUReshardVariablesOpKernel::DoTpuExecute(
     OpKernelContext* context, const Tensor& format_key,
     tpu::CompilationCacheFetchTarget fetch_target) {
   const XlaDevice::Metadata* metadata;
@@ -171,7 +172,8 @@ Status TPUReshardVariablesOpKernel::DoTpuExecute(
   se::Stream* stream = context->op_device_context()->stream();
 
   TF_RET_CHECK(executable->input_shapes_size() == 1);
-  xla::Shape host_shape(executable->input_shapes(0));
+  TF_ASSIGN_OR_RETURN(xla::Shape host_shape,
+                      xla::Shape::FromProto(executable->input_shapes(0)));
   std::vector<VariableInfo> variables;
   for (int i = 0; i < num_vars_; ++i) {
     TF_RET_CHECK(context->input_dtype(i) == DT_RESOURCE);

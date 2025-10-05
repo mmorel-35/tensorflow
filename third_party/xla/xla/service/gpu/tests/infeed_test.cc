@@ -18,15 +18,16 @@ limitations under the License.
 #include <cstdint>
 #include <memory>
 
+#include <gtest/gtest.h>
 #include "xla/array3d.h"
 #include "xla/array4d.h"
 #include "xla/client/local_client.h"
-#include "xla/client/xla_builder.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "xla/hlo/testlib/test_helpers.h"
 #include "xla/layout.h"
 #include "xla/layout_util.h"
 #include "xla/literal.h"
 #include "xla/literal_util.h"
-#include "xla/test_helpers.h"
 #include "xla/tests/client_library_test_base.h"
 #include "tsl/platform/env.h"
 

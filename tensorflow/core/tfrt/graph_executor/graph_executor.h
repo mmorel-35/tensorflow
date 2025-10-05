@@ -35,6 +35,7 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/tensorflow/translate/mlir_roundtrip_flags.h"
 #include "tensorflow/compiler/mlir/tfrt/backend_compiler.h"
 #include "xla/tsl/concurrency/ref_count.h"
+#include "xla/tsl/lib/monitoring/sampler.h"
 #include "tensorflow/core/common_runtime/process_function_library_runtime.h"
 #include "tensorflow/core/framework/cancellation.h"
 #include "tensorflow/core/framework/function.h"
@@ -57,7 +58,6 @@ limitations under the License.
 #include "tensorflow/core/tfrt/runtime/stream.h"
 #include "tensorflow/core/tfrt/runtime/work_queue_interface.h"
 #include "tensorflow/core/tfrt/utils/tfrt_graph_execution_state.h"
-#include "tsl/lib/monitoring/sampler.h"
 #include "tsl/platform/thread_annotations.h"
 #include "tfrt/bef/bef_buffer.h"  // from @tf_runtime
 #include "tfrt/bef_executor/bef_file.h"  // from @tf_runtime
@@ -114,7 +114,7 @@ absl::StatusOr<std::unique_ptr<RequestInfo>> CreateRequestInfo(
 //
 // TODO(chky): Refactor this function to take `LoadedClientGraph` instead of
 // having a long list of parameters.
-tensorflow::Status GraphExecutionRunOnFunction(
+absl::Status GraphExecutionRunOnFunction(
     const GraphExecutionOptions& options,
     const GraphExecutionRunOptions& run_options,
     absl::string_view signature_name, const SymbolUids& symbol_uids,
@@ -133,7 +133,7 @@ tensorflow::Status GraphExecutionRunOnFunction(
     CostRecorder* cost_recorder = nullptr);
 
 // Runs a MLRT function for executing tensorflow graphs.
-tensorflow::Status RunMlrtFunction(
+absl::Status RunMlrtFunction(
     mlrt::bc::Function function,
     const mlrt::LoadedExecutable& loaded_executable,
     const tsl::RCReference<tfrt::RequestContext>& request_context,
@@ -158,7 +158,7 @@ class GraphExecutor {
                       mlir::OwningOpRef<mlir::ModuleOp> tfrt_mlir,
                       std::shared_ptr<ExecutableContext> executable_context,
                       std::optional<StreamCallbackId> stream_callback_id,
-                      bool is_restore, FunctionLibraryDefinition flib_def,
+                      FunctionLibraryDefinition flib_def,
                       tsl::monitoring::SamplerCell* latency_sampler);
 
     // Returns this instance's CostRecorder if it is time to update costs,
@@ -168,8 +168,8 @@ class GraphExecutor {
     CostRecorder* MaybeGetCostRecorder(absl::Time now, bool* do_recompilation);
     // Updates the op cost values in this `LoadedClientGraph` with records from
     // `cost_recorder`.
-    Status UpdateCost(const CostRecorder& cost_recorder,
-                      const Runtime& runtime);
+    absl::Status UpdateCost(const CostRecorder& cost_recorder,
+                            const Runtime& runtime);
     // Updates `cost_analysis_data_` to make it accurate for the next execution.
     // Assumes a cost update occurred this cycle.
     void UpdateCostAnalysisData(absl::Time now, bool do_recompilation);
@@ -188,8 +188,6 @@ class GraphExecutor {
     std::optional<StreamCallbackId> stream_callback_id() const {
       return stream_callback_id_;
     }
-
-    bool is_restore() const { return is_restore_; }
 
     const ProcessFunctionLibraryRuntime& process_function_library_runtime()
         const {
@@ -231,7 +229,6 @@ class GraphExecutor {
     SyncResourceState sync_resource_state_;
 
     std::optional<StreamCallbackId> stream_callback_id_;
-    bool is_restore_;
     FunctionLibraryDefinition flib_def_;
     ProcessFunctionLibraryRuntime pflr_;
     tsl::monitoring::SamplerCell* latency_sampler_;
@@ -257,21 +254,41 @@ class GraphExecutor {
       Options options, std::unique_ptr<FallbackState> fallback_state,
       std::unique_ptr<tfrt::ResourceContext> resource_context,
       tensorflow::GraphDef graph_def,
-      std::unique_ptr<mlrt::KernelRegistry> kernel_registry);
+      std::unique_ptr<mlrt::KernelRegistry> kernel_registry,
+      tensorflow::tfrt_stub::RuntimeConfig* runtime_config = nullptr);
 
   // Ctor. Public for `Create()`. Do not use directly.
   GraphExecutor(Options options, std::unique_ptr<FallbackState> fallback_state,
                 std::unique_ptr<tfrt::ResourceContext> resource_context,
                 std::unique_ptr<tensorflow::tfrt_stub::TfrtGraphExecutionState>
                     graph_execution_state,
-                std::unique_ptr<mlrt::KernelRegistry> kernel_registry);
+                std::unique_ptr<mlrt::KernelRegistry> kernel_registry,
+                tensorflow::tfrt_stub::RuntimeConfig* runtime_config = nullptr);
 
   // Runs on the graph according to given input/output.
-  tensorflow::Status Run(
+  absl::Status Run(
       const RunOptions& run_options,
       absl::Span<const std::pair<std::string, tensorflow::Tensor>> inputs,
       absl::Span<const std::string> output_tensor_names,
       absl::Span<const std::string> target_tensor_names,
+      std::vector<tensorflow::Tensor>* outputs);
+
+  // Similar as `Run`, but it requires additional input parameters to specify
+  // the sorted input/output names and the original indices of the
+  // inputs/outputs. The caller must guarantee that inputs are in the same order
+  // as of `sorted_input_names`. The sorted input/output names are needed to
+  // consistently build the key for looking up the `LoadedClientGraph` in the
+  // cache. The original indices are needed to map the results to the original
+  // inputs/outputs.
+  absl::Status RunWithSortedInputsOutputs(
+      const RunOptions& run_options,
+      absl::Span<const std::pair<std::string, tensorflow::Tensor>> inputs,
+      absl::Span<const std::string> sorted_input_names,
+      absl::Span<const tensorflow::DataType> sorted_input_dtypes,
+      absl::Span<const std::string> sorted_output_names,
+      absl::Span<const std::string> sorted_target_node_names,
+      absl::Span<const int> input_original_indices,
+      absl::Span<const int> output_original_indices,
       std::vector<tensorflow::Tensor>* outputs);
 
   // Runs the graph identified by `graph_name` using the input `inputs` and
@@ -279,7 +296,7 @@ class GraphExecutor {
   // responsibility to ensure `graph_name` corresponds to logically different
   // graphs, since this name is used to lookup compiled graphs in the cache. The
   // graph is run synchronously with the TFRT interpreter.
-  tensorflow::Status RunWithSyncInterpreter(
+  absl::Status RunWithSyncInterpreter(
       const std::string& graph_name, absl::Span<mlrt::Value> input_values,
       absl::Span<const std::string> input_names,
       absl::Span<const tensorflow::DataType> input_dtypes,
@@ -288,7 +305,7 @@ class GraphExecutor {
       absl::Span<mlrt::Value> outputs);
 
   // Extends the current graph by `graph`.
-  tensorflow::Status Extend(const GraphDef& graph);
+  absl::Status Extend(const GraphDef& graph);
 
   tensorflow::tfrt_stub::TfrtGraphExecutionState& graph_execution_state()
       const {
@@ -308,7 +325,7 @@ class GraphExecutor {
   FallbackState& fallback_state() { return *fallback_state_; }
 
   // Compiles graph for `graph_name` and runs any initializers.
-  tensorflow::Status CompileGraph(
+  absl::Status CompileGraph(
       const std::string& graph_name,
       absl::Span<const std::string> input_tensor_names,
       absl::Span<const tensorflow::DataType> input_tensor_dtypes,
@@ -337,11 +354,10 @@ class GraphExecutor {
   absl::StatusOr<tfrt::BefBuffer> CompileMlirModuleToBef(
       mlir::ModuleOp module) const;
 
-  tensorflow::Status InitBef(
-      LoadedClientGraph* loaded_client_graph,
-      tensorflow::tfrt_stub::WorkQueueInterface* work_queue);
+  absl::Status InitBef(LoadedClientGraph* loaded_client_graph,
+                       tensorflow::tfrt_stub::WorkQueueInterface* work_queue);
 
-  tensorflow::Status InitBytecode(LoadedClientGraph* loaded_graph);
+  absl::Status InitBytecode(LoadedClientGraph* loaded_graph);
 
   // Returns a `LoadedClientGraph` given input/output tensor info. If there is
   // no existing one yet, creates one first.
@@ -386,6 +402,13 @@ class GraphExecutor {
 
 void RegisterMlirDialect(mlir::DialectRegistry& registry,
                          tensorflow::BackendCompiler* backend_compiler);
+
+// Sort the strings in `names` and store the results in `sorted_names`. In
+// addition, the original index in `names` for the item `sorted_names[i]` is
+// stored in `original_indices[i]`.
+void CreateSortedNamesAndOriginalIndices(absl::Span<const std::string> names,
+                                         std::vector<std::string>& sorted_names,
+                                         std::vector<int>& original_indices);
 
 }  // namespace tfrt_stub
 }  // namespace tensorflow

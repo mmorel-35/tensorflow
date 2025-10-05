@@ -18,6 +18,7 @@ limitations under the License.
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
@@ -30,7 +31,7 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/quantization/tensorflow/passes/tf_quant_ops.h"
 #include "tensorflow/compiler/mlir/quantization/tensorflow/quantization_options.pb.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
-#include "tsl/platform/status_matchers.h"
+#include "xla/tsl/platform/status_matchers.h"
 
 namespace mlir::quant::stablehlo {
 namespace {
@@ -42,7 +43,6 @@ using ::testing::Contains;
 using ::testing::SizeIs;
 using ::testing::StartsWith;
 using ::testing::StrEq;
-using ::tsl::testing::IsOk;
 
 // Matches an operation whose `getSymName` equals `name`.
 MATCHER_P(HasSymName, name, "") {
@@ -101,7 +101,7 @@ TEST_F(PreCalibrationComponentTest,
   absl::StatusOr<ModuleOp> pre_calibration_result =
       component.Run(*module_op, quantization_config);
 
-  EXPECT_THAT(pre_calibration_result, IsOk());
+  EXPECT_THAT(pre_calibration_result, absl_testing::IsOk());
 
   SmallVector<func::FuncOp> func_ops;
   for (auto func_op : pre_calibration_result->getOps<func::FuncOp>()) {

@@ -1,11 +1,12 @@
 # python/framework package
 
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_python//python:proto.bzl", "py_proto_library")
 load("//tensorflow:pytype.default.bzl", "pytype_strict_library")
 load("//tensorflow:strict.default.bzl", "py_strict_library", "py_strict_test")
-
-# Placeholder: load py_proto_library
 load(
     "//tensorflow:tensorflow.bzl",
+    "if_cuda_tools",
     "if_not_windows",
     "if_oss",
     "if_xla_available",
@@ -15,9 +16,9 @@ load(
     "tf_gen_op_wrapper_py",
     "tf_kernel_library",
 )
-load("//tensorflow:tensorflow.default.bzl", "cuda_py_strict_test", "tf_py_strict_test", "tf_python_framework_friends", "tf_python_pybind_extension")
+load("//tensorflow:tensorflow.default.bzl", "cuda_py_strict_test", "stripped_cc_info", "tf_py_strict_test", "tf_python_framework_friends", "tf_python_pybind_extension")
 load("//tensorflow/core/platform:build_config.bzl", "pyx_library", "tf_additional_all_protos", "tf_additional_lib_deps", "tf_proto_library", "tf_protos_grappler")  # @unused
-load("//tensorflow/core/platform:build_config_root.bzl", "if_static", "tf_additional_xla_deps_py")
+load("//tensorflow/core/platform:build_config_root.bzl", "if_pywrap", "if_static", "tf_additional_xla_deps_py")
 load("//tensorflow/python/tpu:tpu.bzl", "tpu_py_strict_test")
 load(
     "//tensorflow/tools/test:performance.bzl",
@@ -32,8 +33,8 @@ package(
     licenses = ["notice"],
 )
 
-tf_cc_shared_object(
-    name = "test_file_system.so",
+cc_library(
+    name = "test_file_system",
     srcs = ["test_file_system.cc"],
     copts = if_not_windows(["-Wno-sign-compare"]),
     linkopts = select({
@@ -44,10 +45,30 @@ tf_cc_shared_object(
         "//tensorflow:windows": [],
     }),
     deps = [
-        "//tensorflow/core:framework_headers_lib",
-        "@com_google_protobuf//:protobuf_headers",
-        "@eigen_archive//:eigen3",
+        "//tensorflow/core:lib",
+        "//tensorflow/core/platform:null_file_system",
     ],
+)
+
+stripped_cc_info(
+    name = "test_file_system_stripped",
+    deps = [":test_file_system"],
+)
+
+tf_cc_shared_object(
+    name = "test_file_system.so",
+    srcs = if_pywrap(if_false = ["test_file_system.cc"]),
+    copts = if_not_windows(["-Wno-sign-compare"]),
+    deps = if_pywrap(
+        if_false = [
+            "@eigen_archive//:eigen3",
+            "//tensorflow/core:framework_headers_lib",
+        ],
+        if_true = [
+            ":test_file_system_stripped",
+            "//tensorflow/python:tensorflow_common_framework",
+        ],
+    ) + ["@com_google_protobuf//:protobuf_headers"],
 )
 
 tf_py_strict_test(
@@ -56,7 +77,6 @@ tf_py_strict_test(
     srcs = ["file_system_test.py"],
     data = [":test_file_system.so"],
     main = "file_system_test.py",
-    python_version = "PY3",
     tags = [
         "no_pip",  # Path issues due to test environment
         "no_windows",
@@ -91,6 +111,7 @@ cc_library(
         "//tensorflow/core:lib_internal",
         "//tensorflow/core:op_gen_lib",
         "//tensorflow/core:protos_all_cc",
+        "//tensorflow/core/platform:numbers",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
         "@local_tsl//tsl/platform:protobuf",
@@ -139,7 +160,7 @@ tf_python_pybind_extension(
         "//tensorflow/python:python_op_gen_headers_lib",
         "//tensorflow/python/lib/core:pybind11_absl",
         "//tensorflow/python/lib/core:pybind11_lib",
-        "//third_party/python_runtime:headers",
+        "@local_xla//third_party/python_runtime:headers",
         "@pybind11",
     ],
 )
@@ -199,10 +220,10 @@ tf_cc_binary(
         ":offset_counter_helper",
         ":op_reg_offset_proto_cc",
         "@com_google_absl//absl/strings",
-        "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/platform:platform_port",
         "@local_tsl//tsl/platform:strcat",
-        "@local_tsl//tsl/platform:types",
+        "@local_xla//xla/tsl/platform:errors",
+        "@local_xla//xla/tsl/platform:types",
         "@local_xla//xla/tsl/util:command_line_flags",
     ],
 )
@@ -215,11 +236,11 @@ cc_library(
     deps = [
         ":op_reg_offset_proto_cc",
         "@com_google_absl//absl/strings",
-        "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/platform:regexp",
-        "@local_tsl//tsl/platform:status",
         "@local_tsl//tsl/platform:strcat",
-        "@local_tsl//tsl/platform:types",
+        "@local_xla//xla/tsl/platform:errors",
+        "@local_xla//xla/tsl/platform:status",
+        "@local_xla//xla/tsl/platform:types",
     ],
 )
 
@@ -239,7 +260,6 @@ tf_cc_test(
 # Do not depend on this rule! Depend on the fine-grained sub-targets instead.
 py_strict_library(
     name = "for_generated_wrappers",
-    srcs_version = "PY3",
     tags = ["avoid_dep"],
     visibility = ["//visibility:public"],
     deps = [
@@ -264,7 +284,6 @@ py_strict_library(
 # This is to avoid circular dependencies, as "function" uses generated op wrappers.
 py_strict_library(
     name = "for_generated_wrappers_v2",
-    srcs_version = "PY3",
     tags = ["avoid_dep"],
     visibility = ["//visibility:public"],
     deps = [
@@ -291,7 +310,6 @@ py_strict_library(
 py_strict_library(
     name = "subscribe",
     srcs = ["subscribe.py"],
-    srcs_version = "PY3",
     deps = [
         ":ops",
         ":tensor",
@@ -304,7 +322,7 @@ py_strict_library(
 py_strict_library(
     name = "byte_swap_tensor",
     srcs = ["byte_swap_tensor.py"],
-    srcs_version = "PY3",
+    visibility = ["//visibility:public"],
     deps = [
         ":dtypes",
         "//tensorflow/core:protos_all_py",
@@ -314,7 +332,6 @@ py_strict_library(
 py_strict_library(
     name = "c_api_util",
     srcs = ["c_api_util.py"],
-    srcs_version = "PY3",
     visibility = visibility + ["//tensorflow:internal"],
     deps = [
         "//tensorflow/core:protos_all_py",
@@ -327,7 +344,6 @@ py_strict_library(
 py_strict_library(
     name = "common_shapes",
     srcs = ["common_shapes.py"],
-    srcs_version = "PY3",
     deps = [
         ":tensor_shape",
     ],
@@ -339,7 +355,6 @@ py_strict_library(
         "constant_op.py",
         "constant_tensor_conversion.py",
     ],
-    srcs_version = "PY3",
     visibility = visibility + [
         "//smartass:__subpackages__",
         "//tensorflow:internal",
@@ -365,7 +380,6 @@ py_strict_library(
 py_strict_library(
     name = "device_spec",
     srcs = ["device_spec.py"],
-    srcs_version = "PY3",
     visibility = visibility + ["//third_party/py/tf_slim:__subpackages__"],
     deps = [
         "//tensorflow/python:pywrap_tfe",
@@ -376,7 +390,6 @@ py_strict_library(
 py_strict_library(
     name = "device",
     srcs = ["device.py"],
-    srcs_version = "PY3",
     visibility = visibility + ["//tensorflow:internal"],
     deps = [
         ":device_spec",
@@ -403,15 +416,21 @@ tf_python_pybind_extension(
 py_strict_library(
     name = "dtypes",
     srcs = ["dtypes.py"],
-    srcs_version = "PY3",
-    visibility = visibility + [
-        "//smartass:__subpackages__",
-        "//tensorflow:internal",
-        "//tensorflow_models:__subpackages__",
-        "//third_party/cloud_tpu/convergence_tools:__subpackages__",
-        "//third_party/mlperf:__subpackages__",
-        "//third_party/py/tf_slim:__subpackages__",
+    # copybara:uncomment_begin(google-only)
+    # visibility = visibility + [
+    # "//ads/adsml/ab:atls_configs",
+    # "//smartass:__subpackages__",
+    # "//third_party/cloud_tpu/convergence_tools:__subpackages__",
+    # "//third_party/mlperf:__subpackages__",
+    # "//third_party/py/tf_slim:__subpackages__",
+    # "//tensorflow:internal",
+    # "//tensorflow_models:__subpackages__",
+    # ],
+    # copybara:uncomment_end_and_comment_begin
+    visibility = [
+        "//visibility:public",
     ],
+    # copybara:comment_end
     deps = [
         ":_dtypes",
         # copybara:uncomment_begin(google-only)
@@ -425,7 +444,7 @@ py_strict_library(
         "//tensorflow/python/types:doc_typealias",
         "//tensorflow/python/util:tf_export",
         "//tensorflow/tools/docs:doc_controls",
-        "@ml_dtypes",
+        "@ml_dtypes_py//ml_dtypes",
     ],
 )
 
@@ -435,12 +454,18 @@ py_strict_library(
         "errors.py",
         "errors_impl.py",
     ],
-    srcs_version = "PY3",
-    visibility = visibility + [
-        "//tensorflow:internal",
-        "//third_party/cloud_tpu/convergence_tools:__subpackages__",
-        "//third_party/py/tf_slim:__subpackages__",
+    # copybara:uncomment_begin(google-only)
+    # visibility = visibility + [
+    # "//smartass/brain/ops:__subpackages__",
+    # "//third_party/cloud_tpu/convergence_tools:__subpackages__",
+    # "//third_party/py/tf_slim:__subpackages__",
+    # "//tensorflow:internal",
+    # ],
+    # copybara:uncomment_end_and_comment_begin
+    visibility = [
+        "//visibility:public",
     ],
+    # copybara:comment_end
     deps = [
         ":c_api_util",
         "//tensorflow/core:protos_all_py",
@@ -458,7 +483,7 @@ py_strict_library(
     srcs = [
         "error_interpolation.py",
     ],
-    srcs_version = "PY3",
+    visibility = ["//visibility:public"],
     deps = [
         "//tensorflow/core:protos_all_py",
         "//tensorflow/python/util:tf_stack",
@@ -475,7 +500,6 @@ py_strict_library(
     name = "function",
     srcs = ["function.py"],
     data = [":_native_proto_caster"],  # copybara:comment
-    srcs_version = "PY3",
     visibility = visibility + [
         "//smartass/brain:__subpackages__",
         "//tensorflow:internal",
@@ -506,7 +530,6 @@ py_strict_library(
 py_strict_library(
     name = "graph_to_function_def",
     srcs = ["graph_to_function_def.py"],
-    srcs_version = "PY3",
     deps = [
         ":op_def_registry",
         "//tensorflow/core:protos_all_py",
@@ -516,7 +539,6 @@ py_strict_library(
 py_strict_library(
     name = "function_def_to_graph",
     srcs = ["function_def_to_graph.py"],
-    srcs_version = "PY3",
     visibility = visibility,
     deps = [
         ":cpp_shape_inference_proto_py",
@@ -542,7 +564,6 @@ tf_py_strict_test(
     name = "function_def_to_graph_test",
     size = "small",
     srcs = ["function_def_to_graph_test.py"],
-    python_version = "PY3",
     tags = ["no_pip"],
     deps = [
         ":constant_op",
@@ -569,8 +590,13 @@ py_strict_library(
         "graph_util.py",
         "graph_util_impl.py",
     ],
-    srcs_version = "PY3",
-    visibility = visibility + ["//tensorflow:internal"],
+    # copybara:uncomment_begin(google-only)
+    # visibility = visibility + ["//tensorflow:internal"],
+    # copybara:uncomment_end_and_comment_begin
+    visibility = [
+        "//visibility:public",
+    ],
+    # copybara:comment_end
     deps = [
         ":_proto_comparators",
         ":dtypes",
@@ -586,12 +612,17 @@ py_strict_library(
     srcs = [
         "convert_to_constants.py",
     ],
-    srcs_version = "PY3",
-    visibility = visibility + [
-        "//learning/deepmind/deepfunc:__subpackages__",
-        "//platforms/darwinn:__subpackages__",
-        "//tensorflow:internal",
+    # copybara:uncomment_begin(google-only)
+    # visibility = visibility + [
+    # "//learning/deepmind/deepfunc:__subpackages__",
+    # "//platforms/darwinn:__subpackages__",
+    # "//tensorflow:internal",
+    # ],
+    # copybara:uncomment_end_and_comment_begin
+    visibility = [
+        "//visibility:public",
     ],
+    # copybara:comment_end
     deps = [
         ":dtypes",
         ":errors",
@@ -618,7 +649,6 @@ py_strict_library(
     srcs = [
         "kernels.py",
     ],
-    srcs_version = "PY3",
     deps = [
         "//tensorflow/core:protos_all_py",
         "//tensorflow/python/client:pywrap_tf_session",
@@ -629,7 +659,6 @@ py_strict_library(
 py_strict_library(
     name = "op_def_library",
     srcs = ["op_def_library.py"],
-    srcs_version = "PY3",
     deps = [
         ":dtypes",
         ":op_callbacks",
@@ -654,19 +683,21 @@ tf_python_pybind_extension(
     pytype_srcs = [
         "_op_def_library_pybind.pyi",
     ],
-    deps = [
-        ":op_def_util_headers",
+    deps = if_pywrap(
+        if_false = [":op_def_util_headers"],
+        if_true = [":op_def_util_cc"],
+    ) + [
         "//tensorflow/core:framework_headers_lib",
         "//tensorflow/core:lib_headers_for_pybind",
         "//tensorflow/core:lib_proto_parsing",
         "//tensorflow/core:protos_all_cc",
         "//tensorflow/python/lib/core:pybind11_status",
         "//tensorflow/python/lib/core:safe_pyobject_ptr",
-        "//third_party/python_runtime:headers",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/strings",
+        "@local_xla//third_party/python_runtime:headers",
         "@pybind11",
     ],
 )
@@ -674,7 +705,6 @@ tf_python_pybind_extension(
 pytype_strict_library(
     name = "op_def_library_pybind",
     srcs = ["op_def_library_pybind.py"],
-    srcs_version = "PY3",
     deps = [
         ":_op_def_library_pybind",
         "//tensorflow/core:protos_all_py",
@@ -700,7 +730,6 @@ tf_python_pybind_extension(
 py_strict_library(
     name = "op_def_registry",
     srcs = ["op_def_registry.py"],
-    srcs_version = "PY3",
     visibility = visibility + ["//tensorflow:internal"],
     deps = [
         ":_op_def_registry",
@@ -712,7 +741,6 @@ py_strict_library(
 py_strict_library(
     name = "override_binary_operator",
     srcs = ["override_binary_operator.py"],
-    srcs_version = "PY3",
     deps = [
         ":dtypes",
         ":ops",
@@ -733,7 +761,7 @@ cc_library(
     deps = [
         "//tensorflow/core:lib",  # for core/platform/logging.h
         "//tensorflow/python/lib/core:safe_pyobject_ptr",
-        "//third_party/python_runtime:headers",
+        "@local_xla//third_party/python_runtime:headers",
     ],
 )
 
@@ -745,9 +773,10 @@ tf_python_pybind_extension(
     pytype_srcs = [
         "_py_context_manager.pyi",
     ],
+    starlark_only = True,
     deps = [
         ":py_context_manager",
-        "//third_party/python_runtime:headers",
+        "@local_xla//third_party/python_runtime:headers",
         "@pybind11",
     ],
 )
@@ -755,7 +784,6 @@ tf_python_pybind_extension(
 tf_py_strict_test(
     name = "py_context_manager_test",
     srcs = ["py_context_manager_test.py"],
-    python_version = "PY3",
     tags = ["no_pip"],
     deps = [
         ":_py_context_manager",
@@ -782,8 +810,8 @@ cc_library(
         "//tensorflow/core:protos_all_cc",
         "//tensorflow/python/lib/core:safe_pyobject_ptr",
         "//tensorflow/python/util:cpp_python_util",
-        "//third_party/python_runtime:headers",  # buildcleaner: keep
         "@com_google_absl//absl/strings",
+        "@local_xla//third_party/python_runtime:headers",  # buildcleaner: keep
     ],
 )
 
@@ -794,13 +822,16 @@ tf_python_pybind_extension(
     pytype_srcs = [
         "_op_def_util.pyi",
     ],
-    deps = [
-        ":op_def_util_headers",
+    starlark_only = True,
+    deps = if_pywrap(
+        if_false = [":op_def_util_headers"],
+        if_true = [":op_def_util_cc"],
+    ) + [
         "//tensorflow/core:lib_headers_for_pybind",
         "//tensorflow/core:protos_all_cc",
         "//tensorflow/python/lib/core:pybind11_lib",
         "//tensorflow/python/lib/core:safe_pyobject_ptr",
-        "//third_party/python_runtime:headers",
+        "@local_xla//third_party/python_runtime:headers",
         "@pybind11",
     ],
 )
@@ -808,7 +839,6 @@ tf_python_pybind_extension(
 tf_py_strict_test(
     name = "op_def_util_test",
     srcs = ["op_def_util_test.py"],
-    python_version = "PY3",
     tags = [
         "no_pip",
         "no_windows",  # TODO(b/184424727): Enable this test on Windows.
@@ -839,9 +869,9 @@ cc_library(
         "//tensorflow/python/eager:pywrap_tfe_lib",
         "//tensorflow/python/lib/core:safe_pyobject_ptr",
         "//tensorflow/python/util:cpp_python_util",
-        "//third_party/python_runtime:headers",  # buildcleaner: keep
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
+        "@local_xla//third_party/python_runtime:headers",  # buildcleaner: keep
     ],
 )
 
@@ -850,10 +880,6 @@ tf_python_pybind_extension(
     name = "_pywrap_python_api_parameter_converter",
     srcs = ["python_api_parameter_converter_wrapper.cc"],
     hdrs = [
-        "op_def_util.h",
-        "python_api_info.h",
-        "python_api_parameter_converter.h",
-        "python_tensor_converter.h",
         "//tensorflow/c:headers",
         "//tensorflow/c/eager:pywrap_required_hdrs",
         "//tensorflow/c/experimental/ops:pywrap_required_hdrs",
@@ -866,11 +892,19 @@ tf_python_pybind_extension(
         "@local_xla//xla/tsl/distributed_runtime:pywrap_required_hdrs",
         "@local_xla//xla/tsl/distributed_runtime/coordination:pywrap_required_hdrs",
         "@local_xla//xla/tsl/python/lib/core:numpy_hdr",
-    ],
+    ] + if_pywrap(
+        if_false = [
+            "op_def_util.h",
+            "python_api_info.h",
+            "python_api_parameter_converter.h",
+            "python_tensor_converter.h",
+        ],
+    ),
     enable_stub_generation = True,
     pytype_srcs = [
         "_pywrap_python_api_parameter_converter.pyi",
     ],
+    starlark_only = True,
     deps = [
         "//tensorflow/c:pywrap_required_hdrs",
         "//tensorflow/core:framework",
@@ -880,26 +914,33 @@ tf_python_pybind_extension(
         "//tensorflow/core/common_runtime:core_cpu_headers_lib",
         "//tensorflow/core/config:flags_headers",
         "//third_party/py/numpy:headers",
-        "//third_party/python_runtime:headers",  # buildcleaner: keep
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/hash",
         "@com_google_absl//absl/memory",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:optional",
         "@com_google_absl//absl/types:span",
+        "@local_xla//third_party/python_runtime:headers",  # buildcleaner: keep
         "@pybind11",
-    ] + if_static(
+    ] + if_pywrap(
+        if_true = [
+            ":python_api_parameter_converter",
+            ":python_api_info",
+            ":op_def_util_cc",
+            ":python_tensor_converter",
+        ],
+    ) + if_static(
         extra_deps = [
             "//tensorflow/core/protobuf:eager_service_proto_cc",
             "//tensorflow/core/protobuf:master_proto_cc",
             "//tensorflow/core/protobuf:worker_proto_cc",
-            "@local_tsl//tsl/protobuf:coordination_service_proto_cc",
+            "@local_xla//xla/tsl/protobuf:coordination_service_proto_cc",
         ],
         otherwise = [
             "//tensorflow/core/protobuf:eager_service_proto_cc_headers_only",
             "//tensorflow/core/protobuf:master_proto_cc_headers_only",
             "//tensorflow/core/protobuf:worker_proto_cc_headers_only",
-            "@local_tsl//tsl/protobuf:coordination_service_proto_cc_headers_only",
+            "@local_xla//xla/tsl/protobuf:coordination_service_proto_cc_headers_only",
         ],
     ),
 )
@@ -907,7 +948,6 @@ tf_python_pybind_extension(
 tf_py_strict_test(
     name = "python_api_parameter_converter_test",
     srcs = ["python_api_parameter_converter_test.py"],
-    python_version = "PY3",
     tags = ["no_pip"],
     deps = [
         ":_pywrap_python_api_info",
@@ -940,9 +980,9 @@ cc_library(
         "//tensorflow/python/eager:pywrap_tfe_lib",
         "//tensorflow/python/lib/core:safe_pyobject_ptr",
         "//tensorflow/python/util:cpp_python_util",
-        "//third_party/python_runtime:headers",  # buildcleaner: keep
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
+        "@local_xla//third_party/python_runtime:headers",  # buildcleaner: keep
     ],
 )
 
@@ -951,9 +991,6 @@ tf_python_pybind_extension(
     name = "_pywrap_python_api_info",
     srcs = ["python_api_info_wrapper.cc"],
     hdrs = [
-        "op_def_util.h",
-        "python_api_info.h",
-        "python_tensor_converter.h",
         "//tensorflow/c:headers",
         "//tensorflow/c/eager:pywrap_required_hdrs",
         "//tensorflow/c/experimental/ops:pywrap_required_hdrs",
@@ -966,11 +1003,18 @@ tf_python_pybind_extension(
         "@local_xla//xla/tsl/distributed_runtime:pywrap_required_hdrs",
         "@local_xla//xla/tsl/distributed_runtime/coordination:pywrap_required_hdrs",
         "@local_xla//xla/tsl/python/lib/core:numpy_hdr",
-    ],
+    ] + if_pywrap(
+        if_false = [
+            "op_def_util.h",
+            "python_api_info.h",
+            "python_tensor_converter.h",
+        ],
+    ),
     enable_stub_generation = True,
     pytype_srcs = [
         "_pywrap_python_api_info.pyi",
     ],
+    starlark_only = True,
     deps = [
         "//tensorflow/c:pywrap_required_hdrs",
         "//tensorflow/core:framework",
@@ -980,23 +1024,29 @@ tf_python_pybind_extension(
         "//tensorflow/core/common_runtime:core_cpu_headers_lib",
         "//tensorflow/core/config:flags_headers",
         "//third_party/py/numpy:headers",
-        "//third_party/python_runtime:headers",  # buildcleaner: keep
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/hash",
         "@com_google_absl//absl/memory",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:optional",
         "@com_google_absl//absl/types:span",
+        "@local_xla//third_party/python_runtime:headers",  # buildcleaner: keep
         "@pybind11",
-    ] + if_static(
+    ] + if_pywrap(
+        if_true = [
+            ":python_api_info",
+            ":op_def_util_cc",
+            ":python_tensor_converter",
+        ],
+    ) + if_static(
         extra_deps = [
-            "@local_tsl//tsl/protobuf:coordination_service_proto_cc",
+            "@local_xla//xla/tsl/protobuf:coordination_service_proto_cc",
             "//tensorflow/core/protobuf:eager_service_proto_cc",
             "//tensorflow/core/protobuf:master_proto_cc",
             "//tensorflow/core/protobuf:worker_proto_cc",
         ],
         otherwise = [
-            "@local_tsl//tsl/protobuf:coordination_service_proto_cc_headers_only",
+            "@local_xla//xla/tsl/protobuf:coordination_service_proto_cc_headers_only",
             "//tensorflow/core/protobuf:eager_service_proto_cc_headers_only",
             "//tensorflow/core/protobuf:master_proto_cc_headers_only",
             "//tensorflow/core/protobuf:worker_proto_cc_headers_only",
@@ -1007,7 +1057,6 @@ tf_python_pybind_extension(
 tf_py_strict_test(
     name = "python_api_info_test",
     srcs = ["python_api_info_test.py"],
-    python_version = "PY3",
     tags = ["no_pip"],
     deps = [
         ":_pywrap_python_api_info",
@@ -1030,10 +1079,10 @@ cc_library(
         "//tensorflow/python/lib/core:safe_pyobject_ptr",
         "//tensorflow/python/util:cpp_python_util",
         "//tensorflow/python/util:function_parameter_canonicalizer",
-        "//third_party/python_runtime:headers",  # buildcleaner: keep
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:inlined_vector",
         "@com_google_absl//absl/strings",
+        "@local_xla//third_party/python_runtime:headers",  # buildcleaner: keep
     ],
     alwayslink = 1,
 )
@@ -1045,23 +1094,29 @@ tf_python_pybind_extension(
         "python_api_dispatcher.h",
         "//tensorflow/python/lib/core:safe_pyobject_ptr_required_hdrs",
     ],
+    # This data is needed to add hermetic CUDA tools in python runfiles.
+    data = if_cuda_tools(
+        [
+            "@cuda_nvcc//:ptxas",
+            "@cuda_nvcc//:nvvm",
+        ],
+    ),
     enable_stub_generation = True,
     pytype_srcs = [
         "_pywrap_python_api_dispatcher.pyi",
     ],
     deps = [
         "//tensorflow/python/util:function_parameter_canonicalizer_hdrs",
-        "//third_party/python_runtime:headers",  # buildcleaner: keep
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/strings",
+        "@local_xla//third_party/python_runtime:headers",  # buildcleaner: keep
         "@pybind11",
-    ],
+    ] + if_pywrap([":python_api_dispatcher"]),
 )
 
 tf_py_strict_test(
     name = "python_api_dispatcher_test",
     srcs = ["python_api_dispatcher_test.py"],
-    python_version = "PY3",
     tags = [
         "no_pip",
         "no_windows",  # TODO(b/184424727): Enable this test on Windows.
@@ -1087,8 +1142,8 @@ cc_library(
         "//tensorflow/python/eager:pywrap_tfe_lib",
         "//tensorflow/python/lib/core:safe_pyobject_ptr",
         "//tensorflow/python/util:cpp_python_util",
-        "//third_party/python_runtime:headers",  # buildcleaner: keep
         "@com_google_absl//absl/strings",
+        "@local_xla//third_party/python_runtime:headers",  # buildcleaner: keep
     ],
 )
 
@@ -1115,6 +1170,7 @@ tf_python_pybind_extension(
     pytype_srcs = [
         "_pywrap_python_tensor_converter.pyi",
     ],
+    starlark_only = True,
     deps = [
         "//tensorflow/c:pywrap_required_hdrs",
         "//tensorflow/core:framework",
@@ -1124,23 +1180,23 @@ tf_python_pybind_extension(
         "//tensorflow/core/common_runtime:core_cpu_headers_lib",
         "//tensorflow/core/config:flags_headers",
         "//third_party/py/numpy:headers",
-        "//third_party/python_runtime:headers",  # buildcleaner: keep
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/hash",
         "@com_google_absl//absl/memory",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:optional",
         "@com_google_absl//absl/types:span",
+        "@local_xla//third_party/python_runtime:headers",  # buildcleaner: keep
         "@pybind11",
     ] + if_static(
         extra_deps = [
-            "@local_tsl//tsl/protobuf:coordination_service_proto_cc",
+            "@local_xla//xla/tsl/protobuf:coordination_service_proto_cc",
             "//tensorflow/core/protobuf:eager_service_proto_cc",
             "//tensorflow/core/protobuf:master_proto_cc",
             "//tensorflow/core/protobuf:worker_proto_cc",
         ],
         otherwise = [
-            "@local_tsl//tsl/protobuf:coordination_service_proto_cc_headers_only",
+            "@local_xla//xla/tsl/protobuf:coordination_service_proto_cc_headers_only",
             "//tensorflow/core/protobuf:eager_service_proto_cc_headers_only",
             "//tensorflow/core/protobuf:master_proto_cc_headers_only",
             "//tensorflow/core/protobuf:worker_proto_cc_headers_only",
@@ -1151,7 +1207,6 @@ tf_python_pybind_extension(
 tf_py_strict_test(
     name = "python_tensor_converter_test",
     srcs = ["python_tensor_converter_test.py"],
-    python_version = "PY3",
     tags = ["no_pip"],
     deps = [
         ":_pywrap_python_tensor_converter",
@@ -1170,15 +1225,20 @@ tf_py_strict_test(
 pytype_strict_library(
     name = "ops",  # "ops" is already the name of a deprecated target
     srcs = ["ops.py"],
-    srcs_version = "PY3",
-    visibility = visibility + [
-        "//tensorflow:internal",
-        "//tensorflow_models:__subpackages__",
-        "//third_party/cloud_tpu/convergence_tools:__subpackages__",
-        "//third_party/mlperf:__subpackages__",
-        "//third_party/py/tf_agents:__subpackages__",
-        "//third_party/py/tf_slim:__subpackages__",
+    # copybara:uncomment_begin(google-only)
+    # visibility = visibility + [
+    # "//third_party/cloud_tpu/convergence_tools:__subpackages__",
+    # "//third_party/mlperf:__subpackages__",
+    # "//third_party/py/tf_agents:__subpackages__",
+    # "//third_party/py/tf_slim:__subpackages__",
+    # "//tensorflow:internal",
+    # "//tensorflow_models:__subpackages__",
+    # ],
+    # copybara:uncomment_end_and_comment_begin
+    visibility = [
+        "//visibility:public",
     ],
+    # copybara:comment_end
     deps = [
         ":c_api_util",
         ":composite_tensor",
@@ -1227,7 +1287,6 @@ pytype_strict_library(
 py_strict_library(
     name = "op_callbacks",
     srcs = ["op_callbacks.py"],
-    srcs_version = "PY3",
     visibility = visibility + ["//third_party/cloud_tpu/convergence_tools:__subpackages__"],
     deps = [
         "//tensorflow/python/eager:context",
@@ -1238,7 +1297,6 @@ py_strict_library(
 cuda_py_strict_test(
     name = "op_callbacks_test",
     srcs = ["op_callbacks_test.py"],
-    python_version = "PY3",
     deps = [
         ":constant_op",
         ":dtypes",
@@ -1265,7 +1323,6 @@ cuda_py_strict_test(
 py_strict_library(
     name = "indexed_slices",
     srcs = ["indexed_slices.py"],
-    srcs_version = "PY3",
     visibility = visibility + [
         "//tensorflow:internal",
         "//third_party/py/tf_slim:__subpackages__",
@@ -1306,7 +1363,6 @@ tf_py_strict_test(
 pytype_strict_library(
     name = "tensor_conversion",
     srcs = ["tensor_conversion.py"],
-    srcs_version = "PY3",
     deps = [
         ":tensor_conversion_registry",
         "//tensorflow/python/framework:tensor",
@@ -1319,7 +1375,6 @@ pytype_strict_library(
 py_strict_library(
     name = "tensor_conversion_registry",
     srcs = ["tensor_conversion_registry.py"],
-    srcs_version = "PY3",
     # TODO(b/266747022): remove extra visibility
     visibility = visibility + ["//learning/brain/experimental:__subpackages__"],
     deps = [
@@ -1333,7 +1388,6 @@ py_strict_library(
 py_strict_library(
     name = "func_graph",
     srcs = ["func_graph.py"],
-    srcs_version = "PY3",
     deps = [
         ":auto_control_deps",
         ":composite_tensor",
@@ -1369,7 +1423,6 @@ py_strict_library(
 py_strict_library(
     name = "auto_control_deps",
     srcs = ["auto_control_deps.py"],
-    srcs_version = "PY3",
     deps = [
         ":auto_control_deps_utils",
         ":dtypes",
@@ -1393,7 +1446,6 @@ py_strict_library(
 py_strict_library(
     name = "auto_control_deps_utils",
     srcs = ["auto_control_deps_utils.py"],
-    srcs_version = "PY3",
     deps = [
         ":dtypes",
         "//tensorflow/python/util:object_identity",
@@ -1404,7 +1456,6 @@ tf_py_strict_test(
     name = "auto_control_deps_test",
     size = "small",
     srcs = ["auto_control_deps_test.py"],
-    python_version = "PY3",
     deps = [
         ":auto_control_deps",
         ":constant_op",
@@ -1434,7 +1485,6 @@ tf_py_strict_test(
 py_strict_library(
     name = "config",
     srcs = ["config.py"],
-    srcs_version = "PY3",
     visibility = visibility + ["//tensorflow:internal"],
     deps = [
         ":errors",
@@ -1450,7 +1500,6 @@ cuda_py_strict_test(
     name = "config_test",
     size = "small",
     srcs = ["config_test.py"],
-    python_version = "PY3",
     tags = [
         "multi_gpu",
         "no_pip",
@@ -1478,7 +1527,6 @@ cuda_py_strict_test(
     name = "config_vgpu_test",
     size = "small",
     srcs = ["config_vgpu_test.py"],
-    python_version = "PY3",
     shard_count = 5,
     tags = [
         "gpu",
@@ -1506,7 +1554,6 @@ tpu_py_strict_test(
     # copybara:uncomment_end
     disable_tfrt = True,  # TODO(b/291666911): Update this test to call initialize_tpu_system
     main = "config_test.py",
-    python_version = "PY3",
     tags = ["no_pip"],  # test_ops are not available in pip.
     deps = [
         ":config",
@@ -1530,7 +1577,6 @@ tpu_py_strict_test(
 py_strict_library(
     name = "random_seed",
     srcs = ["random_seed.py"],
-    srcs_version = "PY3",
     visibility = visibility + [
         "//tensorflow:internal",
         "//third_party/py/tf_slim:__subpackages__",
@@ -1547,7 +1593,6 @@ py_strict_library(
 py_strict_library(
     name = "registry",
     srcs = ["registry.py"],
-    srcs_version = "PY3",
     deps = [
         "//tensorflow/python/platform:tf_logging",
         "//tensorflow/python/util:compat",
@@ -1557,7 +1602,6 @@ py_strict_library(
 py_strict_library(
     name = "smart_cond",
     srcs = ["smart_cond.py"],
-    srcs_version = "PY3",
     visibility = visibility + ["//tensorflow_model_optimization:__subpackages__"],
     deps = [
         ":tensor",
@@ -1572,7 +1616,6 @@ tf_py_strict_test(
     name = "smart_cond_test",
     size = "small",
     srcs = ["smart_cond_test.py"],
-    python_version = "PY3",
     deps = [
         ":constant_op",
         ":dtypes",
@@ -1590,7 +1633,6 @@ tf_py_strict_test(
 py_strict_library(
     name = "sparse_tensor",
     srcs = ["sparse_tensor.py"],
-    srcs_version = "PY3",
     visibility = visibility + [
         "//tensorflow:internal",
         "//tensorflow_models:__subpackages__",
@@ -1625,7 +1667,6 @@ py_strict_library(
 pytype_strict_library(
     name = "weak_tensor",
     srcs = ["weak_tensor.py"],
-    srcs_version = "PY3",
     deps = [
         ":composite_tensor_gradient",
         ":dtypes",
@@ -1645,8 +1686,6 @@ tf_py_strict_test(
     name = "weak_tensor_test",
     srcs = ["weak_tensor_test.py"],
     main = "weak_tensor_test.py",
-    python_version = "PY3",
-    srcs_version = "PY3",
     deps = [
         ":constant_op",
         ":dtypes",
@@ -1670,7 +1709,6 @@ tf_py_strict_test(
 py_strict_library(
     name = "composite_tensor",
     srcs = ["composite_tensor.py"],
-    srcs_version = "PY3",
     visibility = visibility,
     deps = [
         "//tensorflow/python:pywrap_tensorflow",
@@ -1682,7 +1720,6 @@ py_strict_library(
 py_strict_library(
     name = "none_tensor",
     srcs = ["none_tensor.py"],
-    srcs_version = "PY3",
     visibility = visibility + [
         "//learning/deepmind:__subpackages__",
         "//third_party/py/tf_keras:__subpackages__",
@@ -1691,6 +1728,7 @@ py_strict_library(
         ":composite_tensor",
         ":type_spec",
         ":type_spec_registry",
+        "//tensorflow/python/util:tf_export",
     ],
 )
 
@@ -1698,8 +1736,6 @@ py_strict_test(
     name = "composite_tensor_test",
     srcs = ["composite_tensor_test.py"],
     main = "composite_tensor_test.py",
-    python_version = "PY3",
-    srcs_version = "PY3",
     deps = [
         ":composite_tensor",
         ":constant_op",
@@ -1729,7 +1765,6 @@ py_strict_library(
 py_strict_library(
     name = "extension_type",
     srcs = ["extension_type.py"],
-    srcs_version = "PY3",
     visibility = visibility,
     deps = [
         ":composite_tensor",
@@ -1758,7 +1793,6 @@ py_strict_library(
 py_strict_library(
     name = "extension_type_field",
     srcs = ["extension_type_field.py"],
-    srcs_version = "PY3",
     deps = [
         ":composite_tensor",
         ":dtypes",
@@ -1774,21 +1808,25 @@ py_strict_library(
 py_strict_library(
     name = "immutable_dict",
     srcs = ["immutable_dict.py"],
-    srcs_version = "PY3",
     deps = [],
 )
 
 py_strict_library(
     name = "tensor_shape",
     srcs = ["tensor_shape.py"],
-    srcs_version = "PY3",
+    # copybara:uncomment_begin(google-only)
+    # visibility = [
+    # "//smartass/brain/configure/python:__pkg__",
+    # "//third_party/py/reverb:__subpackages__",
+    # "//third_party/py/tf_agents:__subpackages__",
+    # "//third_party/py/tf_slim:__subpackages__",
+    # "//tensorflow:internal",
+    # ],
+    # copybara:uncomment_end_and_comment_begin
     visibility = [
-        "//smartass/brain/configure/python:__pkg__",
-        "//tensorflow:internal",
-        "//third_party/py/reverb:__subpackages__",
-        "//third_party/py/tf_agents:__subpackages__",
-        "//third_party/py/tf_slim:__subpackages__",
+        "//visibility:public",
     ],
+    # copybara:comment_end
     deps = [
         "//tensorflow/core:protos_all_py",
         "//tensorflow/core/function/trace_type",
@@ -1805,7 +1843,6 @@ py_strict_library(
 pytype_strict_library(
     name = "type_spec",
     srcs = ["type_spec.py"],
-    srcs_version = "PY3",
     visibility = visibility + ["//third_party/py/tensorflow_gnn:__subpackages__"],
     deps = [
         ":composite_tensor",
@@ -1832,7 +1869,6 @@ pytype_strict_library(
 pytype_strict_library(
     name = "type_spec_registry",
     srcs = ["type_spec_registry.py"],
-    srcs_version = "PY3",
     visibility = visibility + ["//third_party/py/tensorflow_gnn:__subpackages__"],
     deps = [
         "//tensorflow/python/types:internal",
@@ -1842,7 +1878,6 @@ pytype_strict_library(
 pytype_strict_library(
     name = "type_utils",
     srcs = ["type_utils.py"],
-    srcs_version = "PY3",
     visibility = [
         # Limit the exposure of fulltype (which is a graph/C++ concept) to Python.
         "//tensorflow/python/data/ops:__pkg__",
@@ -1933,7 +1968,13 @@ pytype_strict_library(
 pytype_strict_library(
     name = "importer",
     srcs = ["importer.py"],
-    visibility = visibility + ["//tensorflow:internal"],
+    # copybara:uncomment_begin(google-only)
+    # visibility = visibility + ["//tensorflow:internal"],
+    # copybara:uncomment_end_and_comment_begin
+    visibility = [
+        "//visibility:public",
+    ],
+    # copybara:comment_end
     deps = [
         ":c_api_util",
         ":device",
@@ -1957,7 +1998,13 @@ pytype_strict_library(
 pytype_strict_library(
     name = "load_library",
     srcs = ["load_library.py"],
-    visibility = visibility + ["//tensorflow:internal"],
+    # copybara:uncomment_begin(google-only)
+    # visibility = visibility + ["//tensorflow:internal"],
+    # copybara:uncomment_end_and_comment_begin
+    visibility = [
+        "//visibility:public",
+    ],
+    # copybara:comment_end
     deps = [
         ":_pywrap_python_op_gen",
         "//tensorflow/python/client:pywrap_tf_session",
@@ -2021,11 +2068,17 @@ py_strict_library(
 py_strict_library(
     name = "tensor_spec",
     srcs = ["tensor_spec.py"],
-    visibility = visibility + [
-        "//tensorflow:internal",
-        "//third_party/py/reverb:__subpackages__",
-        "//third_party/py/tf_agents:__subpackages__",
+    # copybara:uncomment_begin(google-only)
+    # visibility = visibility + [
+    # "//third_party/py/reverb:__subpackages__",
+    # "//third_party/py/tf_agents:__subpackages__",
+    # "//tensorflow:internal",
+    # ],
+    # copybara:uncomment_end_and_comment_begin
+    visibility = [
+        "//visibility:public",
     ],
+    # copybara:comment_end
     deps = [
         ":tensor",
     ],
@@ -2034,12 +2087,17 @@ py_strict_library(
 py_strict_library(
     name = "tensor_util",
     srcs = ["tensor_util.py"],
-    srcs_version = "PY3",
-    visibility = visibility + [
-        "//tensorflow:internal",
-        "//tensorflow_models:__subpackages__",
-        "//third_party/py/tf_slim:__subpackages__",
+    # copybara:uncomment_begin(google-only)
+    # visibility = visibility + [
+    # "//third_party/py/tf_slim:__subpackages__",
+    # "//tensorflow:internal",
+    # "//tensorflow_models:__subpackages__",
+    # ],
+    # copybara:uncomment_end_and_comment_begin
+    visibility = [
+        "//visibility:public",
     ],
+    # copybara:comment_end
     deps = [
         ":dtypes",
         ":errors",
@@ -2050,6 +2108,7 @@ py_strict_library(
         "//tensorflow/python/types:internal",
         "//tensorflow/python/util:compat",
         "//tensorflow/python/util:nest",
+        "//tensorflow/python/util:numpy_compat",
         "//tensorflow/python/util:tf_export",
         "//third_party/py/numpy",
     ],
@@ -2058,7 +2117,6 @@ py_strict_library(
 pytype_strict_library(
     name = "traceable_stack",
     srcs = ["traceable_stack.py"],
-    srcs_version = "PY3",
     visibility = ["//visibility:public"],
     deps = [
     ],
@@ -2067,7 +2125,7 @@ pytype_strict_library(
 py_strict_library(
     name = "versions",
     srcs = ["versions.py"],
-    srcs_version = "PY3",
+    visibility = ["//visibility:public"],
     deps = [
         "//tensorflow/python/client:pywrap_tf_session",
         "//tensorflow/python/util:tf_export",
@@ -2077,22 +2135,26 @@ py_strict_library(
 py_strict_library(
     name = "gpu_util",
     srcs = ["gpu_util.py"],
-    srcs_version = "PY3",
     deps = [],
 )
 
 pytype_strict_library(
     name = "test_lib",
     srcs = ["test_util.py"],
-    srcs_version = "PY3",
-    visibility = visibility + [
-        "//tensorflow:internal",
-        "//tensorflow_model_optimization:__subpackages__",
-        "//third_party/cloud_tpu/convergence_tools:__subpackages__",
-        "//third_party/py/neural_structured_learning:__subpackages__",
-        "//third_party/py/tf_agents:__subpackages__",
-        "//third_party/py/tf_keras:__subpackages__",
+    # copybara:uncomment_begin(google-only)
+    # visibility = visibility + [
+    # "//third_party/cloud_tpu/convergence_tools:__subpackages__",
+    # "//third_party/py/neural_structured_learning:__subpackages__",
+    # "//third_party/py/tf_agents:__subpackages__",
+    # "//third_party/py/tf_keras:__subpackages__",
+    # "//tensorflow:internal",
+    # "//tensorflow_model_optimization:__subpackages__",
+    # ],
+    # copybara:uncomment_end_and_comment_begin
+    visibility = [
+        "//visibility:public",
     ],
+    # copybara:comment_end
     deps = [
         ":_test_metrics_util",
         ":config",
@@ -2143,6 +2205,7 @@ pytype_strict_library(
         "//tensorflow/python/util:compat",
         "//tensorflow/python/util:deprecation",
         "//tensorflow/python/util:nest",
+        "//tensorflow/python/util:numpy_compat",
         "//tensorflow/python/util:tf_decorator_py",
         "//tensorflow/python/util:tf_export",
         "//tensorflow/python/util:tf_inspect",
@@ -2159,7 +2222,6 @@ pytype_strict_library(
 py_strict_library(
     name = "is_xla_test_true",
     srcs = ["is_xla_test_true.py"],
-    srcs_version = "PY3",
     visibility = visibility + [
         "//tensorflow:internal",
         "//tensorflow_models:__subpackages__",
@@ -2173,7 +2235,6 @@ py_strict_library(
 py_strict_library(
     name = "is_mlir_bridge_test_true",
     srcs = ["is_mlir_bridge_test_true.py"],
-    srcs_version = "PY3",
     visibility = visibility + ["//tensorflow:internal"],
 )
 
@@ -2182,20 +2243,17 @@ py_strict_library(
 py_strict_library(
     name = "is_mlir_bridge_test_false",
     srcs = ["is_mlir_bridge_test_false.py"],
-    srcs_version = "PY3",
     visibility = visibility,
 )
 
 py_strict_library(
     name = "tfrt_utils",
     srcs = ["tfrt_utils.py"],
-    srcs_version = "PY3",
 )
 
 py_strict_library(
     name = "combinations",
     srcs = ["combinations.py"],
-    srcs_version = "PY3",
     visibility = visibility + ["//tensorflow:internal"],
     deps = [
         ":ops",
@@ -2209,7 +2267,6 @@ py_strict_library(
 py_strict_library(
     name = "test_combinations_lib",
     srcs = ["test_combinations.py"],
-    srcs_version = "PY3",
     deps = [
         "//tensorflow/python/util:tf_export",
         "//tensorflow/python/util:tf_inspect",
@@ -2220,8 +2277,6 @@ py_strict_library(
 py_strict_test(
     name = "test_combinations_test",
     srcs = ["test_combinations_test.py"],
-    python_version = "PY3",
-    srcs_version = "PY3",
     deps = [
         ":test_combinations_lib",
         "//tensorflow/python/eager:test",
@@ -2235,11 +2290,9 @@ py_strict_library(
         "memory_checker.py",
         "python_memory_checker.py",
     ],
-    srcs_version = "PY3",
     visibility = visibility + ["//tensorflow:internal"],
     deps = [
         ":_python_memory_checker_helper",
-        # copybara:uncomment "//tensorflow/python/platform:cpp_memory_checker",
         "//tensorflow/python/platform:tf_logging",
         "//tensorflow/python/profiler:trace",
         "//tensorflow/python/util:tf_inspect",
@@ -2263,7 +2316,6 @@ tf_py_strict_test(
     size = "small",
     srcs = ["constant_op_test.py"],
     main = "constant_op_test.py",
-    python_version = "PY3",
     deps = [
         ":constant_op",
         ":dtypes",
@@ -2284,7 +2336,6 @@ tf_py_strict_test(
     size = "small",
     srcs = ["registry_test.py"],
     main = "registry_test.py",
-    python_version = "PY3",
     deps = [
         ":registry",
         "//tensorflow/python/platform:client_testlib",
@@ -2297,7 +2348,6 @@ tf_py_strict_test(
     size = "small",
     srcs = ["errors_test.py"],
     main = "errors_test.py",
-    python_version = "PY3",
     tags = ["no_windows"],  # TODO(b/184424727): Enable this test on Windows.
     deps = [
         ":_errors_test_helper",
@@ -2315,7 +2365,6 @@ tf_py_strict_test(
     size = "small",
     srcs = ["error_interpolation_test.py"],
     main = "error_interpolation_test.py",
-    python_version = "PY3",
     deps = [
         ":constant_op",
         ":dtypes",
@@ -2338,7 +2387,6 @@ tf_py_strict_test(
     size = "small",
     srcs = ["subscribe_test.py"],
     main = "subscribe_test.py",
-    python_version = "PY3",
     deps = [
         ":constant_op",
         ":dtypes",
@@ -2362,7 +2410,6 @@ tf_py_strict_test(
     size = "small",
     srcs = ["proto_test.py"],
     main = "proto_test.py",
-    python_version = "PY3",
     deps = [
         ":constant_op",
         ":ops",
@@ -2375,7 +2422,6 @@ cuda_py_strict_test(
     name = "function_test",
     size = "medium",
     srcs = ["function_test.py"],
-    python_version = "PY3",
     shard_count = 10,
     tags = [
         "no_rocm",
@@ -2423,7 +2469,6 @@ tf_py_strict_test(
     size = "small",
     srcs = ["versions_test.py"],
     main = "versions_test.py",
-    python_version = "PY3",
     deps = [
         ":versions",
         "//tensorflow/python/platform:client_testlib",
@@ -2435,7 +2480,6 @@ tf_py_strict_test(
     size = "small",
     srcs = ["importer_test.py"],
     main = "importer_test.py",
-    python_version = "PY3",
     tags = ["no_rocm"],
     deps = [
         ":constant_op",
@@ -2479,7 +2523,6 @@ tf_py_strict_test(
     srcs = ["meta_graph_test.py"],
     data = [":meta_graph_testdata"],
     main = "meta_graph_test.py",
-    python_version = "PY3",
     tags = [
         "no_pip",
         "no_windows",
@@ -2517,7 +2560,6 @@ cuda_py_strict_test(
     name = "node_file_writer_test",
     size = "small",
     srcs = ["node_file_writer_test.py"],
-    python_version = "PY3",
     # On Windows, fails in tempfile.TemporaryDirectory.cleanup() with error: "The directory is not
     # empty", so test is disabled on Windows.
     # TODO(reedwm): Debug this.
@@ -2543,7 +2585,6 @@ tf_py_strict_test(
     size = "small",
     srcs = ["traceable_stack_test.py"],
     main = "traceable_stack_test.py",
-    python_version = "PY3",
     deps = [
         ":test_lib",
         ":traceable_stack",
@@ -2588,7 +2629,6 @@ tf_py_strict_test(
     size = "small",
     srcs = ["common_shapes_test.py"],
     main = "common_shapes_test.py",
-    python_version = "PY3",
     deps = [
         ":common_shapes",
         ":tensor_shape",
@@ -2602,7 +2642,6 @@ tf_py_strict_test(
     size = "small",
     srcs = ["ops_test.py"],
     main = "ops_test.py",
-    python_version = "PY3",
     tags = ["no_pip"],
     deps = [
         ":composite_tensor",
@@ -2671,7 +2710,6 @@ tf_py_strict_test(
     size = "small",
     srcs = ["op_allowlist_namespace_test.py"],
     main = "op_allowlist_namespace_test.py",
-    python_version = "PY3",
     tags = ["no_pip"],  # Avoid a missing test dependency error
     deps = [
         ":test_namespace_ops",
@@ -2684,7 +2722,6 @@ tf_py_strict_test(
     size = "small",
     srcs = ["python_op_gen_annotation_test.py"],
     main = "python_op_gen_annotation_test.py",
-    python_version = "PY3",
     deps = [
         "//tensorflow/python/ops:data_flow_ops",
         "//tensorflow/python/ops:math_ops_gen",
@@ -2698,7 +2735,6 @@ tf_py_strict_test(
     size = "small",
     srcs = ["ops_enable_eager_test.py"],
     main = "ops_enable_eager_test.py",
-    python_version = "PY3",
     deps = [
         ":ops",
         "//tensorflow/python/eager:context",
@@ -2711,7 +2747,6 @@ tf_py_strict_test(
     size = "small",
     srcs = ["extension_type_test.py"],
     main = "extension_type_test.py",
-    python_version = "PY3",
     deps = [
         ":constant_op",
         ":dtypes",
@@ -2755,7 +2790,6 @@ tf_py_strict_test(
     size = "small",
     srcs = ["extension_type_field_test.py"],
     main = "extension_type_field_test.py",
-    python_version = "PY3",
     tags = ["no_pip"],  # TODO(b/184565242) Enable pip once we add a module that depends on this.
     deps = [
         ":constant_op",
@@ -2776,7 +2810,6 @@ tf_py_strict_test(
     size = "small",
     srcs = ["immutable_dict_test.py"],
     main = "immutable_dict_test.py",
-    python_version = "PY3",
     deps = [
         ":immutable_dict",
         ":test_lib",
@@ -2790,7 +2823,6 @@ tf_py_strict_test(
     size = "small",
     srcs = ["tensor_shape_test.py"],
     main = "tensor_shape_test.py",
-    python_version = "PY3",
     deps = [
         ":dtypes",
         ":tensor_shape",
@@ -2807,7 +2839,6 @@ tf_py_strict_test(
     size = "small",
     srcs = ["type_spec_test.py"],
     main = "type_spec_test.py",
-    python_version = "PY3",
     deps = [
         ":dtypes",
         ":ops",
@@ -2834,7 +2865,6 @@ tf_py_strict_test(
     size = "small",
     srcs = ["tensor_test.py"],
     main = "tensor_test.py",
-    python_version = "PY3",
     deps = [
         ":constant_op",
         ":dtypes",
@@ -2859,7 +2889,6 @@ tf_py_strict_test(
     size = "small",
     srcs = ["sparse_tensor_test.py"],
     main = "sparse_tensor_test.py",
-    python_version = "PY3",
     deps = [
         ":dtypes",
         ":errors",
@@ -2885,7 +2914,6 @@ tf_py_strict_test(
     size = "small",
     srcs = ["device_spec_test.py"],
     main = "device_spec_test.py",
-    python_version = "PY3",
     deps = [
         ":device_spec",
         ":test_lib",
@@ -2899,7 +2927,6 @@ tf_py_strict_test(
     size = "small",
     srcs = ["device_test.py"],
     main = "device_test.py",
-    python_version = "PY3",
     deps = [
         ":device",
         ":device_spec",
@@ -2917,7 +2944,6 @@ tf_py_strict_test(
     size = "small",
     srcs = ["random_seed_test.py"],
     main = "random_seed_test.py",
-    python_version = "PY3",
     deps = [
         ":random_seed",
         ":test_lib",
@@ -2931,7 +2957,6 @@ tf_py_strict_test(
     size = "small",
     srcs = ["tensor_util_test.py"],
     main = "tensor_util_test.py",
-    python_version = "PY3",
     tags = [
         "no_windows",
     ],
@@ -2964,7 +2989,6 @@ cuda_py_strict_test(
     size = "small",
     srcs = ["test_util_test.py"],
     main = "test_util_test.py",
-    python_version = "PY3",
     tags = [
         "no_pip",
         "no_windows",
@@ -3007,7 +3031,6 @@ tf_py_strict_test(
     size = "medium",
     srcs = ["memory_checker_test.py"],
     main = "memory_checker_test.py",
-    python_version = "PY3",
     shard_count = 8,
     tags = [
         "no_oss",
@@ -3027,20 +3050,7 @@ tf_py_strict_test(
         # Adding directly to `test_lib` caused a Colab binary size
         # regression b/149433910 .
         ":memory_checker",
-        ":_memory_checker_test_helper",
         "//tensorflow/python/platform:client_testlib",
-    ],
-)
-
-tf_python_pybind_extension(
-    name = "_memory_checker_test_helper",
-    srcs = ["memory_checker_test_helper.cc"],
-    enable_stub_generation = True,
-    pytype_srcs = [
-        "_memory_checker_test_helper.pyi",
-    ],
-    deps = [
-        "@pybind11",
     ],
 )
 
@@ -3049,7 +3059,6 @@ tf_py_strict_test(
     size = "small",
     srcs = ["dtypes_test.py"],
     main = "dtypes_test.py",
-    python_version = "PY3",
     deps = [
         ":_dtypes",
         ":dtypes",
@@ -3067,7 +3076,6 @@ tf_py_strict_test(
     name = "op_def_library_test",
     size = "small",
     srcs = ["op_def_library_test.py"],
-    python_version = "PY3",
     deps = [
         ":constant_op",
         ":dtypes",
@@ -3090,7 +3098,6 @@ tf_py_strict_test(
     size = "small",
     srcs = ["kernels_test.py"],
     main = "kernels_test.py",
-    python_version = "PY3",
     deps = [
         ":kernels",
         ":test_lib",
@@ -3101,7 +3108,6 @@ tf_py_strict_test(
 tf_proto_library(
     name = "cpp_shape_inference_proto",
     srcs = ["cpp_shape_inference.proto"],
-    cc_api_version = 2,
     protodeps = tf_additional_all_protos(),
     # TODO(b/74620627): remove when _USE_C_SHAPES is removed
     visibility = ["//tensorflow:internal"],
@@ -3114,6 +3120,7 @@ tf_python_pybind_extension(
     pytype_srcs = [
         "_errors_test_helper.pyi",
     ],
+    starlark_only = True,
     deps = [
         "//tensorflow/c:tf_status_headers",
         "//tensorflow/core/platform:status",
@@ -3128,7 +3135,6 @@ tf_py_strict_test(
     name = "c_api_util_test",
     size = "small",
     srcs = ["c_api_util_test.py"],
-    python_version = "PY3",
     deps = [
         ":c_api_util",
         ":test_lib",
@@ -3140,7 +3146,6 @@ tf_py_strict_test(
     name = "graph_util_test",
     size = "small",
     srcs = ["graph_util_test.py"],
-    python_version = "PY3",
     deps = [
         ":constant_op",
         ":dtypes",
@@ -3162,7 +3167,6 @@ tf_py_strict_test(
     name = "convert_to_constants_test",
     size = "medium",
     srcs = ["convert_to_constants_test.py"],
-    python_version = "PY3",
     shard_count = 4,
     tags = ["no_rocm"],
     deps = [
@@ -3214,7 +3218,6 @@ cuda_py_benchmark_test(
     size = "medium",
     srcs = ["graph_building_benchmark.py"],
     main = "graph_building_benchmark.py",
-    python_version = "PY3",
     deps = [
         ":dtypes",
         "//tensorflow/python/eager:context",
@@ -3237,7 +3240,7 @@ tf_python_pybind_extension(
         "//tensorflow/core/platform:errors",
         "//tensorflow/core/platform:protobuf",
         "//tensorflow/python/lib/core:pybind11_status",
-        "//third_party/python_runtime:headers",  # buildcleaner: keep
+        "@local_xla//third_party/python_runtime:headers",  # buildcleaner: keep
         "@pybind11",
     ],
 )
@@ -3245,15 +3248,12 @@ tf_python_pybind_extension(
 pyx_library(
     name = "fast_tensor_util",
     srcs = ["fast_tensor_util.pyx"],
-    cc_deps = ["//third_party/py/numpy:headers"],
     py_deps = ["//tensorflow/python/util:compat"],
 )
 
 py_strict_test(
     name = "tf2_test",
     srcs = ["tf2_test.py"],
-    python_version = "PY3",
-    srcs_version = "PY3",
     deps = [
         ":combinations",
         "//tensorflow/python:tf2",
@@ -3296,7 +3296,7 @@ tf_python_pybind_extension(
     ],
     deps = [
         "//tensorflow/core:framework",
-        "//third_party/python_runtime:headers",
+        "@local_xla//third_party/python_runtime:headers",
         "@pybind11",
     ],
 )
@@ -3305,7 +3305,6 @@ tf_python_pybind_extension(
 # py_proto_library(
 #     name = "cpp_shape_inference_proto_py_pb2",
 #     has_services = 0,
-#     api_version = 2,
 #     deps = [":cpp_shape_inference_proto"],
 # )
 # copybara:uncomment_end
@@ -3314,7 +3313,6 @@ py_strict_library(
     name = "summary_test_util",
     testonly = True,
     srcs = ["summary_test_util.py"],
-    srcs_version = "PY3",
     deps = [
         "//tensorflow/core:protos_all_py",
         "//tensorflow/python/lib/io:tf_record",

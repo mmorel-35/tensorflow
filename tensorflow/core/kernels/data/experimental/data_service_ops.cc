@@ -103,8 +103,8 @@ void RegisterDatasetOp::Compute(OpKernelContext* ctx) {
   params.external_state_policy = external_state_policy_;
   SerializationContext serialization_ctx(params);
   DatasetDef dataset_def;
-  Status s = AsGraphDef(dataset, std::move(serialization_ctx),
-                        dataset_def.mutable_graph());
+  absl::Status s = AsGraphDef(dataset, std::move(serialization_ctx),
+                              dataset_def.mutable_graph());
   if (!s.ok()) {
     OP_REQUIRES_OK(
         ctx,
@@ -147,7 +147,7 @@ void RegisterDatasetOp::Compute(OpKernelContext* ctx) {
                      dataset_def, metadata, requested_dataset_id, dataset_id);
                },
                /*description=*/
-               strings::StrCat("register dataset with dispatcher at ", address),
+               absl::StrCat("register dataset with dispatcher at ", address),
                deadline_micros));
 
   if (op_version_ >= 2) {

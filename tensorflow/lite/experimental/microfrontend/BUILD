@@ -1,5 +1,7 @@
 # TensorFlow ops for audio front-end processing.
 
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_cc//cc:cc_test.bzl", "cc_test")
 load("//tensorflow:strict.default.bzl", "py_strict_library")
 load(
     "//tensorflow:tensorflow.bzl",
@@ -119,7 +121,6 @@ tf_custom_op_py_strict_library(
     kernels = [
         ":audio_microfrontend_op_op_lib",
     ],
-    srcs_version = "PY3",
     deps = [
         ":audio_microfrontend_op",
         "//tensorflow/python/framework:dtypes",

@@ -18,15 +18,14 @@ limitations under the License.
 #include <vector>
 
 #include "absl/algorithm/container.h"
-#include "xla/client/xla_computation.h"
 #include "xla/execution_options_util.h"
-#include "xla/service/despecializer.h"
-#include "xla/service/float_normalization.h"
+#include "xla/hlo/builder/xla_computation.h"
+#include "xla/hlo/testlib/test.h"
+#include "xla/hlo/transforms/despecializer.h"
+#include "xla/hlo/transforms/simplifiers/float_normalization.h"
 #include "xla/status_macros.h"
-#include "xla/test.h"
 #include "xla/tests/client_library_test_base.h"
 #include "xla/tests/hlo_test_base.h"
-#include "xla/tests/test_macros.h"
 #include "xla/tests/test_utils.h"
 
 namespace xla {
@@ -227,15 +226,9 @@ std::string BuildHloTextGroupedConvolution2D(
   }
 }
 
-XLA_TEST_P(GroupedConvolution2DTest, DoIt) {
+TEST_P(GroupedConvolution2DTest, DoIt) {
   const GroupedConvolution2DSpec& spec = ::testing::get<0>(GetParam());
   bool use_bfloat16 = ::testing::get<1>(GetParam());
-
-#ifdef XLA_BACKEND_DOES_NOT_SUPPORT_BFLOAT16
-  if (use_bfloat16) {
-    return;
-  }
-#endif
 
   const std::string hlo_text =
       BuildHloTextGroupedConvolution2D(spec, use_bfloat16);
@@ -257,7 +250,7 @@ INSTANTIATE_TEST_CASE_P(
 
 using GroupedConvolutionTest = HloTestBase;
 
-XLA_TEST_F(GroupedConvolutionTest, BackwardInputConvolution) {
+TEST_F(GroupedConvolutionTest, BackwardInputConvolution) {
   auto module = ParseAndReturnVerifiedModule(R"(
   HloModule convolution_module
 

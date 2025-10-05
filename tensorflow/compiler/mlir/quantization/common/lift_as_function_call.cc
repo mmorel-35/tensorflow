@@ -50,6 +50,7 @@ limitations under the License.
 #include "mlir/IR/ValueRange.h"  // from @llvm-project
 #include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "mlir/Support/LogicalResult.h"  // from @llvm-project
+#include "stablehlo/dialect/Version.h"  // from @stablehlo
 #include "tensorflow/compiler/mlir/quantization/common/attrs_and_constraints.h"
 #include "tensorflow/compiler/mlir/quantization/common/quantization_lib/quantization_utils.h"
 #include "tensorflow/compiler/mlir/quantization/stablehlo/quantization_config.pb.h"
@@ -85,7 +86,7 @@ bool IsInLiftedFunc(Operation* op) {
 bool IsInStableHloOpRegion(Operation* op) {
   if (op == nullptr) return false;
   auto parent_op = op->getParentOp();
-  return parent_op != nullptr && stablehlo::IsStablehloOp(parent_op);
+  return parent_op != nullptr && quant::stablehlo::IsStablehloOp(parent_op);
 }
 
 // Inserts the function to the symbol table of the module thread-safely.
@@ -113,8 +114,9 @@ ValueRange CreateTFPartitionedCallOp(OpBuilder& builder,
                                      const StringRef func_name,
                                      const TypeRange output_types,
                                      const ValueRange args) {
-  TF::PartitionedCallOp call_op = builder.create<TF::PartitionedCallOp>(
-      location, output_types, args,
+  TF::PartitionedCallOp call_op = TF::PartitionedCallOp::create(
+      builder, location, output_types, args,
+      /*args_attrs=*/nullptr, /*res_attrs=*/nullptr,
       FlatSymbolRefAttr::get(builder.getStringAttr(func_name)),
       /*config=*/"", /*config_proto=*/"", /*executor_type=*/"");
 
@@ -143,23 +145,32 @@ ValueRange CreateTFXlaCallModuleOp(OpBuilder& builder, const Location location,
   auto empty_array_attr = ArrayAttr::get(ctx, {});
   auto platforms = ArrayAttr::get(ctx, {StringAttr::get(ctx, kPlatformCpu)});
 
-  auto call_op = builder.create<TF::XlaCallModuleOp>(
-      location,
-      /*output=*/output_types,
-      /*args=*/args,
-      /*version=*/kDefaultVersion, /*module=*/"",
-      /*Sout=*/ArrayAttr::get(ctx, shape_attrs),
-      /*dim_args_spec=*/empty_array_attr,
-      /*platforms=*/platforms,
-      /*function_list=*/empty_array_attr,
-      /*has_token_input_output=*/false,
-      /*disabled_checks=*/empty_array_attr);
+  auto call_op =
+      TF::XlaCallModuleOp::create(builder, location,
+                                  /*output=*/output_types,
+                                  /*args=*/args,
+                                  /*version=*/kDefaultVersion, /*module=*/"",
+                                  /*Sout=*/ArrayAttr::get(ctx, shape_attrs),
+                                  /*dim_args_spec=*/empty_array_attr,
+                                  /*platforms=*/platforms,
+                                  /*function_list=*/empty_array_attr,
+                                  /*has_token_input_output=*/false,
+                                  /*disabled_checks=*/empty_array_attr);
 
   // Set the function name. This will be controlled by the
   // XlaCallModuleSerialization related passes directly, which means that the
   // function name can be changed by those passes.
   call_op->setAttr(TF::kStablehloEntryFunctionAttrName,
                    FlatSymbolRefAttr::get(builder.getStringAttr(func_name)));
+
+  // Set target version to WEEK_4 since this is an offline quantizer.
+  std::string target_version =
+      mlir::vhlo::Version::fromCompatibilityRequirement(
+          vhlo::Version::CompatibilityRequirement::WEEK_4)
+          .toString();
+  call_op->setAttr(TF::kStablehloVersionAttrName,
+                   builder.getStringAttr(target_version));
+
   // Store the custom attribute to restore the function name when loading it
   // back in the post calibration stage. As mentioned above, the above entry
   // function attribute is not reliable.
@@ -287,7 +298,7 @@ LogicalResult SetAttributeMap(MLIRContext& context,
     for (const auto& [attr, val] : attr_to_op_map) {
       if (attr.getName() == attribute.getName()) owner_op = val;
     }
-    if (stablehlo::IsStablehloOp(owner_op)) {
+    if (quant::stablehlo::IsStablehloOp(owner_op)) {
       owner_op->setAttr(StringRef(attribute.getName()), attribute.getValue());
     } else {
       owner_op = attr_to_op_map[attribute];
@@ -337,7 +348,8 @@ SmallVector<Value, 4> LiftAsFunctionCall(
     arg_locs.push_back(arg.getLoc());
   }
 
-  auto wrap_func = builder.create<func::FuncOp>(location, func_name, func_type);
+  auto wrap_func =
+      func::FuncOp::create(builder, location, func_name, func_type);
   wrap_func.setVisibility(SymbolTable::Visibility::Private);
   // The callee function for TF::XlaCallModuleOp must have this attribute.
   if (call_op_type == FunctionCallOpType::TFXlaCallModuleOp) {
@@ -356,10 +368,11 @@ SmallVector<Value, 4> LiftAsFunctionCall(
   // Set the location of call op to QuantizationUnitLoc if found.
   Location call_op_loc = location;
   for (Operation* op : cloning_ops) {
-    std::optional<QuantizationUnitLoc::QuantizationUnit> unit =
-        FindQuantizationUnitFromLoc(op->getLoc());
+    std::optional<quant::QuantizationUnitLoc::QuantizationUnit> unit =
+        quant::FindQuantizationUnitFromLoc(op->getLoc());
     if (unit.has_value()) {
-      call_op_loc = QuantizationUnitLoc(builder.getContext(), unit.value());
+      call_op_loc =
+          quant::QuantizationUnitLoc(builder.getContext(), unit.value());
     }
   }
 
@@ -374,7 +387,7 @@ SmallVector<Value, 4> LiftAsFunctionCall(
   for (Value result : results) {
     return_values.push_back(mapping.lookupOrNull(result));
   }
-  builder.create<func::ReturnOp>(location, return_values);
+  func::ReturnOp::create(builder, location, return_values);
 
   // Create a function call to the newly created function.
   StringAttr new_func_name =
@@ -481,7 +494,7 @@ bool IsEinsumSupportedByXlaDotV2(StringAttr equation_attr) {
          rhs_out_idx_start >= batch_dim_size;
 }
 
-absl::StatusOr<Method> GetQuantizationMethod(absl::Nonnull<Operation*> op) {
+absl::StatusOr<Method> GetQuantizationMethod(Operation* absl_nonnull op) {
   const auto quantization_method_attr =
       op->getAttrOfType<StringAttr>(kQuantizationMethodAttr);
   if (!quantization_method_attr) {
@@ -499,7 +512,7 @@ absl::StatusOr<Method> GetQuantizationMethod(absl::Nonnull<Operation*> op) {
   return quantization_method;
 }
 
-Method GetQuantizationMethodOrDefault(absl::Nonnull<Operation*> op) {
+Method GetQuantizationMethodOrDefault(Operation* absl_nonnull op) {
   absl::StatusOr<Method> method = GetQuantizationMethod(op);
   if (method.status().code() == absl::StatusCode::kInternal) {
     // This indicates that the `Method` protobuf string is corrupt, but this

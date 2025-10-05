@@ -15,6 +15,8 @@ limitations under the License.
 
 #include "tensorflow/lite/c/common_internal.h"
 
+#include <cstdint>
+
 #include "tensorflow/lite/core/c/c_api_types.h"
 #include "tensorflow/lite/core/c/common.h"
 
@@ -45,7 +47,7 @@ TfLiteStatus TfLiteDelegateCopyFromBufferHandleInternal(
   // TfLiteOpaqueContext and TfLiteContext being equivalent, or on
   // TfLiteOpaqueDelegate and TfLiteDelegate being equivalent.
   if (TfLiteDelegateHasValidOpaqueDelegateBuilder(delegate) &&
-      tensor->delegate->opaque_delegate_builder->CopyFromBufferHandle) {
+      delegate->opaque_delegate_builder->CopyFromBufferHandle) {
     return delegate->opaque_delegate_builder->CopyFromBufferHandle(
         reinterpret_cast<TfLiteOpaqueContext*>(context),
         reinterpret_cast<TfLiteOpaqueDelegate*>(delegate),

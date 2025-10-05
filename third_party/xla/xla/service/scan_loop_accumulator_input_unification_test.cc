@@ -21,13 +21,14 @@ limitations under the License.
 
 #include <gtest/gtest.h>
 #include "absl/log/log.h"
+#include "xla/hlo/analysis/alias_info.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/hlo/ir/hlo_opcode.h"
+#include "xla/hlo/testlib/verified_hlo_module.h"
 #include "xla/service/copy_insertion.h"
 #include "xla/tests/hlo_test_base.h"
-#include "xla/tests/verified_hlo_module.h"
 #include "tsl/platform/statusor.h"
 
 namespace xla {
@@ -55,14 +56,14 @@ TEST_F(ScanLoopAccumulatorInputUnificationTest, UnifyAccumulatorInput) {
     get-tuple-element.47 = s32[] get-tuple-element(wide.arg_tuple.8), index=1
     get-tuple-element.48 = s32[8] get-tuple-element(wide.arg_tuple.8), index=2
     get-tuple-element.54 = s32[8] get-tuple-element(wide.arg_tuple.8), index=3
-    
+
     dynamic-slice.0 = s32[1] dynamic-slice(get-tuple-element.54, get-tuple-element.46), dynamic_slice_sizes={1}
     reshape.2 = s32[] reshape(dynamic-slice.0)
     add.1 = s32[] add(get-tuple-element.47, reshape.2)
 
     reshape.3 = s32[1] reshape(add.1)
     dynamic-update-slice.0 = s32[8] dynamic-update-slice(get-tuple-element.48, reshape.3, get-tuple-element.46)
-    
+
     const = s32[] constant(1)
     add.0 = s32[] add(get-tuple-element.46, const)
     ROOT tuple.10 = (s32[], s32[], s32[8], s32[8]) tuple(add.0, add.1, dynamic-update-slice.0, get-tuple-element.54)
@@ -92,7 +93,7 @@ TEST_F(ScanLoopAccumulatorInputUnificationTest, UnifyAccumulatorInput) {
     add.0 = s32[] add(get-tuple-element.46, const)
     ROOT out = (s32[], s32[], s32[8]) tuple(add.0, get-tuple-element.47, get-tuple-element.40)
   }
-   
+
   outer_cond {
     constant.5 = s32[] constant(8)
     wide.arg_tuple.30 = (s32[], s32[], s32[8]) parameter(0)
@@ -108,7 +109,7 @@ TEST_F(ScanLoopAccumulatorInputUnificationTest, UnifyAccumulatorInput) {
     while = (s32[], s32[], s32[8]) while(tuple.8), condition=outer_cond, body=outer_body
     ROOT get-tuple-element.40 = s32[8] get-tuple-element(while), index=2
   } // main.43
-  
+
   )";
 
   auto module = ParseAndReturnVerifiedModule(kModule).value();
@@ -144,21 +145,21 @@ TEST_F(ScanLoopAccumulatorInputUnificationTest, UnifyAccumulatorInput2) {
     get-tuple-element.54 = s32[8] get-tuple-element(wide.arg_tuple.8), index=3
     get-tuple-element.55 = s32[8] get-tuple-element(wide.arg_tuple.8), index=4
     get-tuple-element.56 = s32[8] get-tuple-element(wide.arg_tuple.8), index=5
-    
+
     dynamic-slice.0 = s32[1] dynamic-slice(get-tuple-element.54, get-tuple-element.46), dynamic_slice_sizes={1}
     reshape.2 = s32[] reshape(dynamic-slice.0)
     add.1 = s32[] add(get-tuple-element.47, reshape.2)
 
     reshape.3 = s32[1] reshape(add.1)
     dynamic-update-slice.0 = s32[8] dynamic-update-slice(get-tuple-element.48, reshape.3, get-tuple-element.46)
-    
+
     dynamic-slice.1 = s32[1] dynamic-slice(get-tuple-element.56, get-tuple-element.46), dynamic_slice_sizes={1}
     reshape.4 = s32[] reshape(dynamic-slice.1)
     add.2 = s32[] multiply(get-tuple-element.47, reshape.4)
 
     reshape.5 = s32[1] reshape(add.2)
     dynamic-update-slice.1 = s32[8] dynamic-update-slice(get-tuple-element.55, reshape.5, get-tuple-element.46)
-    
+
     const = s32[] constant(1)
     add.0 = s32[] add(get-tuple-element.46, const)
     ROOT tuple.10 = (s32[], s32[], s32[8], s32[8], s32[8], s32[8]) tuple(add.0, add.1, dynamic-update-slice.0, get-tuple-element.54, dynamic-update-slice.1, get-tuple-element.56)
@@ -186,12 +187,12 @@ TEST_F(ScanLoopAccumulatorInputUnificationTest, UnifyAccumulatorInput2) {
     while = (s32[], s32[], s32[8], s32[8], s32[8], s32[8]) while(tuple.8), condition=wide.region_1.29, body=wide.region_0.7
     get-tuple-element.40 = s32[8] get-tuple-element(while), index=2
     get-tuple-element.41 = s32[8] get-tuple-element(while), index=4
-    
+
     const = s32[] constant(1)
     add.0 = s32[] add(get-tuple-element.46, const)
     ROOT out = (s32[], s32[], s32[8], s32[8]) tuple(add.0, get-tuple-element.47, get-tuple-element.40, get-tuple-element.41)
   }
-   
+
   outer_cond {
     constant.5 = s32[] constant(8)
     wide.arg_tuple.30 = (s32[], s32[], s32[8], s32[8]) parameter(0)
@@ -210,7 +211,7 @@ TEST_F(ScanLoopAccumulatorInputUnificationTest, UnifyAccumulatorInput2) {
     get-tuple-element.41 = s32[8] get-tuple-element(while), index=3
     ROOT out = (s32[8],s32[8]) tuple(get-tuple-element.40, get-tuple-element.41)
   } // main.43
-  
+
   )";
 
   auto module = ParseAndReturnVerifiedModule(kModule).value();
@@ -246,14 +247,14 @@ TEST_F(ScanLoopAccumulatorInputUnificationTest, AccumulatorAllocateOutside) {
     get-tuple-element.47 = s32[] get-tuple-element(wide.arg_tuple.8), index=1
     get-tuple-element.48 = s32[8] get-tuple-element(wide.arg_tuple.8), index=2
     get-tuple-element.54 = s32[8] get-tuple-element(wide.arg_tuple.8), index=3
-    
+
     dynamic-slice.0 = s32[1] dynamic-slice(get-tuple-element.54, get-tuple-element.46), dynamic_slice_sizes={1}
     reshape.2 = s32[] reshape(dynamic-slice.0)
     add.1 = s32[] add(get-tuple-element.47, reshape.2)
 
     reshape.3 = s32[1] reshape(add.1)
     dynamic-update-slice.0 = s32[8] dynamic-update-slice(get-tuple-element.48, reshape.3, get-tuple-element.46)
-    
+
     const = s32[] constant(1)
     add.0 = s32[] add(get-tuple-element.46, const)
     ROOT tuple.10 = (s32[], s32[], s32[8], s32[8]) tuple(add.0, add.1, dynamic-update-slice.0, get-tuple-element.54)
@@ -282,7 +283,7 @@ TEST_F(ScanLoopAccumulatorInputUnificationTest, AccumulatorAllocateOutside) {
     add.0 = s32[] add(get-tuple-element.46, const)
     ROOT out = (s32[], s32[], s32[8], s32[8]) tuple(add.0, get-tuple-element.47, get-tuple-element.48, get-tuple-element.40)
   }
-   
+
   outer_cond {
     constant.5 = s32[] constant(8)
     wide.arg_tuple.30 = (s32[], s32[], s32[8], s32[8]) parameter(0)
@@ -299,7 +300,7 @@ TEST_F(ScanLoopAccumulatorInputUnificationTest, AccumulatorAllocateOutside) {
     while = (s32[], s32[], s32[8], s32[8]) while(tuple.8), condition=outer_cond, body=outer_body
     ROOT get-tuple-element.40 = s32[8] get-tuple-element(while), index=3
   } // main.43
-  
+
   )";
 
   auto module = ParseAndReturnVerifiedModule(kModule).value();
@@ -321,11 +322,11 @@ TEST_F(ScanLoopAccumulatorInputUnificationTest, InputDifferentShape) {
     get-tuple-element.47 = s32[] get-tuple-element(wide.arg_tuple.8), index=1
     get-tuple-element.48 = s32[8] get-tuple-element(wide.arg_tuple.8), index=2
     get-tuple-element.54 = s32[8,10] get-tuple-element(wide.arg_tuple.8), index=3
-  
+
     zero = s32[] constant(0)
     dynamic-slice.0 = s32[1,10] dynamic-slice(get-tuple-element.54, get-tuple-element.46, zero), dynamic_slice_sizes={1,10}
     reshape.2 = s32[10] reshape(dynamic-slice.0)
-  
+
     dynamic-slice.1 = s32[1] dynamic-slice(reshape.2, get-tuple-element.46), dynamic_slice_sizes={1}
     reshape.3 = s32[] reshape(dynamic-slice.1)
 
@@ -333,7 +334,7 @@ TEST_F(ScanLoopAccumulatorInputUnificationTest, InputDifferentShape) {
 
     reshape.4 = s32[1] reshape(add.1)
     dynamic-update-slice.0 = s32[8] dynamic-update-slice(get-tuple-element.48, reshape.4, get-tuple-element.46)
-    
+
     const = s32[] constant(1)
     add.0 = s32[] add(get-tuple-element.46, const)
     ROOT tuple.10 = (s32[], s32[], s32[8], s32[8,10]) tuple(add.0, add.1, dynamic-update-slice.0, get-tuple-element.54)
@@ -351,13 +352,13 @@ TEST_F(ScanLoopAccumulatorInputUnificationTest, InputDifferentShape) {
     init = s32[] constant(0)
     array = s32[8,10] parameter(0)
     broadcast.5 = s32[8] broadcast(constant.3), dimensions={}
-    
+
     tuple.8 = (s32[], s32[], s32[8], s32[8,10]) tuple(constant.3, init, broadcast.5, array)
     while = (s32[], s32[], s32[8], s32[8,10]) while(tuple.8), condition=wide.region_1.29, body=wide.region_0.7
     get-tuple-element.39 = s32[] get-tuple-element(while), index=1
     ROOT get-tuple-element.40 = s32[8] get-tuple-element(while), index=2
   } // main.43
-  
+
   )";
 
   auto module = ParseAndReturnVerifiedModule(kModule).value();
@@ -383,24 +384,24 @@ TEST_F(ScanLoopAccumulatorInputUnificationTest, MultipleUsersInput) {
     get-tuple-element.55 = s32[8] get-tuple-element(wide.arg_tuple.8), index=4
     // input
     get-tuple-element.56 = s32[8] get-tuple-element(wide.arg_tuple.8), index=5
-    
+
     // this is here only to have another user for gte.54
     mult = s32[8] multiply(get-tuple-element.54, get-tuple-element.54)
-    
+
     dynamic-slice.0 = s32[1] dynamic-slice(get-tuple-element.54, get-tuple-element.46), dynamic_slice_sizes={1}
     reshape.2 = s32[] reshape(dynamic-slice.0)
     add.1 = s32[] add(get-tuple-element.47, reshape.2)
 
     reshape.3 = s32[1] reshape(add.1)
     dynamic-update-slice.0 = s32[8] dynamic-update-slice(get-tuple-element.48, reshape.3, get-tuple-element.46)
-    
+
     dynamic-slice.1 = s32[1] dynamic-slice(get-tuple-element.56, get-tuple-element.46), dynamic_slice_sizes={1}
     reshape.4 = s32[] reshape(dynamic-slice.1)
     add.2 = s32[] multiply(get-tuple-element.47, reshape.4)
 
     reshape.5 = s32[1] reshape(add.2)
     dynamic-update-slice.1 = s32[8] dynamic-update-slice(get-tuple-element.55, reshape.5, get-tuple-element.46)
-    
+
     const = s32[] constant(1)
     add.0 = s32[] add(get-tuple-element.46, const)
     ROOT tuple.10 = (s32[], s32[], s32[8], s32[8], s32[8], s32[8]) tuple(add.0, add.1, dynamic-update-slice.0, get-tuple-element.54, dynamic-update-slice.1, get-tuple-element.56)
@@ -412,14 +413,14 @@ TEST_F(ScanLoopAccumulatorInputUnificationTest, MultipleUsersInput) {
     get-tuple-element.16 = s32[] get-tuple-element(wide.arg_tuple.30), index=0
     ROOT compare.0 = pred[] compare(get-tuple-element.16, constant.5), direction=LT
   }
-  
+
   outer_body {
     wide.arg_tuple.8 = (s32[], s32[], s32[8], s32[8]) parameter(0)
     get-tuple-element.46 = s32[] get-tuple-element(wide.arg_tuple.8), index=0
     get-tuple-element.47 = s32[] get-tuple-element(wide.arg_tuple.8), index=1
     get-tuple-element.54 = s32[8] get-tuple-element(wide.arg_tuple.8), index=2
     get-tuple-element.56 = s32[8] get-tuple-element(wide.arg_tuple.8), index=3
-    
+
     constant.3 = s32[] constant(0)
     broadcast = s32[8] broadcast(constant.3), dimensions={}
     broadcast2 = s32[8] broadcast(constant.3), dimensions={}
@@ -433,7 +434,7 @@ TEST_F(ScanLoopAccumulatorInputUnificationTest, MultipleUsersInput) {
     add.0 = s32[] add(get-tuple-element.46, const)
     ROOT out = (s32[], s32[], s32[8], s32[8]) tuple(add.0, get-tuple-element.47, get-tuple-element.40, get-tuple-element.41)
   }
-  
+
   outer_cond {
     constant.5 = s32[] constant(8)
     wide.arg_tuple.30 = (s32[], s32[], s32[8], s32[8]) parameter(0)
@@ -452,7 +453,7 @@ TEST_F(ScanLoopAccumulatorInputUnificationTest, MultipleUsersInput) {
     get-tuple-element.41 = s32[8] get-tuple-element(while), index=3
     ROOT out = (s32[8],s32[8]) tuple(get-tuple-element.40, get-tuple-element.41)
   } // main.43
-  
+
   )";
 
   auto module = ParseAndReturnVerifiedModule(kModule).value();
@@ -494,7 +495,7 @@ TEST_F(ScanLoopAccumulatorInputUnificationTest,
     reshape.3 = s32[] reshape(dynamic-slice.1)
     add.1 = s32[] add(reshape.3, reshape.2)
     add.2 = s32[] add(add.1, get-tuple-element.47)
-    
+
     reshape.4 = s32[1] reshape(add.2)
     dynamic-update-slice.0 = s32[8] dynamic-update-slice(get-tuple-element.48, reshape.4, get-tuple-element.46)
     const = s32[] constant(1)
@@ -508,26 +509,26 @@ TEST_F(ScanLoopAccumulatorInputUnificationTest,
     get-tuple-element.16 = s32[] get-tuple-element(wide.arg_tuple.30), index=0
     ROOT compare.0 = pred[] compare(get-tuple-element.16, constant.5), direction=LT
   }
-  
+
   outer_body {
     wide.arg_tuple.8 = (s32[], s32[], s32[8], s32[10]) parameter(0)
     get-tuple-element.46 = s32[] get-tuple-element(wide.arg_tuple.8), index=0
     get-tuple-element.47 = s32[] get-tuple-element(wide.arg_tuple.8), index=1
     get-tuple-element.48 = s32[8] get-tuple-element(wide.arg_tuple.8), index=2
     get-tuple-element.55 = s32[10] get-tuple-element(wide.arg_tuple.8), index=3
-    
+
     constant.3 = s32[] constant(0)
     broadcast = s32[8] broadcast(constant.3), dimensions={}
-    
+
     tuple.8 = (s32[], s32[], s32[8], s32[8], s32[10]) tuple(constant.3, get-tuple-element.47, broadcast, get-tuple-element.48, get-tuple-element.55)
     while = (s32[], s32[], s32[8], s32[8], s32[10]) while(tuple.8), condition=wide.region_1.29, body=wide.region_0.7
     get-tuple-element.40 = s32[8] get-tuple-element(while), index=2
-    
+
     const = s32[] constant(1)
     add.0 = s32[] add(get-tuple-element.46, const)
     ROOT out = (s32[], s32[], s32[8], s32[10]) tuple(add.0, get-tuple-element.47, get-tuple-element.40, get-tuple-element.55)
   }
-  
+
   outer_cond {
     constant.5 = s32[] constant(8)
     wide.arg_tuple.30 = (s32[], s32[], s32[8], s32[10]) parameter(0)
@@ -552,8 +553,9 @@ TEST_F(ScanLoopAccumulatorInputUnificationTest,
 
   // Check the inserted copies before applying the copy insertion pass.
   auto module_clone = module->Clone();
+  AliasInfo alias_info;
   TF_ASSERT_OK_AND_ASSIGN(bool clone_copy_inserted,
-                          CopyInsertion().Run(module_clone.get()));
+                          CopyInsertion(&alias_info).Run(module_clone.get()));
   EXPECT_TRUE(clone_copy_inserted);
   HloInstruction* while_instruction =
       GetTopLevelWhileInstruction(module_clone.get());
@@ -569,7 +571,7 @@ TEST_F(ScanLoopAccumulatorInputUnificationTest,
   // Check the inserted copies after applying the copy insertion pass and
   // removing double buffers.
   TF_ASSERT_OK_AND_ASSIGN(bool copy_inserted,
-                          CopyInsertion().Run(module.get()));
+                          CopyInsertion(&alias_info).Run(module.get()));
   EXPECT_TRUE(copy_inserted);
   VLOG(3) << "After copy_insertion:\n" << module->ToString();
   while_instruction = GetTopLevelWhileInstruction(module.get());

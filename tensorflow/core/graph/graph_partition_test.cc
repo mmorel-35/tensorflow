@@ -51,7 +51,7 @@ limitations under the License.
 namespace tensorflow {
 
 // from graph_partition.cc
-extern Status TopologicalSortNodesWithTimePriority(
+extern absl::Status TopologicalSortNodesWithTimePriority(
     const GraphDef* gdef,
     std::vector<std::pair<const NodeDef*, int64_t>>* nodes,
     std::unordered_map<const NodeDef*, int64_t>* node_to_start_time_out);
@@ -64,7 +64,6 @@ using ops::Const;
 using ops::Identity;
 using ops::LoopCond;
 using ops::NextIteration;
-using ::testing::Eq;
 using ::testing::Ne;
 
 const char gpu_device[] = "/job:a/replica:0/task:0/device:GPU:0";
@@ -78,7 +77,7 @@ string DeviceName(const Node* node) {
   } else {
     const string cpu_prefix = "/job:a/replica:0/task:0/cpu:";
     int index = first - 'A';
-    return strings::StrCat(cpu_prefix, index);
+    return absl::StrCat(cpu_prefix, index);
   }
 }
 
@@ -103,7 +102,7 @@ void Partition(const GraphDef& graph_def,
   popts.get_incarnation = [](const string& name) {
     return (name[0] - 'A') + 100;
   };
-  Status s = Partition(popts, &g, partitions);
+  absl::Status s = Partition(popts, &g, partitions);
   CHECK(s.ok()) << s;
 
   // Check versions.
@@ -173,7 +172,7 @@ REGISTER_OP("Combine")
     .SetShapeFn(shape_inference::UnknownShape);
 
 Output ConstructOp(const Scope& scope, const string& op_type,
-                   const absl::Span<const Input>& inputs) {
+                   const absl::Span<const Input> inputs) {
   if (!scope.ok()) return Output();
   const string unique_name = scope.GetUniqueNameForOp(op_type);
   auto builder =
@@ -466,7 +465,7 @@ TEST_F(GraphPartitionTest, PartitionIncompleteGraph) {
       )EOF",
       &ndef);
   ASSERT_TRUE(parsed);
-  Status status;
+  absl::Status status;
   g.AddNode(ndef, &status);
   TF_ASSERT_OK(status);
 
@@ -635,8 +634,7 @@ TEST(TopologicalSortNodesWithTimePriorityTest, NoDependencies) {
   }
   std::vector<ops::Placeholder> placeholders;
   for (int i : indexes) {
-    placeholders.emplace_back(root.WithOpName(strings::StrCat("p", i)),
-                              DT_FLOAT);
+    placeholders.emplace_back(root.WithOpName(absl::StrCat("p", i)), DT_FLOAT);
     placeholders.back().node()->AddAttr("_start_time", i + 1);
   }
 
@@ -649,7 +647,7 @@ TEST(TopologicalSortNodesWithTimePriorityTest, NoDependencies) {
       TopologicalSortNodesWithTimePriority(&gdef, &nodes, &node_to_start_time));
   ASSERT_EQ(nodes.size(), 20);
   for (int i = 0; i < nodes.size(); ++i) {
-    EXPECT_EQ(strings::StrCat("p", i), nodes[i].first->name());
+    EXPECT_EQ(absl::StrCat("p", i), nodes[i].first->name());
     EXPECT_EQ(i + 1, nodes[i].second);
   }
 }
@@ -663,7 +661,7 @@ TEST(TopologicalSortNodesWithTimePriority, Dependencies) {
   const int num_leaves = 20;
   for (int i = 0; i < num_leaves; ++i) {
     indexes.push_back((i + 2001) % num_leaves);
-    placeholders_in_order.emplace_back(root.WithOpName(strings::StrCat("p", i)),
+    placeholders_in_order.emplace_back(root.WithOpName(absl::StrCat("p", i)),
                                        DT_FLOAT);
     placeholders_in_order.back().node()->AddAttr("_start_time", i + 1);
   }
@@ -677,7 +675,7 @@ TEST(TopologicalSortNodesWithTimePriority, Dependencies) {
   // placeholder runs last).
   std::vector<ops::Square> squares;
   for (int i : indexes) {
-    squares.emplace_back(root.WithOpName(strings::StrCat("s", i)),
+    squares.emplace_back(root.WithOpName(absl::StrCat("s", i)),
                          placeholders[i]);
     squares.back().node()->AddAttr("_start_time", 50 - (i + 1));
   }
@@ -701,7 +699,7 @@ TEST(TopologicalSortNodesWithTimePriority, Dependencies) {
   ASSERT_EQ(1 + squares.size() + placeholders.size(), nodes.size());
   for (int i = 0; i < placeholders.size(); ++i) {
     const NodeDef* node = nodes[i].first;
-    EXPECT_EQ(strings::StrCat("p", i), node->name());
+    EXPECT_EQ(absl::StrCat("p", i), node->name());
     EXPECT_EQ(i + 1, nodes[i].second);
     EXPECT_EQ(i + 1, node_to_start_time[node]);
   }
@@ -709,7 +707,7 @@ TEST(TopologicalSortNodesWithTimePriority, Dependencies) {
     int node_index = placeholders.size() + i;
     int square_index = num_leaves - 1 - i;
     const NodeDef* node = nodes[node_index].first;
-    EXPECT_EQ(strings::StrCat("s", square_index), node->name());
+    EXPECT_EQ(absl::StrCat("s", square_index), node->name());
     EXPECT_EQ(50 - (square_index + 1), nodes[node_index].second);
     EXPECT_EQ(50 - (square_index + 1), node_to_start_time[node]);
   }
@@ -729,7 +727,7 @@ TEST(TopologicalSortNodesWithTimePriority, WhileLoop) {
   const int num_leaves = 20;
   for (int i = 0; i < num_leaves; ++i) {
     indexes.push_back((i + 2001) % num_leaves);
-    placeholders_in_order.emplace_back(root.WithOpName(strings::StrCat("p", i)),
+    placeholders_in_order.emplace_back(root.WithOpName(absl::StrCat("p", i)),
                                        DT_FLOAT);
     placeholders_in_order.back().node()->AddAttr("_start_time", i + 1);
   }
@@ -743,10 +741,10 @@ TEST(TopologicalSortNodesWithTimePriority, WhileLoop) {
   std::vector<Exit> while_exits;
   const int nodes_per_loop = 8;
   for (int i : indexes) {
-    Scope scope = root.NewSubScope(strings::StrCat("while", i));
+    Scope scope = root.NewSubScope(absl::StrCat("while", i));
     auto dummy = Placeholder(scope, DT_FLOAT);
 
-    Enter enter(scope, placeholders[i], strings::StrCat("frame", i));
+    Enter enter(scope, placeholders[i], absl::StrCat("frame", i));
     Merge merge(scope, std::initializer_list<Input>{enter, dummy});
     auto cv = Const(scope.WithControlDependencies({merge.output}), false);
     LoopCond loop_cond(scope, cv);
@@ -773,8 +771,7 @@ TEST(TopologicalSortNodesWithTimePriority, WhileLoop) {
   std::vector<Square> squares;
   squares.reserve(indexes.size());
   for (int i : indexes) {
-    squares.emplace_back(root.WithOpName(strings::StrCat("s", i)),
-                         while_exits[i]);
+    squares.emplace_back(root.WithOpName(absl::StrCat("s", i)), while_exits[i]);
     squares.back().node()->AddAttr("_start_time", 500 - (i + 1));
   }
 
@@ -791,20 +788,20 @@ TEST(TopologicalSortNodesWithTimePriority, WhileLoop) {
   int node_index = 0;
   for (int i = 0; i < placeholders.size(); ++i, ++node_index) {
     const NodeDef* node = nodes[i].first;
-    EXPECT_EQ(strings::StrCat("p", i), node->name());
+    EXPECT_EQ(absl::StrCat("p", i), node->name());
     EXPECT_EQ(i + 1, nodes[i].second);
     EXPECT_EQ(i + 1, node_to_start_time[node]);
   }
   for (int i = 0; i < while_exits.size(); ++i, node_index += nodes_per_loop) {
     const NodeDef* node = nodes[node_index].first;
-    EXPECT_EQ(strings::StrCat("while", i, "/Enter"), node->name());
+    EXPECT_EQ(absl::StrCat("while", i, "/Enter"), node->name());
     EXPECT_EQ(100 + i * 10, nodes[node_index].second);
     EXPECT_EQ(100 + i * 10, node_to_start_time[node]);
   }
   for (int i = 0; i < squares.size(); ++i, ++node_index) {
     int square_index = num_leaves - 1 - i;
     const NodeDef* node = nodes[node_index].first;
-    EXPECT_EQ(strings::StrCat("s", square_index), node->name());
+    EXPECT_EQ(absl::StrCat("s", square_index), node->name());
     EXPECT_EQ(500 - (square_index + 1), nodes[node_index].second);
     EXPECT_EQ(500 - (square_index + 1), node_to_start_time[node]);
   }

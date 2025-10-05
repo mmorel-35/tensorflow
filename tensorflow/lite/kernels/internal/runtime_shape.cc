@@ -12,6 +12,8 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+// This file is copied in MLIR to avoid a dependency on TFLite.
+// LINT.IfChange
 
 #include "tensorflow/lite/kernels/internal/runtime_shape.h"
 
@@ -20,20 +22,32 @@ limitations under the License.
 namespace tflite {
 
 RuntimeShape::~RuntimeShape() {
+#ifndef TF_LITE_STATIC_MEMORY
   if (size_ > kMaxSmallSize) {
     delete[] dims_pointer_;
   }
+#endif  // TF_LITE_STATIC_MEMORY
 }
 
 int32_t RuntimeShape::Dims(int i) const {
   TFLITE_DCHECK_GE(i, 0);
   TFLITE_DCHECK_LT(i, size_);
+#ifndef TF_LITE_STATIC_MEMORY
   return size_ > kMaxSmallSize ? dims_pointer_[i] : dims_[i];
+#else
+  return dims_[i];
+#endif  // TF_LITE_STATIC_MEMORY
 }
 
 void RuntimeShape::ReplaceWith(int dimensions_count, const int32_t* dims_data) {
+#ifndef TF_LITE_STATIC_MEMORY
   Resize(dimensions_count);
   int32_t* dst_dims = DimsData();
+#else
+  TFLITE_DCHECK_LE(dimensions_count, kMaxSmallSize);
+  size_ = dimensions_count;
+  int32_t* dst_dims = DimsData();
+#endif  // TF_LITE_STATIC_MEMORY
   std::memcpy(dst_dims, dims_data, dimensions_count * sizeof(int32_t));
 }
 
@@ -47,3 +61,5 @@ int RuntimeShape::FlatSize() const {
 }
 
 }  // namespace tflite
+
+// LINT.ThenChange(//tensorflow/compiler/mlir/lite/kernels/internal/runtime_shape.cc)

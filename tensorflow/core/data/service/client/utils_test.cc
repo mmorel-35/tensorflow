@@ -17,16 +17,17 @@ limitations under the License.
 #include <optional>
 #include <string>
 
+#include <gmock/gmock.h>
+#include "xla/tsl/lib/core/status_test_util.h"
+#include "xla/tsl/protobuf/error_codes.pb.h"
 #include "tensorflow/core/data/service/dispatcher_client.h"
 #include "tensorflow/core/data/service/test_cluster.h"
 #include "tensorflow/core/data/service/test_util.h"
 #include "tensorflow/core/framework/dataset.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/protobuf/data_service.pb.h"
-#include "tsl/lib/core/status_test_util.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/status_matchers.h"
-#include "tsl/protobuf/error_codes.pb.h"
 
 namespace tensorflow {
 namespace data {
@@ -52,7 +53,7 @@ TEST(UtilsTest, GetDataServiceMetadata) {
       dataset_id));
   EXPECT_THAT(GetDataServiceMetadata(dataset_id,
                                      test_cluster.DispatcherAddress(), "grpc"),
-              IsOkAndHolds(EqualsProto(metadata)));
+              absl_testing::IsOkAndHolds(EqualsProto(metadata)));
 }
 
 TEST(UtilsTest, GetDataServiceMetadataNotFound) {
@@ -60,7 +61,7 @@ TEST(UtilsTest, GetDataServiceMetadataNotFound) {
   TF_ASSERT_OK(test_cluster.Initialize());
   EXPECT_THAT(GetDataServiceMetadata(/*dataset_id=*/"not found",
                                      test_cluster.DispatcherAddress(), "grpc"),
-              StatusIs(error::NOT_FOUND));
+              absl_testing::StatusIs(error::NOT_FOUND));
 }
 
 TEST(UtilsTest, GetDataServiceConfig) {
@@ -75,14 +76,15 @@ TEST(UtilsTest, GetDataServiceConfig) {
 TEST(UtilsTest, GetValidatedCompression) {
   DataServiceMetadata metadata;
   metadata.set_compression(DataServiceMetadata::COMPRESSION_SNAPPY);
-  EXPECT_THAT(GetValidatedCompression("dataset_id", metadata),
-              IsOkAndHolds(DataServiceMetadata::COMPRESSION_SNAPPY));
+  EXPECT_THAT(
+      GetValidatedCompression("dataset_id", metadata),
+      absl_testing::IsOkAndHolds(DataServiceMetadata::COMPRESSION_SNAPPY));
 }
 
 TEST(UtilsTest, InvalidCompression) {
   DataServiceMetadata metadata;
   EXPECT_THAT(GetValidatedCompression("dataset_id", metadata),
-              StatusIs(error::INTERNAL));
+              absl_testing::StatusIs(error::INTERNAL));
 }
 
 TEST(UtilsTest, EstimateCardinalityEmptyDataset) {

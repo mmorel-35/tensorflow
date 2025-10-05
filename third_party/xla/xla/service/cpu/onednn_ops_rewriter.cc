@@ -11,18 +11,32 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-#if defined(INTEL_MKL) && defined(ENABLE_ONEDNN_V3)
 
 #include "xla/service/cpu/onednn_ops_rewriter.h"
 
+#include <cstdint>
+#include <optional>
+
+#include "absl/container/flat_hash_set.h"
+#include "absl/container/inlined_vector.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/string_view.h"
 #include "xla/hlo/ir/dfs_hlo_visitor_with_default.h"
 #include "xla/hlo/ir/hlo_instruction.h"
+#include "xla/hlo/ir/hlo_opcode.h"
+#include "xla/literal_comparison.h"
+#include "xla/literal_util.h"
 #include "xla/service/cpu/backend_config.pb.h"
-#include "xla/service/cpu/onednn_memory_util.h"
+#include "xla/service/cpu/onednn_config.pb.h"
 #include "xla/service/cpu/onednn_pattern_utils.h"
 #include "xla/service/cpu/onednn_util.h"
 #include "xla/service/pattern_matcher.h"
-#include "xla/status_macros.h"
+#include "xla/shape.h"
+#include "xla/shape_util.h"
+#include "xla/tsl/platform/errors.h"
+#include "xla/tsl/platform/statusor.h"
+#include "xla/util.h"
 
 namespace xla {
 namespace cpu {
@@ -58,11 +72,59 @@ HloInstruction* FindLayerNormShift(HloInstruction* instr) {
   return shift;
 }
 
-std::optional<HloInstruction*> MatchSoftmax(HloInstruction* instr) {
+bool IsNegInfConstScalar(const HloInstruction* const_instr) {
+  if (const_instr->opcode() != HloOpcode::kConstant) {
+    return false;
+  }
+  if (!ShapeUtil::IsEffectiveScalar(const_instr->shape())) {
+    return false;
+  }
+  auto value = LiteralUtil::GetFirstScalarLiteral(const_instr->literal());
+  return literal_comparison::Equal(
+             value, LiteralUtil::MinValue(const_instr->shape().element_type()))
+      .ok();
+}
+
+// Makes sure the reducer computation is strictly a max reducer and root
+// instruction (kMaximum) has the same inputs as computation.
+bool IsMaxReducerComputation(const HloComputation* comp) {
+  if (comp->root_instruction()->opcode() != HloOpcode::kMaximum) {
+    return false;
+  }
+  auto max_instr = comp->root_instruction();
+  const HloInstruction* p0 = comp->parameter_instruction(0);
+  const HloInstruction* p1 = comp->parameter_instruction(1);
+  const HloInstruction* max_p0 = max_instr->operand(0);
+  const HloInstruction* max_p1 = max_instr->operand(1);
+  return (max_p0 == p0 && max_p1 == p1) || (max_p1 == p0 && max_p0 == p1);
+}
+
+// Pattern to match any of Maximum(Reduce_max(...), -inf) or Reduce_max(...).
+auto MaxReduce(HloInstruction** instr) {
+  auto is_valid_reduce_max = [](const HloInstruction* reduce) {
+    HloComputation* reducer = reduce->to_apply();
+    return IsMaxReducerComputation(reducer) &&
+           (reduce->dimensions().size() == 1) &&
+           (reduce->operand(1)->opcode() == HloOpcode::kConstant) &&
+           IsNegInfConstScalar(reduce->operand(1));
+  };
+
+  return m::AnyOf<HloInstruction>(
+      m::Maximum().WithBinaryOperandsAnyOrder(
+          m::Reduce(instr).WithPredicate(is_valid_reduce_max).WithOneUse(),
+          pu::OptionalBroadcast(
+              m::Constant().WithPredicate(IsNegInfConstScalar))),
+      m::Reduce(instr).WithPredicate(is_valid_reduce_max).WithOneUse());
+}
+
+// Matches the softmax pattern with divide instruction as root node.
+// Here we pass 'instr' as root node and return the producer HloInstruction.
+// Tha axis on which softmax is applied is stored in 'axis'.
+std::optional<HloInstruction*> MatchSoftmax(HloInstruction* instr, int* axis) {
   //
   // producer
   // |   \
-  // |  reduce_max
+  // |  reduce_max or max(reduce_max)
   // |     |
   // |  reshape
   // |     |
@@ -76,9 +138,15 @@ std::optional<HloInstruction*> MatchSoftmax(HloInstruction* instr) {
   // |
   // exponential
   // |   \
+  // |   Convert(optional)
+  // |     |
   // |  reduce_sum
   // |     |
+  // |   Convert(optional)
+  // |     |
   // |  reshape
+  // |     |
+  // |   Convert(optional)
   // |     |
   // |  broadcast
   // |     |
@@ -88,11 +156,15 @@ std::optional<HloInstruction*> MatchSoftmax(HloInstruction* instr) {
   // |   /
   // divide  // (instr parameter)
   //
-  // where both reductions occur only on the last axis.
+
+  // This matcher covers the most common SoftMax patterns we have encountered
+  // in real-life models.
   HloInstruction* left_exponential;
   HloInstruction* right_exponential;
   HloInstruction* left_producer;
-  HloInstruction* right_producer;
+  HloInstruction* reduce_sum;
+  HloInstruction* reduce_max;
+  HloInstruction* reduce_instr;
 
   // Lower diamond
   if (!Match(instr,
@@ -100,16 +172,15 @@ std::optional<HloInstruction*> MatchSoftmax(HloInstruction* instr) {
                  m::Exp(&left_exponential, m::Op()),
                  m::Broadcast(m::Reshape(m::Broadcast(
                      pu::OptionalConvert(m::Reshape(pu::OptionalConvert(
-                         m::Reduce(pu::OptionalConvert(
+                         m::Reduce(&reduce_sum,
+                                   pu::OptionalConvert(
                                        m::Exp(&right_exponential, m::Op())),
-                                   m::Op())
+                                   m::ConstantScalar(0))
                              .WithPredicate([](const HloInstruction* reduce) {
                                HloComputation* reducer = reduce->to_apply();
                                return (reducer->root_instruction()->opcode() ==
                                            HloOpcode::kAdd &&
-                                       reduce->dimensions().size() == 1 &&
-                                       reduce->dimensions()[0] !=
-                                           reduce->shape().rank() - 1);
+                                       reduce->dimensions().size() == 1);
                              })
                              .WithOneUse()))))))))) {
     return std::nullopt;
@@ -122,28 +193,29 @@ std::optional<HloInstruction*> MatchSoftmax(HloInstruction* instr) {
 
   // Upper diamond
   if (!Match(left_exponential->mutable_operand(0),
-             m::Subtract(
-                 m::Op(&left_producer),
-                 m::Broadcast(
-                     m::Reshape(m::Broadcast(m::Reshape(
-                         m::Reduce(m::Op(&right_producer), m::Op())
-                             .WithPredicate([](const HloInstruction* reduce) {
-                               HloComputation* reducer = reduce->to_apply();
-                               return (reducer->root_instruction()->opcode() ==
-                                           HloOpcode::kMaximum &&
-                                       reduce->dimensions().size() == 1 &&
-                                       reduce->dimensions()[0] !=
-                                           reduce->shape().rank() - 1);
-                             })
-                             .WithOneUse()))))
-                     .WithOneUse())
+             m::Subtract(m::Op(&left_producer),
+                         m::Broadcast(m::Reshape(m::Broadcast(
+                                          m::Reshape(m::Op(&reduce_instr)))))
+                             .WithOneUse())
                  .WithOneUse())) {
     return std::nullopt;
   }
 
-  if (left_producer != right_producer || left_producer->user_count() != 2) {
+  // Match the reduce max.
+  if (!Match(reduce_instr, MaxReduce(&reduce_max))) {
     return std::nullopt;
   }
+
+  if (left_producer != reduce_max->operand(0) ||
+      left_producer->user_count() != 2) {
+    return std::nullopt;
+  }
+
+  if (reduce_sum->dimensions()[0] != reduce_max->dimensions()[0]) {
+    return std::nullopt;
+  }
+
+  *axis = reduce_sum->dimensions()[0];
 
   return left_producer;
 }
@@ -172,63 +244,82 @@ std::optional<bool> MatchTFKerasLayerNorm(HloInstruction* instr,
   // LN(X) = X*Z + Bias - Mean(X)*Z
 
   HloInstruction *src_a, *src_b, *src_c;
-  HloInstruction *bias_node, *scaled_norm_a, *scaled_norm_b, *mean0_a, *epsilon,
+  HloInstruction *bias_node, *scaled_norm_a, *scaled_norm_b, *mean0_a,
       *sqrd_diff_mean, *scale_node, *sqrd_diff;
+  HloInstruction* epsilon = nullptr;
 
   // First Match X*Z + Bias - Mean(X)*Z
   if (!Match(
           instr,
           m::Add().WithBinaryOperandsAnyOrder(
               m::Multiply()
-                  .WithBinaryOperandsAnyOrder(m::Op(src), m::Op(&scaled_norm_a))
+                  .WithBinaryOperandsAnyOrder(
+                      m::Op(src),
+                      m::Op(&scaled_norm_a).WithOpcode(HloOpcode::kMultiply))
                   .WithOneUser(),
-              m::Subtract(m::Op(&bias_node),
-                          m::Multiply().WithBinaryOperandsAnyOrder(
-                              m::Broadcast(m::Reshape(m::Op(&mean0_a))),
-                              m::Op(&scaled_norm_b)))
+              m::Subtract(
+                  m::Op(&bias_node),
+                  m::Multiply().WithBinaryOperandsAnyOrder(
+                      m::Broadcast(m::Reshape(m::Op(&mean0_a))),
+                      m::Op(&scaled_norm_b).WithOpcode(HloOpcode::kMultiply)))
                   .WithOneUser()))) {
     return std::nullopt;
   }
 
-  if (scaled_norm_a != scaled_norm_b) return std::nullopt;
+  if (scaled_norm_a != scaled_norm_b) {
+    return std::nullopt;
+  }
 
   const Shape& src_shape = (*src)->shape();
-  if (!IsSupportedType(src_shape.element_type())) return std::nullopt;
+  if (!IsSupportedType(src_shape.element_type())) {
+    return std::nullopt;
+  }
 
   // Get bias
-  if (!Match(bias_node, m::Broadcast(m::Op(bias)))) return std::nullopt;
+  if (!Match(bias_node, m::Broadcast(m::Op(bias)))) {
+    return std::nullopt;
+  }
 
   // Match Z = scale / sqrt(variance + eps)
   if (!Match(scaled_norm_a,
              m::Multiply().WithBinaryOperandsAnyOrder(
                  m::Op(&scale_node),
-                 m::Broadcast(
-                     m::Reshape(m::Rsqrt(m::Add().WithBinaryOperandsAnyOrder(
+                 m::Broadcast(m::Reshape(m::Rsqrt(m::AnyOf<HloInstruction>(
+                     m::Add().WithBinaryOperandsAnyOrder(
                          m::Broadcast(m::ConstantScalar(&epsilon)),
-                         m::Op(&sqrd_diff_mean)))))))) {
+                         m::Op(&sqrd_diff_mean)),
+                     m::Op(&sqrd_diff_mean)))))))) {
     return std::nullopt;
   }
 
   // get epsilon
-  *eps = static_cast<float>(epsilon->literal().GetAsDouble({}).value());
+  if (epsilon != nullptr) {
+    *eps = static_cast<float>(epsilon->literal().GetAsDouble({}).value());
+  }
   // get scale
   if (!Match(scale_node, m::Broadcast(m::Op(scale)))) return std::nullopt;
 
   // match variance
   if (!Match(sqrd_diff_mean, MeanPattern(&sqrd_diff))) return std::nullopt;
 
-  if (!Match(sqrd_diff, Square(m::Subtract(
+  if (!Match(sqrd_diff, Square(m::Subtract().WithBinaryOperandsAnyOrder(
                             m::Op(&src_a),
                             m::Broadcast(m::Reshape(MeanPattern(&src_b))))))) {
     return std::nullopt;
   }
 
-  if (src_a != src_b && src_a != *src) return std::nullopt;
+  if (src_a != src_b && src_a != *src) {
+    return std::nullopt;
+  }
 
   // Match mean from Bias - Mean(X)*Z
-  if (!Match(mean0_a, MeanPattern(&src_c))) return std::nullopt;
+  if (!Match(mean0_a, MeanPattern(&src_c))) {
+    return std::nullopt;
+  }
 
-  if (src_c != *src) return std::nullopt;
+  if (src_c != *src) {
+    return std::nullopt;
+  }
 
   return true;
 }
@@ -241,8 +332,9 @@ bool MatchFlaxLayerNorm(HloInstruction* instr, HloInstruction** src,
   HloInstruction *prod_s, *hinge;
   HloInstruction *div0, *div1, *div_red;
   HloInstruction *mul_in0, *mul_in1, *main_pipe_mul_in0;
-  HloInstruction *reduce_in0, *epsilon;
+  HloInstruction* reduce_in0;
   HloInstruction *broadcast0, *broadcast1;
+  HloInstruction* epsilon = nullptr;
 
   bool scaleFound = false;
   bool shiftFound = false;
@@ -265,10 +357,14 @@ bool MatchFlaxLayerNorm(HloInstruction* instr, HloInstruction** src,
                   .WithOneUser())
           .WithOneUser());
 
-  if (!Match(instr, spine)) return false;
+  if (!Match(instr, spine)) {
+    return false;
+  }
 
   const Shape& prod_shape = prod_s->shape();
-  if (!IsSupportedType(prod_shape.element_type())) return false;
+  if (!IsSupportedType(prod_shape.element_type())) {
+    return false;
+  }
 
   HloInstruction* shift = FindLayerNormShift(instr);
   shiftFound = (shift != nullptr);
@@ -278,8 +374,9 @@ bool MatchFlaxLayerNorm(HloInstruction* instr, HloInstruction** src,
 
   // Currently patterns without scale and shift are not supported.
   // OneDNN only supports 2 <= rank <= 5
-  if (!(prod_shape.rank() >= 2 && prod_shape.rank() <= 5) || !shiftFound ||
-      !scaleFound) {
+  if (!(prod_shape.dimensions().size() >= 2 &&
+        prod_shape.dimensions().size() <= 5) ||
+      !shiftFound || !scaleFound) {
     return false;
   }
 
@@ -316,9 +413,13 @@ bool MatchFlaxLayerNorm(HloInstruction* instr, HloInstruction** src,
           .WithOneUser());
   // NOLINTEND
 
-  if (!Match(hinge, main_pipeline)) return false;
+  if (!Match(hinge, main_pipeline)) {
+    return false;
+  }
 
-  if ((div_red != div1) || (main_pipe_mul_in0 != div1)) return false;
+  if ((div_red != div1) || (main_pipe_mul_in0 != div1)) {
+    return false;
+  }
 
   auto div_red_mul_src =
       m::Divide()
@@ -328,18 +429,23 @@ bool MatchFlaxLayerNorm(HloInstruction* instr, HloInstruction** src,
                                     m::Constant())
                               .WithPredicate([](const HloInstruction* reduce) {
                                 HloComputation* reducer = reduce->to_apply();
-                                return (reducer->root_instruction()->opcode() ==
-                                            HloOpcode::kAdd &&
-                                        reduce->dimensions().size() == 1 &&
-                                        reduce->dimensions()[0] ==
-                                            reduce->shape().rank());
+                                return (
+                                    reducer->root_instruction()->opcode() ==
+                                        HloOpcode::kAdd &&
+                                    reduce->dimensions().size() == 1 &&
+                                    reduce->dimensions()[0] ==
+                                        reduce->shape().dimensions().size());
                               }))
           .WithOperand(1, m::Op(&broadcast0).WithOpcode(HloOpcode::kBroadcast))
           .WithOneUser();
 
-  if (!Match(div0, div_red_mul_src)) return false;
+  if (!Match(div0, div_red_mul_src)) {
+    return false;
+  }
 
-  if (mul_in0 != mul_in1) return false;
+  if (mul_in0 != mul_in1) {
+    return false;
+  }
 
   auto div_red_subgraph =
       m::Divide()
@@ -351,11 +457,14 @@ bool MatchFlaxLayerNorm(HloInstruction* instr, HloInstruction** src,
                     return (reducer->root_instruction()->opcode() ==
                                 HloOpcode::kAdd &&
                             reduce->dimensions().size() == 1 &&
-                            reduce->dimensions()[0] == reduce->shape().rank());
+                            reduce->dimensions()[0] ==
+                                reduce->shape().dimensions().size());
                   }))
           .WithOperand(1, m::Op(&broadcast1).WithOpcode(HloOpcode::kBroadcast));
 
-  if (!Match(div1, div_red_subgraph)) return false;
+  if (!Match(div1, div_red_subgraph)) {
+    return false;
+  }
 
   if (broadcast1 != broadcast0 || reduce_in0 != mul_in0 || mul_in0 != prod_s) {
     return false;
@@ -376,7 +485,9 @@ bool MatchFlaxLayerNorm(HloInstruction* instr, HloInstruction** src,
   *scale = scale_gamma;
   *bias = shift;
   // get epsilon
-  *eps = static_cast<float>(epsilon->literal().GetAsDouble({}).value());
+  if (epsilon != nullptr) {
+    *eps = static_cast<float>(epsilon->literal().GetAsDouble({}).value());
+  }
 
   return true;
 }
@@ -387,7 +498,7 @@ class OneDnnOpsRewriterVisitor : public DfsHloRewriteVisitor {
  public:
   absl::Status HandleAdd(HloInstruction* instr) override {
     HloInstruction *src, *scale, *bias;
-    float eps;
+    float eps = 1e-5;
     bool is_bf16orfp16_convert = false;
     bool is_producer_bf16orfp16 = false;
     HloInstruction* convert_instr;
@@ -401,7 +512,9 @@ class OneDnnOpsRewriterVisitor : public DfsHloRewriteVisitor {
                                     &is_producer_bf16orfp16, &convert_instr);
     }
 
-    if (!found_ln) return absl::OkStatus();
+    if (!found_ln) {
+      return absl::OkStatus();
+    }
 
     const Shape& src_shape = src->shape();
     auto scale_type = scale->shape().element_type();
@@ -429,9 +542,9 @@ class OneDnnOpsRewriterVisitor : public DfsHloRewriteVisitor {
             src_shape, {src, scale_operand, bias_operand},
             "__onednn$layernorm"));
     BackendConfig backend_config;
-    OneDnnLayerNormConfig* ln_config =
+    OneDnnNormConfig* ln_config =
         backend_config.mutable_onednn_layer_norm_config();
-    ln_config->set_fused_ops(OneDnnLayerNormConfig::SCALE_AND_SHIFT);
+    ln_config->set_rescale(OneDnnNormConfig::SCALE_AND_SHIFT);
     ln_config->set_epsilon_typecast(*(reinterpret_cast<int32_t*>(&eps)));
     TF_RETURN_IF_ERROR(ln_call->set_backend_config(backend_config));
 
@@ -455,13 +568,16 @@ class OneDnnOpsRewriterVisitor : public DfsHloRewriteVisitor {
                                 .WithOneUser()
                                 .WithElementType(PrimitiveType::F32));
 
-    if (!IsSupportedType(instr->shape().element_type()))
+    if (!IsSupportedType(instr->shape().element_type())) {
       return absl::OkStatus();
+    }
     if (Match(instr, pattern)) {
       bool is_bf16orfp16_convert =
           (convert_instr->shape().element_type() == PrimitiveType::BF16) ||
           (convert_instr->shape().element_type() == PrimitiveType::F16);
-      if (!is_bf16orfp16_convert) return absl::OkStatus();
+      if (!is_bf16orfp16_convert) {
+        return absl::OkStatus();
+      }
       HloInstruction* producer = instr->mutable_operand(0)->mutable_operand(0);
       HloInstruction* newinp =
           producer->AddInstruction(HloInstruction::CreateConvert(
@@ -481,15 +597,24 @@ class OneDnnOpsRewriterVisitor : public DfsHloRewriteVisitor {
 
   absl::Status HandleDivide(HloInstruction* divide_instr) override {
     if (divide_instr->HasControlDependencies()) return absl::OkStatus();
-    if (!IsSupportedType(divide_instr->shape().element_type()))
+    if (!IsSupportedType(divide_instr->shape().element_type())) {
       return absl::OkStatus();
-    std::optional<HloInstruction*> producer = MatchSoftmax(divide_instr);
-    if (producer == std::nullopt) return absl::OkStatus();
+    }
+    int axis = -1;
+    std::optional<HloInstruction*> producer = MatchSoftmax(divide_instr, &axis);
+    if (producer == std::nullopt) {
+      return absl::OkStatus();
+    }
 
     const Shape& output_shape = divide_instr->shape();
     HloInstruction* softmax_call =
         divide_instr->AddInstruction(HloInstruction::CreateCustomCall(
             output_shape, {producer.value()}, "__onednn$softmax"));
+    BackendConfig backend_config;
+    OneDnnSoftmaxConfig* softmax_config =
+        backend_config.mutable_onednn_softmax_config();
+    softmax_config->set_softmax_axis(axis);
+    TF_RETURN_IF_ERROR(softmax_call->set_backend_config(backend_config));
     TF_RETURN_IF_ERROR(ReplaceInstruction(divide_instr, softmax_call));
 
     return absl::OkStatus();
@@ -499,11 +624,13 @@ class OneDnnOpsRewriterVisitor : public DfsHloRewriteVisitor {
 absl::StatusOr<bool> OneDnnOpsRewriter::Run(
     HloModule* module,
     const absl::flat_hash_set<absl::string_view>& execution_threads) {
+  XLA_VLOG_LINES(3, "OneDnnOpsRewriter::Run(), before:\n" + module->ToString());
   OneDnnOpsRewriterVisitor visitor;
-  return visitor.RunOnModule(module, execution_threads);
+  TF_ASSIGN_OR_RETURN(auto result,
+                      visitor.RunOnModule(module, execution_threads));
+  XLA_VLOG_LINES(3, "OneDnnOpsRewriter::Run(), after:\n" + module->ToString());
+  return result;
 }
 
 }  // namespace cpu
 }  // namespace xla
-
-#endif  // INTEL_MKL && ENABLE_ONEDNN_V3

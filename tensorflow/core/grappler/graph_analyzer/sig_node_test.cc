@@ -15,10 +15,24 @@ limitations under the License.
 
 #include "tensorflow/core/grappler/graph_analyzer/sig_node.h"
 
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <map>
+#include <memory>
+#include <set>
+#include <utility>
+#include <vector>
+
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include "absl/memory/memory.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
+#include "absl/status/status.h"
 #include "absl/strings/str_format.h"
+#include "tensorflow/core/framework/graph.pb.h"
+#include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/grappler/graph_analyzer/subgraph.h"
 #include "tensorflow/core/grappler/graph_analyzer/test_tools.h"
 #include "tensorflow/core/grappler/utils.h"
@@ -613,7 +627,7 @@ class SignatureTest : public SigBaseTest {
 
     gen_map_.clear();
     sig_.map.clear();
-    Status result = GenNode::BuildGraphInMap(graph, &gen_map_);
+    absl::Status result = GenNode::BuildGraphInMap(graph, &gen_map_);
     ASSERT_THAT(result, Eq(absl::OkStatus()));
     Subgraph::Identity id;
     for (const auto& entry : gen_map_) {
@@ -1038,7 +1052,8 @@ TEST_F(SignatureTest, ComputeOneRoundSplitLinear) {
 TEST_F(SignatureTest, OrderLinks) {
   gen_map_.clear();
   sig_.map.clear();
-  Status result = GenNode::BuildGraphInMap(graph_for_link_order_, &gen_map_);
+  absl::Status result =
+      GenNode::BuildGraphInMap(graph_for_link_order_, &gen_map_);
   ASSERT_THAT(result, Eq(absl::OkStatus()));
   Subgraph::Identity id;
   for (const auto& entry : gen_map_) {
@@ -1097,11 +1112,12 @@ TEST_F(SignatureTest, GraphTooBig) {
   Subgraph sg(id);
   sg.ExtractForSignature(&sig_.map);
 
-  ASSERT_THAT(sig_.Compute(),
-              Eq(Status(absl::StatusCode::kInvalidArgument,
-                        "A graph of 65 nodes is too big for signature "
-                        "computation, the maximal supported node count is "
-                        "64.")));
+  ASSERT_THAT(
+      sig_.Compute(),
+      Eq(absl::Status(absl::StatusCode::kInvalidArgument,
+                      "A graph of 65 nodes is too big for signature "
+                      "computation, the maximal supported node count is "
+                      "64.")));
 }
 
 TEST_F(SignatureTest, ToString) {

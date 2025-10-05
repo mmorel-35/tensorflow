@@ -22,13 +22,13 @@ limitations under the License.
 #include <vector>
 
 #include "absl/strings/string_view.h"
+#include "xla/tsl/platform/errors.h"
+#include "xla/tsl/platform/types.h"
 #include "xla/tsl/util/command_line_flags.h"
 #include "tensorflow/python/framework/offset_counter_helper.h"
 #include "tensorflow/python/framework/op_reg_offset.pb.h"
-#include "tsl/platform/errors.h"
 #include "tsl/platform/init_main.h"
 #include "tsl/platform/strcat.h"
-#include "tsl/platform/types.h"
 
 inline constexpr absl::string_view kUsage =
     "offset_counter reads C++ source codes, scans for the location of where "
@@ -60,7 +60,7 @@ int main(int argc, char* argv[]) {
     std::ofstream f(out_path);
     if (f.bad()) {
       TF_CHECK_OK(tsl::errors::IOError(
-          tsl::strings::StrCat("Cannot open file: ", out_path), errno));
+          absl::StrCat("Cannot open file: ", out_path), errno));
     }
     f << op_reg_offsets.SerializeAsString();
     f.close();

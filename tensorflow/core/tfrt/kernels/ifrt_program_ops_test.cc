@@ -20,16 +20,16 @@ limitations under the License.
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include "absl/log/check.h"
-#include "absl/status/statusor.h"
+#include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "xla/pjrt/cpu/cpu_client.h"
-#include "xla/python/ifrt/array.h"
-#include "xla/python/ifrt/client.h"
 #include "xla/python/ifrt/test_util.h"
-#include "xla/python/pjrt_ifrt/pjrt_client.h"
+#include "xla/tsl/framework/serving_device_selector.h"
+#include "xla/tsl/framework/test_util/mock_serving_device_selector.h"
+#include "xla/tsl/lib/core/status_test_util.h"
+#include "xla/tsl/platform/status.h"
+#include "xla/tsl/platform/statusor.h"
 #include "tensorflow/core/framework/fake_input.h"
 #include "tensorflow/core/framework/node_def_builder.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -43,11 +43,6 @@ limitations under the License.
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/tfrt/ifrt/ifrt_executable_registry.h"
 #include "tensorflow/core/tfrt/ifrt/ifrt_serving_executable_test_util.h"
-#include "tsl/framework/serving_device_selector.h"
-#include "tsl/framework/test_util/mock_serving_device_selector.h"
-#include "tsl/lib/core/status_test_util.h"
-#include "tsl/platform/status.h"
-#include "tsl/platform/statusor.h"
 
 namespace tensorflow {
 namespace tfrt_stub {
@@ -60,23 +55,11 @@ using tensorflow::test::AsTensor;
 using tensorflow::test::TensorEq;
 using ::testing::Return;
 
-const bool kUnused =
-    (xla::ifrt::test_util::RegisterClientFactory(
-         []() -> absl::StatusOr<std::shared_ptr<xla::ifrt::Client>> {
-           xla::CpuClientOptions options;
-           options.cpu_device_count = 4;
-           TF_ASSIGN_OR_RETURN(auto pjrt_client,
-                               xla::GetTfrtCpuClient(options));
-           return std::shared_ptr<xla::ifrt::Client>(
-               xla::ifrt::PjRtClient::Create(std::move(pjrt_client)));
-         }),
-     true);
-
 class IfrtCallOpTest : public OpsTestBase {
  protected:
-  Status Init(int64_t program_id, int num_inputs, DataType input_type,
-              const std::vector<int>& variable_arg_indices,
-              const std::vector<DataType>& output_type_list) {
+  absl::Status Init(int64_t program_id, int num_inputs, DataType input_type,
+                    const std::vector<int>& variable_arg_indices,
+                    const std::vector<DataType>& output_type_list) {
     TF_CHECK_OK(NodeDefBuilder("op", "IfrtCall")
                     .Input(FakeInput(num_inputs, input_type))
                     .Attr("program_id", program_id)
@@ -111,7 +94,10 @@ TEST_F(IfrtCallOpTest, Basic) {
 
   AddInputFromArray<int32_t>(TensorShape({1, 3}), {1, 2, 3});
   AddInputFromArray<int32_t>(TensorShape({3, 1}), {1, 2, 3});
-  TF_ASSERT_OK(RunOpKernel());
+  // Run warmup execution plus one for core selection.
+  for (int i = 0; i < helper.num_cores() + 1; ++i) {
+    TF_ASSERT_OK(RunOpKernel());
+  }
   Tensor expected_out = AsTensor<int32_t>({14}, TensorShape({1, 1}));
   EXPECT_THAT(*GetOutput(0), TensorEq(expected_out));
 }

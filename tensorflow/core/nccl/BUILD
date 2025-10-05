@@ -29,10 +29,9 @@ cc_library(
     ]),
     copts = tf_copts(),
     deps = if_cuda([
-        "@local_config_nccl//:nccl",
+        "@local_xla//xla/tsl/cuda:nccl",
         "//tensorflow/core/platform:blocking_counter",
         "//tensorflow/core/platform:unbounded_work_queue",
-        "@local_xla//xla/stream_executor/cuda:cuda_activation",
         "//tensorflow/core/framework:tensor_proto_cc",
     ]) + if_rocm([
         "@local_config_rocm//rocm:rccl",
@@ -72,7 +71,7 @@ tf_cuda_cc_test(
     ] + if_cuda_or_rocm([
         ":nccl_lib",
     ]) + if_cuda([
-        "@local_config_nccl//:nccl",
+        "@local_xla//xla/tsl/cuda:nccl",
         "//tensorflow/core:cuda",
     ]) + if_rocm([
         "@local_config_rocm//rocm:rccl",
@@ -93,6 +92,7 @@ cc_library(
         [
             ":loose_headers",
             "//tensorflow/core:framework",
+            "//tensorflow/core/protobuf:for_core_protos_cc",
         ] + if_nccl([
             ":nccl_lib",
             "@com_google_absl//absl/memory",

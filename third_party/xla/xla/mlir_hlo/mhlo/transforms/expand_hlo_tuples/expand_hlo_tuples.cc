@@ -16,22 +16,18 @@ limitations under the License.
 #include <iterator>
 #include <memory>
 #include <string>
-#include <vector>
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "mhlo/IR/hlo_ops.h"
 #include "mhlo/transforms/passes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Location.h"
-#include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Pass/Pass.h"
-#include "mlir/Pass/PassRegistry.h"
 #include "mlir/Support/LLVM.h"
 
 namespace mlir {
@@ -55,7 +51,7 @@ class ExpandHloTuplesPass
 
   // Expands the mhlo.tuple used in return op. Also updates function
   // signature accordingly.
-  void expandTupledTensorInReturnOp(func::FuncOp func) {
+  LogicalResult expandTupledTensorInReturnOp(func::FuncOp func) {
     FunctionType oldFuncType = func.getFunctionType();
     // Update input signatures.
     // We will flatten the tuples for the function inputs as well.
@@ -85,7 +81,11 @@ class ExpandHloTuplesPass
         Location loc = func.getBody().getLoc();
         for (auto flattenedType : tupleType.getTypes()) {
           expandedInputTypes.push_back(flattenedType);
-          func.insertArgument(++argumentIndex, flattenedType, {}, loc);
+
+          if (failed(func.insertArgument(++argumentIndex, flattenedType, {},
+                                         loc))) {
+            return failure();
+          }
           flattenedOperands.push_back(func.getArgument(argumentIndex));
         }
 
@@ -98,7 +98,9 @@ class ExpandHloTuplesPass
 
         // Now the original argument has been rewired, we should be able to
         // safely erase it.
-        func.eraseArgument(originalArgumentIndex);
+        if (failed(func.eraseArgument(originalArgumentIndex))) {
+          return failure();
+        }
       }
     }
 
@@ -123,7 +125,9 @@ class ExpandHloTuplesPass
       }
     }
 
-    if (returnOp.getOperands() == expandedReturnOperands) return;
+    if (returnOp.getOperands() == expandedReturnOperands) {
+      return success();
+    }
 
     builder.create<mlir::func::ReturnOp>(returnOp.getLoc(),
                                          expandedReturnOperands);
@@ -131,6 +135,7 @@ class ExpandHloTuplesPass
     auto newFuncType = FunctionType::get(
         oldFuncType.getContext(), expandedInputTypes, expandedResultTypes);
     func.setType(newFuncType);
+    return success();
   }
 
   void runOnOperation() override {
@@ -147,7 +152,9 @@ class ExpandHloTuplesPass
         llvm::any_of(llvm::concat<const Type>(entryFunction.getArgumentTypes(),
                                               entryFunction.getResultTypes()),
                      [](Type type) { return mlir::isa<TupleType>(type); })) {
-      expandTupledTensorInReturnOp(entryFunction);
+      if (llvm::failed(expandTupledTensorInReturnOp(entryFunction))) {
+        return signalPassFailure();
+      }
     }
   }
 };

@@ -19,6 +19,7 @@ limitations under the License.
 
 #include <memory>
 
+#include "xla/tsl/lib/core/status_test_util.h"
 #include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/platform/cord.h"
@@ -29,7 +30,6 @@ limitations under the License.
 #include "tensorflow/core/platform/strcat.h"
 #include "tensorflow/core/platform/stringpiece.h"
 #include "tensorflow/core/platform/test.h"
-#include "tsl/lib/core/status_test_util.h"
 
 namespace tsl {
 
@@ -53,7 +53,7 @@ tensorflow::GraphDef CreateTestProto() {
   return g;
 }
 
-static void ExpectHasSubstr(StringPiece s, StringPiece expected) {
+static void ExpectHasSubstr(absl::string_view s, absl::string_view expected) {
   EXPECT_TRUE(absl::StrContains(s, expected))
       << "'" << s << "' does not contain '" << expected << "'";
 }
@@ -82,13 +82,14 @@ TEST_F(DefaultEnvTest, IncompleteReadOutOfRange) {
   TF_EXPECT_OK(env_->NewRandomAccessFile(filename, &f));
 
   // Reading past EOF should give an OUT_OF_RANGE error
-  StringPiece result;
+  absl::string_view result;
   char scratch[3];
-  EXPECT_EQ(error::OUT_OF_RANGE, f->Read(0, 3, &result, scratch).code());
+  EXPECT_EQ(error::OUT_OF_RANGE,
+            f->Read(0, result, absl::MakeSpan(scratch, 3)).code());
   EXPECT_EQ(input, result);
 
   // Exact read to EOF works.
-  TF_EXPECT_OK(f->Read(0, 2, &result, scratch));
+  TF_EXPECT_OK(f->Read(0, result, absl::MakeSpan(scratch, 2)));
   EXPECT_EQ(input, result);
 }
 
@@ -96,7 +97,7 @@ TEST_F(DefaultEnvTest, ReadFileToString) {
   for (const int length : {0, 1, 1212, 2553, 4928, 8196, 9000, (1 << 20) - 1,
                            1 << 20, (1 << 20) + 1, (256 << 20) + 100}) {
     const string filename =
-        io::JoinPath(BaseDir(), "bar", "..", strings::StrCat("file", length));
+        io::JoinPath(BaseDir(), "bar", "..", absl::StrCat("file", length));
 
     // Write a file with the given length
     const string input = CreateTestFile(env_, filename, length);
@@ -117,7 +118,7 @@ TEST_F(DefaultEnvTest, ReadFileToString) {
 
 TEST_F(DefaultEnvTest, ReadWriteBinaryProto) {
   const tensorflow::GraphDef proto = CreateTestProto();
-  const string filename = strings::StrCat(BaseDir(), "binary_proto");
+  const string filename = absl::StrCat(BaseDir(), "binary_proto");
 
   // Write the binary proto
   TF_EXPECT_OK(WriteBinaryProto(env_, filename, proto));
@@ -135,7 +136,7 @@ TEST_F(DefaultEnvTest, ReadWriteBinaryProto) {
 
 TEST_F(DefaultEnvTest, ReadWriteTextProto) {
   const tensorflow::GraphDef proto = CreateTestProto();
-  const string filename = strings::StrCat(BaseDir(), "text_proto");
+  const string filename = absl::StrCat(BaseDir(), "text_proto");
 
   // Write the text proto
   string as_text;
@@ -157,7 +158,7 @@ TEST_F(DefaultEnvTest, FileToReadonlyMemoryRegion) {
   for (const int length : {1, 1212, 2553, 4928, 8196, 9000, (1 << 20) - 1,
                            1 << 20, (1 << 20) + 1}) {
     const string filename =
-        io::JoinPath(BaseDir(), strings::StrCat("file", length));
+        io::JoinPath(BaseDir(), absl::StrCat("file", length));
 
     // Write a file with the given length
     const string input = CreateTestFile(env_, filename, length);
@@ -251,9 +252,9 @@ TEST_F(DefaultEnvTest, LocalFileSystem) {
   std::vector<string> matching_paths;
   for (const int length : {0, 1, 1212, 2553, 4928, 8196, 9000, (1 << 20) - 1,
                            1 << 20, (1 << 20) + 1}) {
-    string filename = io::JoinPath(BaseDir(), strings::StrCat("len", length));
+    string filename = io::JoinPath(BaseDir(), absl::StrCat("len", length));
 
-    filename = strings::StrCat("file://", filename);
+    filename = absl::StrCat("file://", filename);
 
     // Write a file with the given length
     const string input = CreateTestFile(env_, filename, length);
@@ -262,7 +263,7 @@ TEST_F(DefaultEnvTest, LocalFileSystem) {
     // Ensure that GetMatchingPaths works as intended.
     TF_EXPECT_OK(env_->GetMatchingPaths(
         // Try it with the "file://" URI scheme.
-        strings::StrCat("file://", io::JoinPath(BaseDir(), "l*")),
+        absl::StrCat("file://", io::JoinPath(BaseDir(), "l*")),
         &matching_paths));
     EXPECT_EQ(expected_num_files, matching_paths.size());
     TF_EXPECT_OK(env_->GetMatchingPaths(
@@ -300,7 +301,7 @@ class TmpDirFileSystem : public NullFileSystem {
   TF_USE_FILESYSTEM_METHODS_WITH_NO_TRANSACTION_SUPPORT;
 
   absl::Status FileExists(const string& dir, TransactionToken* token) override {
-    StringPiece scheme, host, path;
+    absl::string_view scheme, host, path;
     io::ParseURI(dir, &scheme, &host, &path);
     if (path.empty()) return errors::NotFound(dir, " not found");
     // The special "flushed" file exists only if the filesystem's caches have
@@ -316,7 +317,7 @@ class TmpDirFileSystem : public NullFileSystem {
   }
 
   absl::Status CreateDir(const string& dir, TransactionToken* token) override {
-    StringPiece scheme, host, path;
+    absl::string_view scheme, host, path;
     io::ParseURI(dir, &scheme, &host, &path);
     if (scheme != "tmpdirfs") {
       return errors::FailedPrecondition("scheme must be tmpdirfs");
@@ -335,7 +336,7 @@ class TmpDirFileSystem : public NullFileSystem {
 
   absl::Status IsDirectory(const string& dir,
                            TransactionToken* token) override {
-    StringPiece scheme, host, path;
+    absl::string_view scheme, host, path;
     io::ParseURI(dir, &scheme, &host, &path);
     for (const auto& existing_dir : created_directories_)
       if (existing_dir == path) return absl::OkStatus();
@@ -354,7 +355,7 @@ REGISTER_FILE_SYSTEM("tmpdirfs", TmpDirFileSystem);
 TEST_F(DefaultEnvTest, FlushFileSystemCaches) {
   Env* env = Env::Default();
   const string flushed =
-      strings::StrCat("tmpdirfs://", io::JoinPath("testhost", "flushed"));
+      absl::StrCat("tmpdirfs://", io::JoinPath("testhost", "flushed"));
   EXPECT_EQ(error::Code::NOT_FOUND, env->FileExists(flushed).code());
   TF_EXPECT_OK(env->FlushFileSystemCaches());
   TF_EXPECT_OK(env->FileExists(flushed));
@@ -362,8 +363,8 @@ TEST_F(DefaultEnvTest, FlushFileSystemCaches) {
 
 TEST_F(DefaultEnvTest, RecursivelyCreateDirWithUri) {
   Env* env = Env::Default();
-  const string create_path = strings::StrCat(
-      "tmpdirfs://", io::JoinPath("testhost", "a", "b", "c", "d"));
+  const string create_path =
+      absl::StrCat("tmpdirfs://", io::JoinPath("testhost", "a", "b", "c", "d"));
   EXPECT_EQ(error::Code::NOT_FOUND, env->FileExists(create_path).code());
   TF_CHECK_OK(env->RecursivelyCreateDir(create_path));
   TF_CHECK_OK(env->RecursivelyCreateDir(create_path));  // repeat creation.
@@ -405,11 +406,12 @@ TEST_F(DefaultEnvTest, LocalTempFilename) {
   // Read from the temporary file and check content.
   std::unique_ptr<RandomAccessFile> file_to_read;
   TF_CHECK_OK(env->NewRandomAccessFile(filename, &file_to_read));
-  StringPiece content;
+  absl::string_view content;
   char scratch[1024];
-  CHECK_EQ(
-      error::OUT_OF_RANGE,
-      file_to_read->Read(/*offset=*/0, /*n=*/1024, &content, scratch).code());
+  CHECK_EQ(error::OUT_OF_RANGE, file_to_read
+                                    ->Read(/*offset=*/0, content,
+                                           absl::MakeSpan(scratch, /*n=*/1024))
+                                    .code());
   EXPECT_EQ("Null", content);
 
   // Delete the temporary file.
@@ -427,7 +429,7 @@ TEST_F(DefaultEnvTest, CreateUniqueFileName) {
   EXPECT_TRUE(env->CreateUniqueFileName(&filename, suffix));
 
   EXPECT_TRUE(absl::StartsWith(filename, prefix));
-  EXPECT_TRUE(str_util::EndsWith(filename, suffix));
+  EXPECT_TRUE(absl::EndsWith(filename, suffix));
 }
 
 TEST_F(DefaultEnvTest, GetProcessId) {

@@ -20,23 +20,30 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "absl/log/check.h"
+#include "absl/status/status_matchers.h"
+#include "absl/strings/str_cat.h"
 #include "xla/pjrt/c/pjrt_c_api.h"
 #include "xla/pjrt/c/pjrt_c_api_cpu.h"
 #include "xla/pjrt/c/pjrt_c_api_wrapper_impl.h"
-#include "xla/pjrt/cpu/cpu_client.h"
 #include "xla/pjrt/pjrt_api.h"
 #include "xla/pjrt/pjrt_c_api_client.h"
+#include "xla/pjrt/plugin/xla_cpu/cpu_client_options.h"
+#include "xla/pjrt/plugin/xla_cpu/xla_cpu_pjrt_client.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
+#include "xla/tsl/lib/core/status_test_util.h"
+#include "xla/tsl/platform/status_matchers.h"
+#include "xla/tsl/platform/statusor.h"
+#include "xla/tsl/protobuf/error_codes.pb.h"
+#include "xla/xla_data.pb.h"
 #include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/tfrt/common/async_value_tensor.h"
 #include "tensorflow/core/tfrt/common/pjrt_util.h"
-#include "tsl/lib/core/status_test_util.h"
 #include "tsl/platform/casts.h"
-#include "tsl/platform/status_matchers.h"
-#include "tsl/protobuf/error_codes.pb.h"
 
 namespace tensorflow {
 namespace {
@@ -60,7 +67,8 @@ PJRT_Buffer* CreateCBuffer() {
       data.data(), shape.element_type(), shape.dimensions(),
       /*byte_strides=*/std::nullopt,
       xla::PjRtClient::HostBufferSemantics::kImmutableOnlyDuringCall, nullptr,
-      c_api_client->pjrt_c_client()->client->addressable_devices()[0]);
+      c_api_client->pjrt_c_client()->client->memory_spaces()[0],
+      /*device_layout=*/nullptr);
   CHECK_OK(buffer.status());
 
   return new PJRT_Buffer{std::move(*buffer), c_api_client->pjrt_c_client()};
@@ -72,16 +80,19 @@ TEST(TensorPjRtBufferUtilTest, GetPjRtCBufferFromTensorNoBuffer) {
 
   EXPECT_THAT(
       GetPjRtCBufferFromTensor(&tensor),
-      StatusIs(error::INTERNAL, HasSubstr(absl::StrCat(
-                                    "Input tensor does not have PjRtBuffer"))));
+      absl_testing::StatusIs(
+          error::INTERNAL,
+          HasSubstr(absl::StrCat("Input tensor does not have PjRtBuffer"))));
 }
 
 TEST(TensorPjRtBufferUtilTest, GetPjRtCBufferFromTensorIncoorectType) {
   auto allocator = std::make_unique<AsyncValueAllocator>();
   tensorflow::Tensor tensor(allocator.get(), DT_FLOAT, {1});
-  TF_ASSERT_OK_AND_ASSIGN(
-      auto pjrt_client,
-      xla::GetTfrtCpuClient(/*asynchronous=*/true, /*cpu_device_count=*/1));
+  xla::CpuClientOptions options;
+  options.asynchronous = true;
+  options.cpu_device_count = 1;
+
+  TF_ASSERT_OK_AND_ASSIGN(auto pjrt_client, xla::GetXlaPjrtCpuClient(options));
   std::vector<int32_t> data(1, 0);
   xla::Shape shape = xla::ShapeUtil::MakeShape(xla::S32, {1});
   TF_ASSERT_OK_AND_ASSIGN(
@@ -90,14 +101,14 @@ TEST(TensorPjRtBufferUtilTest, GetPjRtCBufferFromTensorIncoorectType) {
           data.data(), shape.element_type(), shape.dimensions(),
           /*byte_strides=*/std::nullopt,
           xla::PjRtClient::HostBufferSemantics::kImmutableOnlyDuringCall,
-          nullptr, pjrt_client->addressable_devices()[0]));
+          nullptr, pjrt_client->memory_spaces()[0], /*device_layout=*/nullptr));
   tensorflow::AsyncValueTensor* av_tensor =
       tensorflow::AsyncValueTensor::FromTensor(&tensor);
   av_tensor->SetBuffer(std::move(buffer));
 
   EXPECT_THAT(
       GetPjRtCBufferFromTensor(&tensor),
-      StatusIs(
+      absl_testing::StatusIs(
           error::INTERNAL,
           HasSubstr(absl::StrCat(
               "The PjRtBuffer in the tensor is not type PjRtCApiBuffer"))));
@@ -119,7 +130,7 @@ TEST(TensorPjRtBufferUtilTest, GetPjRtCBufferFromTensorSuccess) {
           data.data(), shape.element_type(), shape.dimensions(),
           /*byte_strides=*/std::nullopt,
           xla::PjRtClient::HostBufferSemantics::kImmutableOnlyDuringCall,
-          nullptr, pjrt_client->addressable_devices()[0]));
+          nullptr, pjrt_client->memory_spaces()[0], /*device_layout=*/nullptr));
   tensorflow::AsyncValueTensor* av_tensor =
       tensorflow::AsyncValueTensor::FromTensor(&tensor);
   av_tensor->SetBuffer(std::move(buffer));
@@ -149,24 +160,27 @@ TEST(TensorPjRtBufferUtilTest, SetPjRtCBufferToTensorSuccess) {
 }
 
 TEST(TensorPjRtBufferUtilTest, GetPjRtCApiClientNotFound) {
-  EXPECT_THAT(
-      GetPjRtCApiClient(tensorflow::DeviceType(DEVICE_CPU)),
-      StatusIs(error::NOT_FOUND,
-               HasSubstr(absl::StrCat("PjRt client not found for device type ",
-                                      DEVICE_CPU))));
+  EXPECT_THAT(GetPjRtCApiClient(tensorflow::DeviceType(DEVICE_CPU)),
+              absl_testing::StatusIs(
+                  error::NOT_FOUND,
+                  HasSubstr(absl::StrCat(
+                      "PjRt client not found for device type ", DEVICE_CPU))));
 }
 
 TEST(TensorPjRtBufferUtilTest, GetPjRtCApiClientIncorrectType) {
-  TF_ASSERT_OK_AND_ASSIGN(
-      auto pjrt_client,
-      xla::GetTfrtCpuClient(/*asynchronous=*/true, /*cpu_device_count=*/1));
+  xla::CpuClientOptions options;
+  options.asynchronous = true;
+  options.cpu_device_count = 1;
+  TF_ASSERT_OK_AND_ASSIGN(auto pjrt_client, xla::GetXlaPjrtCpuClient(options));
+
   TF_ASSERT_OK(SetPjRtClientInTFGlobalResourceManager(DEVICE_CPU,
                                                       std::move(pjrt_client)));
 
   EXPECT_THAT(GetPjRtCApiClient(tensorflow::DeviceType(DEVICE_CPU)),
-              StatusIs(error::INTERNAL,
-                       HasSubstr(absl::StrCat("PjRtClient for ", DEVICE_CPU,
-                                              " is not type PjRtCApiClient"))));
+              absl_testing::StatusIs(
+                  error::INTERNAL,
+                  HasSubstr(absl::StrCat("PjRtClient for ", DEVICE_CPU,
+                                         " is not type PjRtCApiClient"))));
 }
 
 TEST(TensorPjRtBufferUtilTest, GetPjRtCApiClientSuccess) {

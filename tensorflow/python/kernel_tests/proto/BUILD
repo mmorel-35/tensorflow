@@ -1,12 +1,11 @@
 # Tests of tf.io.*proto.
 
+load("@rules_python//python:proto.bzl", "py_proto_library")
 load("//tensorflow:strict.default.bzl", "py_strict_library")
-
-# Placeholder: load py_proto_library
-load("//tensorflow:tensorflow.bzl", "tf_cc_shared_object")
-load("//tensorflow:tensorflow.default.bzl", "tf_py_strict_test")
+load("//tensorflow:tensorflow.bzl", "if_oss", "tf_cc_shared_object")
+load("//tensorflow:tensorflow.default.bzl", "stripped_cc_info", "tf_py_strict_test")
 load("//tensorflow/core/platform:build_config.bzl", "tf_additional_all_protos", "tf_proto_library")
-load("//tensorflow/core/platform:build_config_root.bzl", "if_static")
+load("//tensorflow/core/platform:build_config_root.bzl", "if_pywrap")
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -22,11 +21,7 @@ tf_py_strict_test(
     name = "decode_proto_op_test",
     size = "small",
     srcs = ["decode_proto_op_test.py"],
-    data = if_static(
-        [],
-        otherwise = [":libtestexample.so"],
-    ),
-    python_version = "PY3",
+    data = if_oss([":libtestexample.so"]),
     tags = [
         "no_pip",  # TODO(b/78026780)
         "no_windows",  # TODO(b/78028010)
@@ -43,11 +38,7 @@ tf_py_strict_test(
     name = "encode_proto_op_test",
     size = "small",
     srcs = ["encode_proto_op_test.py"],
-    data = if_static(
-        [],
-        otherwise = [":libtestexample.so"],
-    ),
-    python_version = "PY3",
+    data = if_oss([":libtestexample.so"]),
     tags = [
         "no_pip",  # TODO(b/78026780)
         "no_windows",  # TODO(b/78028010)
@@ -64,7 +55,6 @@ py_strict_library(
     name = "proto_op_test_base",
     testonly = 1,
     srcs = ["proto_op_test_base.py"],
-    srcs_version = "PY3",
     deps = [
         ":test_example_proto_py",
         "//tensorflow/core:protos_all_py",
@@ -76,7 +66,6 @@ py_strict_library(
     name = "decode_proto_op_test_base",
     testonly = 1,
     srcs = ["decode_proto_op_test_base.py"],
-    srcs_version = "PY3",
     deps = [
         ":proto_op_test_base",
         ":test_example_proto_py",
@@ -91,7 +80,6 @@ py_strict_library(
     name = "encode_proto_op_test_base",
     testonly = 1,
     srcs = ["encode_proto_op_test_base.py"],
-    srcs_version = "PY3",
     deps = [
         ":proto_op_test_base",
         ":test_example_proto_py",
@@ -104,31 +92,37 @@ py_strict_library(
     ],
 )
 
-py_strict_library(
-    name = "py_test_deps",
-    srcs_version = "PY3",
-)
+py_strict_library(name = "py_test_deps")
 
 tf_proto_library(
     name = "test_example_proto",
     srcs = ["test_example.proto"],
-    cc_api_version = 2,
     protodeps = tf_additional_all_protos(),
 )
 
 tf_cc_shared_object(
     name = "libtestexample.so",
     linkstatic = 1,
-    deps = [
-        ":test_example_proto_cc",
-    ],
+    deps = if_pywrap(
+        if_false = [
+            ":test_example_proto_cc",
+        ],
+        if_true = [
+            "//tensorflow/python:tensorflow_common_framework",
+            ":test_example_proto_cc_stripped",
+        ],
+    ),
+)
+
+stripped_cc_info(
+    name = "test_example_proto_cc_stripped",
+    deps = [":test_example_proto_cc"],
 )
 
 py_strict_library(
     name = "descriptor_source_test_base",
     testonly = 1,
     srcs = ["descriptor_source_test_base.py"],
-    srcs_version = "PY3",
     deps = [
         ":proto_op_test_base",
         "//tensorflow/python/framework:dtypes",
@@ -142,7 +136,6 @@ tf_py_strict_test(
     name = "descriptor_source_test",
     size = "small",
     srcs = ["descriptor_source_test.py"],
-    python_version = "PY3",
     tags = [
         "no_pip",
     ],
@@ -156,7 +149,6 @@ tf_py_strict_test(
 # copybara:uncomment_begin(google-only)
 # py_proto_library(
 #     name = "test_example_proto_py",
-#     api_version = 2,
 #     deps = [":test_example_proto"],
 # )
 # copybara:uncomment_end

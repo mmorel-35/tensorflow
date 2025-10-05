@@ -16,12 +16,12 @@ limitations under the License.
 #include "xla/service/gpu/triton_fusion_analysis.h"
 
 #include <cstdint>
-#include <memory>
 #include <optional>
 #include <queue>
 #include <string>
 #include <utility>
 #include <variant>
+#include <vector>
 
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/check.h"
@@ -31,17 +31,16 @@ limitations under the License.
 #include "absl/strings/str_join.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
-#include "xla/hlo/ir/hlo_module.h"
+#include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/hlo/utils/hlo_query.h"
 #include "xla/service/gpu/cudnn_support_utils.h"
-#include "xla/service/gpu/matmul_utils.h"
 #include "xla/service/gpu/triton_tiling_propagation.h"
 #include "xla/service/instruction_fusion.h"
-#include "xla/shape_util.h"
+#include "xla/service/matmul_indexing_utils.h"
 #include "xla/status_macros.h"
-#include "xla/tools/hlo_decomposer.h"
 #include "xla/util.h"
+#include "xla/xla_data.pb.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/statusor.h"
 
@@ -110,32 +109,6 @@ namespace triton_fusion {
   return context;
 }
 
-/*static*/ FusionContext FusionContext::FromSoftmaxRoot(
-    const HloInstruction& root) {
-  FusionContext context(
-      SoftmaxProperties{DimensionOrder::kSoftmaxReductionDimension,
-                        DimensionOrder::kSoftmaxBatchDimension},
-      SoftmaxRequirements{});
-  context.dim_orders_[&root] = DimensionOrder::FromSoftmaxRoot(root);
-  return context;
-}
-
-namespace {
-
-// Tells how many new parameters does a fusion gain by fusing the operation as
-// an input.
-int64_t NumAddedParameters(const HloInstruction& hlo) {
-  // Non-scalar constant is equivalent to a parameter: one input, one output.
-  if (hlo.opcode() == HloOpcode::kConstant &&
-      !ShapeUtil::IsScalar(hlo.shape())) {
-    return 0;
-  }
-  // All other instructions add all own inputs and remove own single output.
-  return hlo.operand_count() - 1;
-}
-
-}  // namespace
-
 bool FusionContext::CombineDimOrdersAndReqs(const DimOrdersAndReqs& update) {
   // First check that all updates to insert are compatible to avoid
   // incomplete merges.
@@ -146,17 +119,19 @@ bool FusionContext::CombineDimOrdersAndReqs(const DimOrdersAndReqs& update) {
     }
   }
 
-  RequirementsOrError requirements_or_error =
-      CombineRequirements(requirements_, update.requirements);
+  DotRequirementsOrError requirements_or_error =
+      CombineDotRequirements(requirements_, update.requirements);
   if (std::holds_alternative<FusionDecision>(requirements_or_error)) {
     return false;
   }
 
-  requirements_ = std::move(std::get<Requirements>(requirements_or_error));
+  requirements_ = std::move(std::get<DotRequirements>(requirements_or_error));
   dim_orders_.insert(update.dim_orders.begin(), update.dim_orders.end());
   return true;
 }
 
+// Returns the list of parameters that are inputs to the given instruction.
+// Also updates the dimension orders and iteration specs for the parameters.
 absl::Status FusionContext::PropagateDimensionOrdersToParameters(
     const HloInstruction& origin, ConstHloInstructionSet& parameters,
     ConstHloInstructionMap<TensorIterationSpec>& iter_specs) {
@@ -187,7 +162,8 @@ absl::Status FusionContext::PropagateDimensionOrdersToParameters(
 
     if (!std::holds_alternative<DimOrdersAndReqs>(result)) {
       return FailedPrecondition(
-          "Can not propagate dim orders and requirements.");
+          "Can not propagate dim orders and requirements: %s",
+          std::get<FusionDecision>(result).Explain());
     }
 
     if (!CombineDimOrdersAndReqs(std::get<DimOrdersAndReqs>(result))) {
@@ -210,7 +186,43 @@ absl::Status FusionContext::PropagateDimensionOrdersToParameters(
   return absl::OkStatus();
 }
 
+absl::StatusOr<std::optional<int64_t>> GetBlockSize(
+    const HloInstruction& dot, TritonFusionAnalysis::Scope scope) {
+  CHECK(dot.opcode() == HloOpcode::kScaledDot);
+  CHECK(scope == TritonFusionAnalysis::Scope::LHS ||
+        scope == TritonFusionAnalysis::Scope::RHS);
+  int operand_number = scope == TritonFusionAnalysis::Scope::LHS ? 0 : 2;
+  const Shape& input = dot.operand(operand_number)->shape();
+  const Shape& scale = dot.operand(operand_number + 1)->shape();
+
+  if (!ShapeUtil::IsScalar(scale)) {
+    TF_ASSIGN_OR_RETURN(int dim_idx,
+                        ContractingDimensionIndex(dot, operand_number));
+    return input.dimensions(dim_idx) / scale.dimensions(dim_idx);
+  }
+  return std::nullopt;
+}
+
 }  // namespace triton_fusion
+
+namespace {
+
+int ScopeToScaledDotOperandIdx(TritonFusionAnalysis::Scope scope) {
+  switch (scope) {
+    case TritonFusionAnalysis::Scope::LHS:
+      return 0;
+    case TritonFusionAnalysis::Scope::LHS_SCALE:
+      return 1;
+    case TritonFusionAnalysis::Scope::RHS:
+      return 2;
+    case TritonFusionAnalysis::Scope::RHS_SCALE:
+      return 3;
+    default:
+      LOG(FATAL) << "Unsupported scope.";
+  }
+}
+
+}  // namespace
 
 absl::StatusOr<TritonFusionAnalysis> TritonFusionAnalysis::Execute(
     const HloComputation& computation, const int split_k) {
@@ -218,75 +230,79 @@ absl::StatusOr<TritonFusionAnalysis> TritonFusionAnalysis::Execute(
   TritonFusionAnalysis analysis;
   const HloInstruction* dot =
       hlo_query::GetFirstInstructionWithOpcode(computation, HloOpcode::kDot);
-  if (dot != nullptr) {
-    TF_RETURN_IF_ERROR(analysis.ExecuteForDotFusion(*dot, split_k));
-  } else {
-    TF_RETURN_IF_ERROR(
-        analysis.ExecuteForSoftmaxFusion(*computation.root_instruction()));
+  if (dot == nullptr) {
+    dot = hlo_query::GetFirstInstructionWithOpcode(computation,
+                                                   HloOpcode::kScaledDot);
   }
+  TF_RET_CHECK(dot != nullptr);
+  TF_RETURN_IF_ERROR(analysis.ExecuteForDotFusion(*dot, split_k));
   return analysis;
 }
 
-absl::Status TritonFusionAnalysis::ExecuteForSoftmaxFusion(
-    const HloInstruction& root) {
-  auto context = FusionContext::FromSoftmaxRoot(root);
-  // Softmax fusion uses one tiled scope.
-  TF_RETURN_IF_ERROR(context.PropagateDimensionOrdersToParameters(
-      root, parameters_[Scope::OUTPUT], iter_specs_[Scope::OUTPUT]));
-  iter_specs_[Scope::LHS] = {};
-  iter_specs_[Scope::RHS] = {};
-  return absl::OkStatus();
+absl::StatusOr<TritonFusionAnalysis> TritonFusionAnalysis::Execute(
+    const HloInstruction& dot, int split_k) {
+  TritonFusionAnalysis analysis;
+  TF_RETURN_IF_ERROR(analysis.ExecuteForDotFusion(dot, split_k));
+  return analysis;
 }
 
-absl::Status TritonFusionAnalysis::ExecuteForProducerConsumer(
-    const HloInstruction& producer, const HloInstruction& consumer,
-    int split_k) {
-  // TODO(shyshkov): Use HloFusionAdaptor to avoid the need to materialize the
-  // hlo fusion.
-  std::unique_ptr<HloModule> new_module =
-      ExtractProducerConsumerIntoNewModule(producer, consumer);
+bool TritonFusionAnalysis::IsBatchDimMinorForInt4Parameter(
+    const HloInstruction& dot, Scope scope) const {
+  CHECK(scope == Scope::LHS || scope == Scope::RHS);
+  const auto& dims = dot.dot_dimension_numbers();
+  const auto& batch_dims = (scope == Scope::LHS) ? dims.lhs_batch_dimensions()
+                                                 : dims.rhs_batch_dimensions();
 
-  auto* new_producer =
-      new_module->entry_computation()->GetInstructionWithName(producer.name());
-  auto* new_consumer =
-      new_module->entry_computation()->GetInstructionWithName(consumer.name());
+  if (batch_dims.empty()) return true;
 
-  std::unique_ptr<HloInstruction> fusion_instruction_holder;
-  HloInstruction* fusion_instruction;
-  if (new_consumer->opcode() == HloOpcode::kFusion) {
-    fusion_instruction = new_consumer;
-  } else {
-    fusion_instruction_holder = HloInstruction::CreateFusion(
-        new_consumer->shape(), new_producer->fusion_kind(), new_consumer);
-    fusion_instruction = fusion_instruction_holder.get();
+  int32_t batch_dim = batch_dims.Get(0);
+  CHECK_EQ(batch_dims.size(), 1);
+  const auto& params = parameters_.at(scope);
+  for (const auto& param : params) {
+    if (param->shape().element_type() != S4) continue;
+
+    const auto* strides = IterSpec(scope, param, batch_dim);
+    if (strides == nullptr) continue;
+    // The hacky way to check if the batch dimension is minor.
+    // It also covers the case when the batch dimension is second to last but
+    // the minor dimension is equal to 1.
+    if (strides->front().stride == 1) return false;
   }
-
-  // Try to merge the producer into candidate fusion.
-  if (new_producer->opcode() == HloOpcode::kFusion) {
-    fusion_instruction->MergeFusionInstruction(new_producer);
-  } else {
-    fusion_instruction->FuseInstruction(new_producer);
-  }
-
-  auto* fused_computation =
-      fusion_instruction->fused_instructions_computation();
-  return Execute(*fused_computation, split_k).status();
+  return true;
 }
 
 absl::Status TritonFusionAnalysis::ExecuteForDotFusion(
     const HloInstruction& dot, const int split_k) {
+  is_scaled_dot_ = dot.opcode() == HloOpcode::kScaledDot;
+  if (is_scaled_dot_) {
+    TF_ASSIGN_OR_RETURN(lhs_scale_block_size_,
+                        triton_fusion::GetBlockSize(dot, Scope::LHS));
+    TF_ASSIGN_OR_RETURN(rhs_scale_block_size_,
+                        triton_fusion::GetBlockSize(dot, Scope::RHS));
+  }
+
   DotRequirements lhs_requirements(kNoSplitRequirement);
-  for (const Scope scope : {Scope::LHS, Scope::RHS, Scope::META}) {
-    const int operand_number = static_cast<int>(scope);
-    if (dot.operand_count() < operand_number + 1) {
-      continue;  // Meta scope is optional.
+  for (const Scope scope :
+       {Scope::LHS, Scope::RHS, Scope::LHS_SCALE, Scope::RHS_SCALE}) {
+    int operand_number = static_cast<int>(scope);
+    if (operand_number >= dot.operand_count()) {
+      continue;  // Scale operands are optional.
+    }
+    if (is_scaled_dot_) {
+      // Operands for scaled dot: (lhs, lhs_scale, rhs, rhs_scale)
+      operand_number = ScopeToScaledDotOperandIdx(scope);
+      // Scalar scales are skipped.
+      if ((scope == Scope::LHS_SCALE || scope == Scope::RHS_SCALE) &&
+          ShapeUtil::IsScalar(dot.operand(operand_number)->shape())) {
+        continue;
+      }
     }
     TF_ASSIGN_OR_RETURN(auto context, FusionContext::FromDotOperand(
                                           dot, operand_number, split_k));
     TF_RETURN_IF_ERROR(context.PropagateDimensionOrdersToParameters(
         *dot.operand(operand_number), parameters_[scope], iter_specs_[scope]));
     if (scope == Scope::LHS) {
-      lhs_requirements = std::get<DotRequirements>(context.requirements());
+      lhs_requirements = context.requirements();
     }
   }
 
@@ -297,7 +313,10 @@ absl::Status TritonFusionAnalysis::ExecuteForDotFusion(
   // Currently supported is one fusion output and one path from dot to it.
   // Propagate dimension order from dot to root.
   while (!output->IsRoot()) {
-    TF_RET_CHECK(output->user_count() == 1);
+    if (output->user_count() != 1) {
+      return absl::FailedPreconditionError(
+          absl::StrCat("Expected one user for ", output->ToString()));
+    }
     const HloInstruction* input = output;
     // Tuple with a custom call can be added at root to allocate a workspace
     // buffer. These do not need to participate in propagation of dimensions.
@@ -307,16 +326,27 @@ absl::Status TritonFusionAnalysis::ExecuteForDotFusion(
     output = output->users()[0];
     DimOrdersAndReqsOrError result = GetPropagatedDimOrdersAndRequirements(
         *output, context.dim_orders().at(input),
-        TransformDirection::kInputToOutput, context.hero_properties());
-    TF_RET_CHECK(std::holds_alternative<DimOrdersAndReqs>(result));
-    TF_RET_CHECK(
-        context.CombineDimOrdersAndReqs(std::get<DimOrdersAndReqs>(result)));
+        TransformDirection::kInputToOutput, context.dot_properties());
+    if (std::holds_alternative<FusionDecision>(result)) {
+      auto decision = std::get<FusionDecision>(result);
+      return FailedPrecondition("Failed to propagate tiling with error: %s",
+                                decision.Explain());
+    }
+    if (!context.CombineDimOrdersAndReqs(std::get<DimOrdersAndReqs>(result))) {
+      return absl::InternalError(
+          "Failed to combine dim orders and requirements.");
+    }
   }
-  TF_RET_CHECK(
+
+  bool spec_was_inserted =
       iter_specs_[Scope::OUTPUT]
           .insert(
               {output, context.dim_orders().at(output).ToTensorIterationSpec()})
-          .second);
+          .second;
+  if (!spec_was_inserted) {
+    return absl::InternalError(
+        "Failed to insert output spec for the output fusion.");
+  }
   parameters_[Scope::OUTPUT] = {};
   if (output != &dot) {
     // Propagate back to parameters of the output fusion.
@@ -328,8 +358,10 @@ absl::Status TritonFusionAnalysis::ExecuteForDotFusion(
 
 std::optional<TritonFusionAnalysis::Scope>
 TritonFusionAnalysis::QueryInstructionScope(const HloInstruction& hlo) const {
-  for (const Scope& scope : {Scope::LHS, Scope::RHS, Scope::OUTPUT}) {
-    if (iter_specs_.at(scope).count(&hlo) > 0) {
+  for (const Scope& scope : {Scope::LHS, Scope::RHS, Scope::OUTPUT,
+                             Scope::LHS_SCALE, Scope::RHS_SCALE}) {
+    auto it = iter_specs_.find(scope);
+    if (it != iter_specs_.end() && it->second.count(&hlo) > 0) {
       return scope;
     }
   }
@@ -367,8 +399,10 @@ std::string ScopeToString(TritonFusionAnalysis::Scope s) {
       return "LHS";
     case TritonFusionAnalysis::Scope::RHS:
       return "RHS";
-    case TritonFusionAnalysis::Scope::META:
-      return "META";
+    case TritonFusionAnalysis::Scope::LHS_SCALE:
+      return "LHS_SCALE";
+    case TritonFusionAnalysis::Scope::RHS_SCALE:
+      return "RHS_SCALE";
     case TritonFusionAnalysis::Scope::OUTPUT:
       return "OUTPUT";
   }

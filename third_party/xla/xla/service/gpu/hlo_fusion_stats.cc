@@ -45,9 +45,14 @@ class OpcodeCollector : public ConstDfsHloVisitorWithDefault {
         break;
       // Unary
       case HloOpcode::kAbs:
+      case HloOpcode::kAcos:
+      case HloOpcode::kAcosh:
+      case HloOpcode::kAsin:
+      case HloOpcode::kAtanh:
       case HloOpcode::kCbrt:
       case HloOpcode::kCeil:
       case HloOpcode::kCos:
+      case HloOpcode::kCosh:
       case HloOpcode::kErf:
       case HloOpcode::kExp:
       case HloOpcode::kExpm1:
@@ -61,6 +66,7 @@ class OpcodeCollector : public ConstDfsHloVisitorWithDefault {
       case HloOpcode::kRsqrt:
       case HloOpcode::kSign:
       case HloOpcode::kSin:
+      case HloOpcode::kSinh:
       case HloOpcode::kSqrt:
       case HloOpcode::kTan:
       case HloOpcode::kTanh:
@@ -99,11 +105,6 @@ std::string HloOpcodeHistogram::ToString() {
                     "}: ", entry.second, "\n");
   }
   return result;
-}
-
-absl::Status HloFusionStatsVisitor::RunOnModule(HloModule* module) {
-  TF_RETURN_IF_ERROR(module->entry_computation()->Accept(this));
-  return absl::OkStatus();
 }
 
 std::string HloFusionStatsVisitor::ToString() {

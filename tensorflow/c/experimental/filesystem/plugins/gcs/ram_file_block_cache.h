@@ -16,15 +16,20 @@ limitations under the License.
 #ifndef TENSORFLOW_C_EXPERIMENTAL_FILESYSTEM_PLUGINS_GCS_RAM_FILE_BLOCK_CACHE_H_
 #define TENSORFLOW_C_EXPERIMENTAL_FILESYSTEM_PLUGINS_GCS_RAM_FILE_BLOCK_CACHE_H_
 
+#include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <iostream>
 #include <list>
 #include <map>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "absl/base/thread_annotations.h"
+#include "absl/log/log.h"
+#include "absl/strings/str_format.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/synchronization/notification.h"
 #include "tensorflow/c/env.h"
@@ -66,8 +71,8 @@ class RamFileBlockCache {
       pruning_thread_.reset(
           TF_StartThread(&thread_options, "TF_prune_FBC", PruneThread, this));
     }
-    TF_VLog(1, "GCS file block cache is %s.\n",
-            (IsCacheEnabled() ? "enabled" : "disabled"));
+    VLOG(1) << absl::StrFormat("GCS file block cache is %s.\n",
+                               (IsCacheEnabled() ? "enabled" : "disabled"));
   }
 
   ~RamFileBlockCache() {

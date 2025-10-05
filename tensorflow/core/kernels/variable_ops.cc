@@ -54,8 +54,8 @@ class LegacyVar : public ResourceBase {
   Tensor* tensor() { return &tensor_; }
 
   string DebugString() const override {
-    return strings::StrCat(DataTypeString(tensor_.dtype()), "/",
-                           tensor_.shape().DebugString());
+    return absl::StrCat(DataTypeString(tensor_.dtype()), "/",
+                        tensor_.shape().DebugString());
   }
 
  private:
@@ -104,7 +104,7 @@ class TemporaryVariableOp : public OpKernel {
   }
 
   void Compute(OpKernelContext* context) override {
-    Status s;
+    absl::Status s;
     ResourceMgr* rm = context->resource_manager();
     OP_REQUIRES(context, rm, errors::Internal("No per-step resource manager."));
     auto unique_name = TemporaryVariableName(var_name_, context->frame_iter());

@@ -19,6 +19,7 @@ limitations under the License.
 #include <string>
 #include <utility>
 
+#include "absl/synchronization/notification.h"
 #include "tensorflow/core/common_runtime/collective_rma_local.h"
 #include "tensorflow/core/common_runtime/collective_util.h"
 #include "tensorflow/core/common_runtime/device_mgr.h"
@@ -75,7 +76,7 @@ int HierarchicalTreeBroadcaster::GetDeviceTask(
   return -1;
 }
 
-Status HierarchicalTreeBroadcaster::InitializeCollectiveParams(
+absl::Status HierarchicalTreeBroadcaster::InitializeCollectiveParams(
     CollectiveParams* col_params) {
   CHECK_EQ(col_params->instance.type, BROADCAST_COLLECTIVE);
   CHECK_EQ(col_params->instance.impl_details.collective_name,
@@ -185,7 +186,7 @@ Status HierarchicalTreeBroadcaster::InitializeCollectiveParams(
   return absl::OkStatus();
 }
 
-Status HierarchicalTreeBroadcaster::InitializeCollectiveContext(
+absl::Status HierarchicalTreeBroadcaster::InitializeCollectiveContext(
     std::shared_ptr<CollectiveContext> col_ctx) {
   CHECK(col_ctx->dev_mgr);
   col_ctx_ = col_ctx;
@@ -320,9 +321,9 @@ void HierarchicalTreeBroadcaster::RunTree() {
           [&] { return strings::StrCat("ReceiveValue:", si); },
           tsl::profiler::TraceMeLevel::kInfo);
       int recv_from_rank = TreeRecvFrom(*col_params_, si);
-      Notification note;
+      absl::Notification note;
       DispatchRecv(si, recv_from_rank, my_rank, col_ctx_->output,
-                   [this, &mu, &note](const Status& s) {
+                   [this, &mu, &note](const absl::Status& s) {
                      mutex_lock l(mu);
                      status_.Update(s);
                      note.Notify();
@@ -344,16 +345,17 @@ void HierarchicalTreeBroadcaster::RunTree() {
             mutex_lock l(mu);
             ++pending_count;
           }
-          DispatchSend(si, target_rank, my_rank,
-                       (is_source_ ? col_ctx_->input : col_ctx_->output),
-                       [this, &mu, &pending_count, &all_done](const Status& s) {
-                         mutex_lock l(mu);
-                         status_.Update(s);
-                         --pending_count;
-                         if (pending_count == 0) {
-                           all_done.notify_all();
-                         }
-                       });
+          DispatchSend(
+              si, target_rank, my_rank,
+              (is_source_ ? col_ctx_->input : col_ctx_->output),
+              [this, &mu, &pending_count, &all_done](const absl::Status& s) {
+                mutex_lock l(mu);
+                status_.Update(s);
+                --pending_count;
+                if (pending_count == 0) {
+                  all_done.notify_all();
+                }
+              });
         }
       }
 
@@ -380,7 +382,7 @@ void HierarchicalTreeBroadcaster::RunTree() {
               col_ctx_->op_ctx->input_alloc_attr(0),
               col_ctx_->op_ctx->output_alloc_attr(0), col_ctx_->input,
               col_ctx_->output, 0, /*stream_index*/
-              [this, &mu, &pending_count, &all_done](const Status& s) {
+              [this, &mu, &pending_count, &all_done](const absl::Status& s) {
                 mutex_lock l(mu);
                 status_.Update(s);
                 --pending_count;
@@ -409,8 +411,7 @@ void HierarchicalTreeBroadcaster::DispatchSend(int subdiv, int dst_rank,
                                                const Tensor* src_tensor,
                                                const StatusCallback& done) {
   tsl::profiler::ScopedMemoryDebugAnnotation op_annotation(
-      col_params_->name.data(), col_ctx_->step_id, "dynamic",
-      src_tensor->dtype(),
+      col_params_->name, col_ctx_->step_id, "dynamic", src_tensor->dtype(),
       [src_tensor]() { return src_tensor->shape().DebugString(); });
   string send_buf_key =
       BroadcastBufKey(col_ctx_->exec_key, subdiv, src_rank, dst_rank);

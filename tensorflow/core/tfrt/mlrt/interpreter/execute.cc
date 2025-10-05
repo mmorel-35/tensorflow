@@ -14,6 +14,7 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/tfrt/mlrt/interpreter/execute.h"
 
+#include <cstdint>
 #include <string>
 #include <utility>
 
@@ -47,21 +48,10 @@ CurrentExecutionInfo& GetCurrentExecutionInfo() {
 
 // Resume the execution in `ready_context`.
 void Resume(ExecutionContext& ready_context) {
-  auto& current_execution_info = GetCurrentExecutionInfo();
-  auto* current_context = current_execution_info.current_context;
-  if ((current_context != nullptr) &&
-      (current_execution_info.ready_context == nullptr) &&
-      (current_context->state() == ExecutionContext::State::kReturn) &&
-      (current_context->function_stack_size() == 1)) {
-    // If the current execution is exiting, we can schedule one of the ready
-    // contexts immediately.
-    current_execution_info.ready_context = &ready_context;
-  } else {
-    // Otherwise, we need to resume ready contexts through the thread pool.
-    auto* work_queue = ready_context.work_queue();
-    DCHECK(work_queue);
-    work_queue->AddTask([&ready_context]() { Execute(ready_context); });
-  }
+  // We need to resume ready contexts through the thread pool.
+  auto* work_queue = ready_context.work_queue();
+  DCHECK(work_queue);
+  work_queue->AddTask([&ready_context]() { Execute(ready_context); });
 }
 
 }  // namespace
@@ -177,8 +167,12 @@ void UnwindOnError(ExecutionContext& context, int64_t pc) {
   if (!context.function_stack_.empty()) {
     function_name = context.function_stack_.back().function_object().name();
   }
+  context.LogError(context.status());
   context.LogError(absl::InternalError(absl::StrCat(
-      "Start UnwindOnError from function", function_name, " at pc: ", pc)));
+      "UnwindOnError: start from function ", function_name,
+      " with stack size: ", context.function_stack_.size(), " at pc: ", pc,
+      " for context ", absl::Hex(reinterpret_cast<std::uintptr_t>(&context)),
+      " at state ", context.state_)));
 
   while (!context.function_stack_.empty()) {
     DCHECK(context.state_ == ExecutionContext::State::kError);
@@ -199,6 +193,11 @@ void UnwindOnError(ExecutionContext& context, int64_t pc) {
         reg.HandleError(context_value);
         if (context.state_ != ExecutionContext::State::kError) {
           DCHECK(context.state_ == ExecutionContext::State::kSuspended);
+
+          context.LogError(absl::InternalError(absl::StrCat(
+              "UnwindOnError: entering state", context.state_, " for context ",
+              absl::Hex(reinterpret_cast<std::uintptr_t>(&context)))));
+
           // Rewind current pc so that the execution context come back to where
           // is is suspended.
           --pc;
@@ -206,6 +205,12 @@ void UnwindOnError(ExecutionContext& context, int64_t pc) {
         }
       }
     }
+
+    context.LogError(absl::InternalError(
+        absl::StrCat("UnwindOnError: unwinding function from ", pc, " to ",
+                     current_function->pc_, " for context ",
+                     absl::Hex(reinterpret_cast<std::uintptr_t>(&context)),
+                     " at state ", context.state_)));
 
     for (; context.state_ == ExecutionContext::State::kError &&
            pc <= current_function->pc_;
@@ -218,6 +223,10 @@ void UnwindOnError(ExecutionContext& context, int64_t pc) {
         reg.HandleError(context_value);
         if (context.state_ != ExecutionContext::State::kError) {
           DCHECK(context.state_ == ExecutionContext::State::kSuspended);
+          context.LogError(absl::InternalError(absl::StrCat(
+              "UnwindOnError: entering state", context.state_, " for context ",
+              absl::Hex(reinterpret_cast<std::uintptr_t>(&context)))));
+
           // Rewind current pc so that the execution context come back to where
           // is is suspended.
           --pc;
@@ -230,6 +239,9 @@ void UnwindOnError(ExecutionContext& context, int64_t pc) {
       DCHECK(context.suspend_handler_)
           << "suspend_handler_ must be populated when the state is set to "
              "kSuspended.";
+      context.LogError(absl::InternalError(absl::StrCat(
+          "UnwindOnError: suspended state ", context.state_, " for context ",
+          absl::Hex(reinterpret_cast<std::uintptr_t>(&context)))));
       std::move(context.suspend_handler_)([&context, pc]() {
         auto* work_queue = context.work_queue();
         DCHECK(work_queue);
@@ -247,8 +259,10 @@ void UnwindOnError(ExecutionContext& context, int64_t pc) {
     context.function_stack_.pop_back();
   }
 
-  context.LogError(absl::InternalError(
-      absl::StrCat("Finish UnwindOnError for function ", function_name)));
+  context.LogError(absl::InternalError(absl::StrCat(
+      "UnwindOnError: done for function ", function_name,
+      " for context: ", absl::Hex(reinterpret_cast<std::uintptr_t>(&context)),
+      " at state ", context.state_)));
 
   // Context may no longer be valid after exit_handler_ is called.
   if (context.exit_handler_) {

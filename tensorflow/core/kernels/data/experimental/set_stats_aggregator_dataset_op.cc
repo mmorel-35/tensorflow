@@ -51,22 +51,23 @@ class StatsAggregatorWithTagAndPrefix : public StatsAggregator {
   void IncrementCounter(const string& name, const string& label,
                         int64_t val) override {
     if (!prefix_.empty()) {
-      wrapped_->IncrementCounter(
-          strings::StrCat(prefix_, "/", TaggedName(name)), label, val);
+      wrapped_->IncrementCounter(absl::StrCat(prefix_, "/", TaggedName(name)),
+                                 label, val);
     } else {
-      wrapped_->IncrementCounter(
-          strings::StrCat("/tensorflow/", TaggedName(name)), label, val);
+      wrapped_->IncrementCounter(absl::StrCat("/tensorflow/", TaggedName(name)),
+                                 label, val);
     }
   }
 
-  Status SetSummaryWriter(SummaryWriterInterface* summary_writer) override {
+  absl::Status SetSummaryWriter(
+      SummaryWriterInterface* summary_writer) override {
     return wrapped_->SetSummaryWriter(summary_writer);
   }
 
  private:
   string TaggedName(const string& name) const {
     if (!tag_.empty()) {
-      string tagged_name = strings::StrCat(tag_, stats_utils::kDelimiter, name);
+      string tagged_name = absl::StrCat(tag_, stats_utils::kDelimiter, name);
       return tagged_name;
     }
     return name;
@@ -124,8 +125,8 @@ class SetStatsAggregatorDatasetOp : public UnaryDatasetOpKernel {
 
     std::unique_ptr<IteratorBase> MakeIteratorInternal(
         const string& prefix) const override {
-      return std::make_unique<Iterator>(Iterator::Params{
-          this, strings::StrCat(prefix, "::SetStatsAggregator")});
+      return std::make_unique<Iterator>(
+          Iterator::Params{this, absl::StrCat(prefix, "::SetStatsAggregator")});
     }
 
     const DataTypeVector& output_dtypes() const override {
@@ -143,20 +144,20 @@ class SetStatsAggregatorDatasetOp : public UnaryDatasetOpKernel {
       return input_->Cardinality(options);
     }
 
-    Status InputDatasets(
+    absl::Status InputDatasets(
         std::vector<const DatasetBase*>* inputs) const override {
       inputs->push_back(input_);
       return absl::OkStatus();
     }
 
-    Status CheckExternalState() const override {
+    absl::Status CheckExternalState() const override {
       return input_->CheckExternalState();
     }
 
    protected:
-    Status AsGraphDefInternal(SerializationContext* ctx,
-                              DatasetGraphDefBuilder* b,
-                              Node** output) const override {
+    absl::Status AsGraphDefInternal(SerializationContext* ctx,
+                                    DatasetGraphDefBuilder* b,
+                                    Node** output) const override {
       Node* input_graph_node = nullptr;
       TF_RETURN_IF_ERROR(b->AddInputDataset(ctx, input_, &input_graph_node));
       Node* resource_handle_node = nullptr;
@@ -177,15 +178,15 @@ class SetStatsAggregatorDatasetOp : public UnaryDatasetOpKernel {
       explicit Iterator(const Params& params)
           : DatasetIterator<Dataset>(params) {}
 
-      Status Initialize(IteratorContext* ctx) override {
+      absl::Status Initialize(IteratorContext* ctx) override {
         IteratorContext iter_ctx = ContextWithAggregator(ctx);
         return dataset()->input_->MakeIterator(&iter_ctx, this, prefix(),
                                                &input_impl_);
       }
 
-      Status GetNextInternal(IteratorContext* ctx,
-                             std::vector<Tensor>* out_tensors,
-                             bool* end_of_sequence) override {
+      absl::Status GetNextInternal(IteratorContext* ctx,
+                                   std::vector<Tensor>* out_tensors,
+                                   bool* end_of_sequence) override {
         mutex_lock l(mu_);
         IteratorContext iter_ctx = ContextWithAggregator(ctx);
         return input_impl_->GetNext(&iter_ctx, out_tensors, end_of_sequence);
@@ -210,14 +211,14 @@ class SetStatsAggregatorDatasetOp : public UnaryDatasetOpKernel {
                                          /*ratio=*/1);
       }
 
-      Status SaveInternal(SerializationContext* ctx,
-                          IteratorStateWriter* writer) override {
+      absl::Status SaveInternal(SerializationContext* ctx,
+                                IteratorStateWriter* writer) override {
         mutex_lock l(mu_);
         return SaveInput(ctx, writer, input_impl_);
       }
 
-      Status RestoreInternal(IteratorContext* ctx,
-                             IteratorStateReader* reader) override {
+      absl::Status RestoreInternal(IteratorContext* ctx,
+                                   IteratorStateReader* reader) override {
         mutex_lock l(mu_);
         return RestoreInput(ctx, reader, input_impl_);
       }

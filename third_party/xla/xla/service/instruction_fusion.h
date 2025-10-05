@@ -16,41 +16,89 @@ limitations under the License.
 #ifndef XLA_SERVICE_INSTRUCTION_FUSION_H_
 #define XLA_SERVICE_INSTRUCTION_FUSION_H_
 
+#include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
+#include "absl/strings/string_view.h"
+#include "absl/types/span.h"
+#include "xla/service/hlo_module_config.h"
+#include "tsl/platform/macros.h"
 // The source_location.h is not available in open source.
 #if defined(PLATFORM_GOOGLE)
 #include "absl/types/source_location.h"
 #endif  // PLATFORM_GOOGLE
+#include "xla/hlo/analysis/hlo_reachability.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_module.h"
-#include "xla/hlo/ir/hlo_reachability.h"
+#include "xla/hlo/pass/hlo_pass_interface.h"
 #include "xla/service/fusion_queue.h"
-#include "xla/service/hlo_pass_interface.h"
 
 namespace xla {
+
+// In the context of ShouldFuseInPlaceOp (refer to the documentation there), the
+// number of non-elementwise ops in the producer fusion is limited to 1.
+// However, there are cases where we want to relax this restriction. This struct
+// provides the necessary options to control this behavior.
+struct InPlaceFusionOptions {
+  bool relax_multiple_non_elementwise_ops = false;
+};
 
 // Propagating explanation of fusion decisions: if something could not be fused,
 // explain the reason.
 class FusionDecision {
  public:
-  // Can not be fused: explain why. Implicit conversion due to optional-like
-  // semantics: waiver granted in cl/419938611.
-  FusionDecision(absl::string_view explanation)  // NOLINT
-      : explanation_(explanation) {}
+  static FusionDecision Allow() { return FusionDecision(); }
+  FusionDecision(const FusionDecision& decision) = default;
 
-  // Same constructor as string_view, to allow implicit string conversion (can't
-  // implicitly convert both char* to string_view and string_view to
-  // FusionDecision).
-  FusionDecision(const char* explanation)  // NOLINT
-      : explanation_(explanation) {}
+#if defined(PLATFORM_GOOGLE)
+  static std::string LocToString(absl::SourceLocation source_location) {
+    return absl::StrCat(" at: ", source_location.file_name(), ":",
+                        source_location.line());
+  }
+  static FusionDecision Forbid(
+      absl::string_view explanation,
+      absl::SourceLocation source_location = absl::SourceLocation::current()) {
+    return FusionDecision(
+        absl::StrCat(explanation, LocToString(source_location)));
+  }
 
+  // If condition is `true` means that we CAN fuse. In that case, explanation is
+  // discarded.
+  FusionDecision(
+      bool condition, absl::string_view explanation,
+      absl::SourceLocation source_location = absl::SourceLocation::current()) {
+    if (!condition) {
+      explanation_ = absl::StrCat(explanation, LocToString(source_location));
+    }
+  }
+
+  explicit FusionDecision(
+      absl::Status status,
+      absl::SourceLocation source_location = absl::SourceLocation::current()) {
+    if (!status.ok()) {
+      explanation_ =
+          absl::StrCat(status.message(), LocToString(source_location));
+    }
+  }
+
+  // We can fuse iff. the decision is `true`. The source location indicates
+  // where an instance was created, making debugging easier without a need to
+  // provide explicit explanation.
+  FusionDecision(  // NOLINT
+      bool decision,
+      absl::SourceLocation source_location = absl::SourceLocation::current());
+#else
   // If condition is `true` means that we CAN fuse. In that case, explanation is
   // discarded.
   FusionDecision(bool condition, absl::string_view explanation) {
@@ -58,18 +106,16 @@ class FusionDecision {
       explanation_ = std::string(explanation);
     }
   }
+  static FusionDecision Forbid(absl::string_view explanation) {
+    return FusionDecision(explanation);
+  }
+  explicit FusionDecision(absl::Status status) {
+    if (!status.ok()) {
+      explanation_ = status.message();
+    }
+  }
 
-#if defined(PLATFORM_GOOGLE)
-  // We can fuse iff. the decision is `true`. The source location indicates
-  // where an instance was created, making debugging easier without a need to
-  // provide explicit explanation.
-  FusionDecision(  // NOLINT
-      bool decision,
-      absl::SourceLocation source_location = absl::SourceLocation::current());
 #endif  // PLATFORM_GOOGLE
-
-  // Can be fused.
-  FusionDecision() = default;
 
   // Returns whether it can be fused.
   explicit operator bool() const { return CanFuse(); }
@@ -82,9 +128,10 @@ class FusionDecision {
   // them is false to show why fusion wasn't performed.
   FusionDecision Or(const FusionDecision& decision) const {
     if (CanFuse() || decision.CanFuse()) {
-      return {};
+      return Allow();
     }
-    return {absl::StrCat(explanation_.value_or(""), " ; ", decision.Explain())};
+    return Forbid(
+        absl::StrCat(explanation_.value_or(""), " ; ", decision.Explain()));
   }
 
   // Connects two fusion decision with a conjunction. Unlike disjunction,
@@ -103,20 +150,30 @@ class FusionDecision {
 
   // Appends to explanation, or turns the decision negative.
   FusionDecision operator<<(absl::string_view explanation) const {
-    return {absl::StrCat(explanation_.value_or(""), explanation)};
+    return Forbid(absl::StrCat(explanation_.value_or(""), explanation));
   }
 
   // Appends to explanation, or turns the decision negative.
   FusionDecision operator<<(int64_t explanation) const {
-    return {absl::StrCat(explanation_.value_or(""), explanation)};
+    return Forbid(absl::StrCat(explanation_.value_or(""), explanation));
   }
 
-  // Explains why the fusion could not be performed.
-  std::string Explain() const { return *explanation_; }
+  // Explains why the fusion could not be performed, or that it can be.
+  std::string Explain() const {
+    return explanation_.value_or("Actually, we can fuse it.");
+  }
 
  private:
   // Empty IFF fusion is possible (explanation provided for negative cases).
   std::optional<std::string> explanation_;
+
+  FusionDecision() = default;
+
+  explicit FusionDecision(absl::string_view explanation)
+      : explanation_(explanation) {}
+
+  explicit FusionDecision(const char* explanation)
+      : explanation_(explanation) {}
 };
 
 #define RETURN_IF_NOT_FUSIBLE(...)                   \
@@ -162,8 +219,9 @@ class InstructionFusion : public HloModulePass {
   // illegal to fuse a slice into a dynamic-update-slice if the slice output is
   // used as the update and if slice and dynamic-update-slice indices cannot be
   // proven to be the same.
-  static FusionDecision ShouldFuseInPlaceOp(const HloInstruction* producer,
-                                            const HloInstruction* consumer);
+  static FusionDecision ShouldFuseInPlaceOp(
+      const HloInstruction* producer, const HloInstruction* consumer,
+      std::optional<const InPlaceFusionOptions> in_place_fusion_options);
 
  protected:
   // Returns a list of computations that are not fusion computations. These
@@ -192,12 +250,27 @@ class InstructionFusion : public HloModulePass {
   virtual FusionDecision ShouldFuse(HloInstruction* consumer,
                                     int64_t operand_index);
 
+  // Returns whether a 'producer' at given operand index can be fused into the
+  // consumer. It uses the provided function to check the legality of a possible
+  // fusion when either the producer or the consumer contains an operation which
+  // updates an operand in place. If legality_check_only is true, only strict
+  // legality check is performed and factors such as operand duplication and
+  // profitability are not taken into account. Legality checks ensure that
+  // fusions formed are semantically correct and they are lowerable.
+  virtual FusionDecision ShouldFuse(
+      HloInstruction* consumer, int64_t operand_index,
+      std::function<FusionDecision(const HloInstruction*, const HloInstruction*,
+                                   std::optional<const InPlaceFusionOptions>)>
+          inplace_op_fusion_decider,
+      bool legality_check_only = false);
+
   // Returns whether multi-output fusion can be applied to fuse `producer` into
   // `consumer`. In contrast to "regular" fusion, the `producer` is not
   // duplicated by multi-output fusion.
   virtual FusionDecision ShouldFuseIntoMultiOutput(HloInstruction* consumer,
                                                    int64_t operand_index) {
-    return "multi-output fusion not supported by this pass";
+    return FusionDecision::Forbid(
+        "multi-output fusion not supported by this pass");
   }
 
   // Chooses a fusion kind for `producer` and `consumer`.
@@ -247,11 +320,6 @@ class InstructionFusion : public HloModulePass {
     is_expensive_ = is_expensive;
   }
 
-  // Whether multi-output fusion would introduce a cycle into the HLO graph.
-  bool MultiOutputFusionCreatesCycle(HloInstruction* producer,
-                                     HloInstruction* consumer,
-                                     const HloReachabilityMap& reachability);
-
   FusionConfigCollection config_collection_mode() {
     return config_collection_mode_;
   }
@@ -269,6 +337,8 @@ class InstructionFusion : public HloModulePass {
   virtual HloInstructionSet ComputeGloballyUnfusible(
       absl::Span<HloInstruction* const> post_order,
       const HloReachabilityMap& reachability);
+
+  bool may_duplicate() const { return may_duplicate_; }
 
  private:
   // Returns the reused operands of `instruction` from reused_fusion_operands_,

@@ -15,12 +15,13 @@ limitations under the License.
 #include "tensorflow/core/tfrt/mlrt/attribute/attribute.h"
 
 #include <array>
+#include <cstdint>
 #include <cstring>
-#include <utility>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "absl/status/status.h"
+#include "absl/status/status_matchers.h"
 #include "absl/strings/string_view.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "mlir/IR/Attributes.h"  // from @llvm-project
@@ -32,10 +33,10 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_dialect.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_types.h"
 #include "tensorflow/compiler/mlir/tfrt/translate/mlrt/mlir_to_bytecode.h"
+#include "xla/tsl/platform/status_matchers.h"
+#include "xla/tsl/platform/statusor.h"
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/tfrt/mlrt/bytecode/bytecode.h"
-#include "tsl/platform/status_matchers.h"
-#include "tsl/platform/statusor.h"
 
 namespace tensorflow {
 namespace tf_mlrt {
@@ -194,13 +195,13 @@ TEST(AttributeTest, UnsupportedAttr) {
 
   EXPECT_THAT(
       EncodeTensorflowAttribute(emitter_context, dense_string_attr),
-      ::tsl::testing::StatusIs(absl::StatusCode::kInvalidArgument,
-                               "String tensor attribute is not yet supported"));
+      absl_testing::StatusIs(absl::StatusCode::kInvalidArgument,
+                             "String tensor attribute is not yet supported"));
 
   EXPECT_THAT(
       EncodeTensorflowAttribute(emitter_context, builder.getUnitAttr()),
-      ::tsl::testing::StatusIs(absl::StatusCode::kInvalidArgument,
-                               "Try to encode unsupported attribute: unit"));
+      absl_testing::StatusIs(absl::StatusCode::kInvalidArgument,
+                             "Try to encode unsupported attribute: unit"));
 }
 
 }  // namespace

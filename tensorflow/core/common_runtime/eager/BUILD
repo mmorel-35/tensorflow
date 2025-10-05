@@ -40,7 +40,7 @@ tf_cuda_library(
     srcs = [
         "core.cc",
     ],
-    visibility = ["//tensorflow:internal"],
+    visibility = ["//visibility:public"],
     deps = [
         ":context",
         ":eager_operation",
@@ -77,7 +77,7 @@ tf_cuda_library(
             "//tensorflow/core:protos_all_cc",
             "@com_google_absl//absl/container:flat_hash_map",
         ],
-    }),
+    }) + ["@com_google_absl//absl/synchronization"],
 )
 
 tf_cc_test(
@@ -90,8 +90,8 @@ tf_cc_test(
         "//tensorflow/core:test",
         "//tensorflow/core:test_main",
         "//tensorflow/core/platform:status_matchers",
-        "@local_tsl//tsl/platform:status",
-        "@local_tsl//tsl/protobuf:error_codes_proto_impl_cc",
+        "@local_xla//xla/tsl/platform:status",
+        "@local_xla//xla/tsl/protobuf:error_codes_proto_impl_cc",
     ],
 )
 
@@ -103,7 +103,7 @@ tf_cuda_library(
     hdrs = [
         "context.h",
     ],
-    visibility = ["//tensorflow:internal"],
+    visibility = ["//visibility:public"],
     deps = [
         ":custom_device",
         ":eager_executor",
@@ -111,6 +111,7 @@ tf_cuda_library(
         ":rendezvous_cache",
         ":small_constants_optimizer",
         ":summary_optimizer",
+        "//tensorflow/c:tensor_interface",
         "//tensorflow/c:tf_tensor_internal",
         "//tensorflow/c/eager:immediate_execution_context",
         "//tensorflow/c/eager:immediate_execution_distributed_manager",
@@ -124,6 +125,7 @@ tf_cuda_library(
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
         "@local_xla//xla/tsl/util:env_var",
     ] + select({
         "//tensorflow:android": [
@@ -249,13 +251,11 @@ tf_cuda_library(
             "@com_google_absl//absl/synchronization",
             "@com_google_absl//absl/time",
             "@local_tsl//tsl/platform:mutex",
-            "@local_tsl//tsl/platform:statusor",
-            "@local_xla//xla/pjrt:pjrt_stream_executor_client",
             "@local_xla//xla/pjrt/gpu:se_gpu_pjrt_client",
             "@local_xla//xla/tsl/distributed_runtime/coordination:coordination_service",
             "@local_xla//xla/tsl/distributed_runtime/coordination:coordination_service_agent",
-            "@local_xla//xla/tsl/distributed_runtime/coordination:coordination_service_impl",
             "@local_xla//xla/tsl/distributed_runtime/preemption:preemption_notifier",
+            "@local_xla//xla/tsl/platform:statusor",
         ],
     }) + if_google(
         # TODO(b/282068262): PJRT pulls in TFRT components that are incompatible with ARM platform.
@@ -267,7 +267,6 @@ tf_cuda_library(
             clean_dep("//tensorflow:linux_x86_64_with_weightwatcher"): [],
             (
                 clean_dep("//tensorflow:linux_x86_64"),
-                clean_dep("//tensorflow:haswell"),
             ): [
                 "//tensorflow/core",
                 "//tensorflow/core/framework:resource_base",
@@ -291,16 +290,27 @@ tf_cc_test(
         ":context",
         ":context_distributed_manager",
         ":core",
+        "//tensorflow/c/eager:abstract_tensor_handle",
+        "//tensorflow/c/eager:immediate_execution_context",
+        "//tensorflow/c/eager:immediate_execution_operation",
+        "//tensorflow/c/eager:immediate_execution_tensor_handle",
+        "//tensorflow/core:core_cpu",
+        "//tensorflow/core:core_cpu_base",
         "//tensorflow/core:framework",
-        "//tensorflow/core:lib",
+        "//tensorflow/core:portable_gif_internal",
         "//tensorflow/core:test",
         "//tensorflow/core:test_main",
+        "//tensorflow/core/common_runtime:composite_device",
         "//tensorflow/core/framework:tensor_testutil",
         "//tensorflow/core/kernels:cast_op",
         "//tensorflow/core/kernels:logging_ops",
         "//tensorflow/core/kernels:math",
+        "//tensorflow/core/platform:refcount",
+        "//tensorflow/core/platform:status",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest_main",
+        "@local_xla//xla/tsl/platform:status",
     ],
 )
 
@@ -423,6 +433,7 @@ tf_cuda_library(
         ":eager_executor",
         ":kernel_and_device",
         ":tensor_handle_data",
+        "@com_google_absl//absl/synchronization",
     ] + select({
         "//tensorflow:android": [
             "//tensorflow/core:portable_tensorflow_lib_lite",
@@ -569,6 +580,7 @@ tf_cuda_library(
         "@com_google_absl//absl/memory",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/types:optional",
         "@farmhash_archive//:farmhash",
     ] + select({
@@ -641,6 +653,7 @@ cc_library(
         "@com_google_absl//absl/container:inlined_vector",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:optional",
         "@com_google_absl//absl/types:span",
@@ -892,10 +905,10 @@ cc_library(
     hdrs = ["rendezvous_cache.h"],
     deps = [
         "@com_google_absl//absl/container:flat_hash_map",
-        "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/platform:mutex",
         "@local_tsl//tsl/platform:refcount",
         "@local_tsl//tsl/platform:thread_annotations",
+        "@local_xla//xla/tsl/platform:errors",
     ],
 )
 

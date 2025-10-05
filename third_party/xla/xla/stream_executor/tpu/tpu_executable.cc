@@ -24,10 +24,11 @@ limitations under the License.
 
 #include "absl/cleanup/cleanup.h"
 #include "absl/container/inlined_vector.h"
+#include "absl/log/check.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/service/executable.h"
-#include "xla/service/hlo_execution_profile.h"
 #include "xla/service/service_executable_run_options.h"
 #include "xla/service/shaped_buffer.h"
 #include "xla/stream_executor/stream.h"
@@ -59,10 +60,7 @@ static SE_ExecutableRunOptions ToC(
 
   if (options.run_options().device_assignment() != nullptr) {
     xla::DeviceAssignmentProto dev_assign_proto;
-    options.run_options()
-        .device_assignment()
-        ->Serialize(&dev_assign_proto)
-        .IgnoreError();
+    options.run_options().device_assignment()->Serialize(&dev_assign_proto);
     se_options.device_assignment =
         stream_executor::tpu::SerializeProto(dev_assign_proto);
   } else {
@@ -85,7 +83,7 @@ static SE_ExecutableRunOptions ToC(
 
 }  // namespace ApiConverter
 
-namespace xla {
+namespace xla::legacy {
 
 using ::stream_executor::tpu::ExecutorApiFn;
 
@@ -95,8 +93,7 @@ TpuExecutable::~TpuExecutable() {
 
 absl::StatusOr<ExecutionOutput> TpuExecutable::ExecuteAsyncOnStream(
     const ServiceExecutableRunOptions* run_options,
-    std::vector<ExecutionInput> arguments,
-    HloExecutionProfile* hlo_execution_profile) {
+    std::vector<ExecutionInput> arguments) {
   SE_ExecutableRunOptions se_run_options = ApiConverter::ToC(*run_options);
   SE_ExecutionInput** se_args = new SE_ExecutionInput*[arguments.size()];
   for (int i = 0; i < arguments.size(); ++i) {
@@ -129,7 +126,7 @@ absl::StatusOr<ExecutionOutput> TpuExecutable::ExecuteAsyncOnStream(
   SE_ExecutionOutput se_execution_output;
   StatusHelper status;
   ExecutorApiFn()->TpuExecutable_ExecuteAsyncOnStreamFn(
-      se_executable_, &se_run_options, se_args, arguments.size(), nullptr,
+      se_executable_, &se_run_options, se_args, arguments.size(),
       &se_execution_output, status.c_status);
 
   if (se_run_options.device_assignment.bytes != nullptr) {
@@ -230,4 +227,4 @@ absl::StatusOr<std::unique_ptr<TpuExecutable>> TpuExecutable::Deserialize(
   return std::make_unique<TpuExecutable>(se_executable, std::move(hlo_module));
 }
 
-}  // namespace xla
+}  // namespace xla::legacy

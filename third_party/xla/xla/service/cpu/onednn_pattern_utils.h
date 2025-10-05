@@ -15,10 +15,8 @@ limitations under the License.
 
 #ifndef XLA_SERVICE_CPU_ONEDNN_PATTERN_UTILS_H_
 #define XLA_SERVICE_CPU_ONEDNN_PATTERN_UTILS_H_
-#if defined(INTEL_MKL) && defined(ENABLE_ONEDNN_V3)
 
 #include "xla/hlo/ir/hlo_instruction.h"
-#include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/service/cpu/onednn_util.h"
 #include "xla/service/pattern_matcher.h"
 
@@ -31,6 +29,11 @@ namespace m = match;
 template <typename Pattern>
 auto OptionalConvert(Pattern pattern) {
   return m::AnyOf<HloInstruction>(m::Convert(pattern), std::move(pattern));
+}
+
+template <typename Pattern>
+auto OptionalBroadcast(Pattern pattern) {
+  return m::AnyOf<HloInstruction>(m::Broadcast(pattern), std::move(pattern));
 }
 
 // Type conversion from and to any of BF16 and FP32.
@@ -56,5 +59,4 @@ inline auto SupportedConvert(HloInstruction** convert, Pattern pattern) {
 }  // namespace cpu
 }  // namespace xla
 
-#endif  // INTEL_MKL && ENABLE_ONEDNN_V3
 #endif  // XLA_SERVICE_CPU_ONEDNN_PATTERN_UTILS_H_

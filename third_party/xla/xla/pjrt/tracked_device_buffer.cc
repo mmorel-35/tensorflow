@@ -23,23 +23,29 @@ limitations under the License.
 #include <memory>
 #include <string>
 #include <utility>
-#include <vector>
 
+#include "absl/algorithm/container.h"
+#include "absl/container/flat_hash_set.h"
 #include "absl/functional/any_invocable.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
+#include "xla/pjrt/device_event.h"
 #include "xla/pjrt/event_pool.h"
-#include "xla/service/executable.h"
-#include "xla/service/maybe_owning_device_memory.h"
+#include "xla/pjrt/pjrt_client.h"
+#include "xla/pjrt/pjrt_common.h"
+#include "xla/pjrt/se_raw_buffer.h"
 #include "xla/service/shaped_buffer.h"
 #include "xla/shape.h"
 #include "xla/shape_tree.h"
-#include "xla/shape_util.h"
 #include "xla/stream_executor/device_memory.h"
 #include "xla/stream_executor/device_memory_allocator.h"
 #include "xla/stream_executor/event.h"
-#include "tsl/platform/logging.h"
+#include "xla/tsl/concurrency/async_value_ref.h"
+#include "xla/tsl/concurrency/ref_count.h"
+#include "xla/tsl/platform/logging.h"
 #include "tsl/profiler/lib/connected_traceme.h"
 #include "tsl/profiler/lib/context_types.h"
 
@@ -47,35 +53,34 @@ namespace xla {
 
 void BufferSequencingEvent::SetSequencingEvent(EventPool::Handle event,
                                                se::Stream* stream) {
-  {
-    absl::MutexLock lock(&mu_);
-    defined_status_.emplace(absl::OkStatus());
-    CHECK(!event_.event());
-    event_ = std::move(event);
-    CHECK(streams_defined_on_.empty());
-    streams_defined_on_.push_back(stream);
-    sequence_number_.store(event_.sequence_number(), std::memory_order_seq_cst);
-  }
-  this->ExecuteFutureTasks();
+  EventState state;
+  state.event = std::move(event);
+  state.definition_stream = stream;
+  event_.emplace(std::move(state));
 }
 
-bool BufferSequencingEvent::EventHasBeenRecorded() const {
-  return event_.event() != nullptr;
+void BufferSequencingEvent::SetDefinedStatus(absl::Status status) {
+  CHECK(!status.ok());
+  event_.SetError(status);
 }
 
 uint64_t BufferSequencingEvent::sequence_number() const {
-  uint64_t seq = sequence_number_.load(std::memory_order_seq_cst);
-  return seq;
+  return event_->event.sequence_number();
 }
 
 void BufferSequencingEvent::WaitForEventOnStream(se::Stream* stream) {
-  absl::MutexLock lock(&mu_);
-
   // We cannot wait for an event until ThenRecordEvent has been called; on GPU
   // newly created events are deemed to have already happened past.
-  mu_.Await(
-      absl::Condition(this, &BufferSequencingEvent::EventHasBeenRecorded));
+  tsl::BlockUntilReady(event_);
 
+  if (event_.IsError()) {
+    return;
+  }
+  if (event_->definition_stream == stream) {
+    return;
+  }
+
+  absl::MutexLock lock(&mu_);
   // The set of defined streams is expected to be very small indeed (usually
   // 1-2), so a simple linear scan should be fast enough.
   if (std::find(streams_defined_on_.begin(), streams_defined_on_.end(),
@@ -84,188 +89,192 @@ void BufferSequencingEvent::WaitForEventOnStream(se::Stream* stream) {
     return;
   }
 
-  stream->WaitFor(event_.event()).IgnoreError();
+  stream->WaitFor(event_->event.event()).IgnoreError();
   streams_defined_on_.push_back(stream);
 }
 
 absl::Status BufferSequencingEvent::WaitForEventOnExternalStream(
     std::intptr_t stream) {
-  absl::MutexLock lock(&mu_);
-
-  // We cannot wait for an event until ThenRecordEvent has been called; on GPU
-  // newly created events are deemed to have already happened past.
-  // TODO(skyewm): do we need this? WaitForEventOnExternalStream is only
-  // implemented for GPU.
-  mu_.Await(
-      absl::Condition(this, &BufferSequencingEvent::EventHasBeenRecorded));
-
-  return event_.event()->WaitForEventOnExternalStream(stream);
+  tsl::BlockUntilReady(event_);
+  if (const auto* error = event_.GetErrorIfPresent()) {
+    return *error;
+  }
+  return event_->event.event()->WaitForEventOnExternalStream(stream);
 }
 
-bool BufferSequencingEvent::DefinedOn(se::Stream* stream) {
-  absl::MutexLock lock(&mu_);
+bool BufferSequencingEvent::IsPredeterminedErrorOrDefinedOn(
+    se::Stream* stream) {
+  tsl::BlockUntilReady(event_);
+  CHECK(event_.IsAvailable());
 
-  // We cannot wait for an event until ThenRecordEvent has been called; on GPU
-  // newly created events are deemed to have already happened past.
-  mu_.Await(
-      absl::Condition(this, &BufferSequencingEvent::EventHasBeenRecorded));
+  // IsPredeterminedError
+  if (event_.IsError()) {
+    return true;
+  }
+
+  if (event_->definition_stream == stream) {
+    return true;
+  }
 
   // The set of defined streams is expected to be very small indeed (usually
   // 1-2), so a simple linear scan should be fast enough.
-  return std::find(streams_defined_on_.begin(), streams_defined_on_.end(),
-                   stream) != streams_defined_on_.end();
+  absl::MutexLock lock(&mu_);
+  return absl::c_find(streams_defined_on_, stream) != streams_defined_on_.end();
 }
 
 bool BufferSequencingEvent::IsComplete() {
-  absl::MutexLock lock(&mu_);
+  tsl::BlockUntilReady(event_);
+  if (event_.IsError()) {
+    return true;
+  }
 
-  // We cannot wait for an event until ThenRecordEvent has been called; on
-  // GPU newly created events are deemed to have already happened past.
-  mu_.Await(
-      absl::Condition(this, &BufferSequencingEvent::EventHasBeenRecorded));
-
-  return event_.event()->PollForStatus() == se::Event::Status::kComplete;
+  return event_->event.event()->PollForStatus() == se::Event::Status::kComplete;
 }
 
 void BufferSequencingEvent::ExecuteOrAddToFutureTasks(
     const std::string& task_name, std::function<void()> task) {
-  absl::MutexLock lock(&mu_);
   tsl::profiler::TraceMeProducer producer(
       "BufferSequencingEvent::ExecuteOrAddToFutureTasks",
       tsl::profiler::ContextType::kPjRt);
-  uint64_t context_id = producer.GetContextId();
-  auto wrapped_task = [task = std::move(task), context_id]() {
+
+  auto traced_task = [task = std::move(task),
+                      context_id = producer.GetContextId()]() {
     tsl::profiler::TraceMeConsumer consumer("BufferSequencingEvent::Execute",
                                             tsl::profiler::ContextType::kPjRt,
                                             context_id);
     task();
   };
-  if (defined_status_.IsConcrete()) {
-    thread_pool_->Schedule(std::move(wrapped_task));
-    return;
-  }
-  on_ready_tasks_callback_[task_name] = std::move(wrapped_task);
+
+  // Execute the `task` when definition event becomes available. If it's already
+  // available, the task will be executed immediately.
+  event_.AndThen([this, traced_task = std::move(traced_task)]() mutable {
+    thread_pool_->Schedule(std::move(traced_task));
+  });
 }
 
-void BufferSequencingEvent::ExecuteFutureTasks() {
-  absl::MutexLock lock(&mu_);
-  for (auto& [task_name, task_callback] : on_ready_tasks_callback_) {
-    thread_pool_->Schedule(std::move(task_callback));
-  }
-  on_ready_tasks_callback_.clear();
-}
-
-/* static */ std::shared_ptr<TrackedDeviceBuffer>
-TrackedDeviceBuffer::FromScopedShapedBuffer(
-    ScopedShapedBuffer* shaped_buffer,
-    absl::Span<const std::shared_ptr<BufferSequencingEvent>>
-        definition_events) {
+ShapedBuffer RawSEDeviceMemory::AsShapedBuffer(
+    PjRtDevice* device, const Shape& on_device_shape) const {
+  ShapedBuffer shaped_buffer(on_device_shape, device->local_device_id().value(),
+                             device->local_hardware_id().value());
   ShapeTree<se::DeviceMemoryBase>::iterator iterator =
-      shaped_buffer->buffers().begin();
-  std::vector<se::DeviceMemoryBase> buffers;
-  buffers.reserve(1);
+      shaped_buffer.buffers().begin();
+  CHECK(iterator != shaped_buffer.buffers().end());
+  iterator->second = mem();
+  ++iterator;
+  CHECK(iterator == shaped_buffer.buffers().end());
+  return shaped_buffer;
+}
 
-  ShapeUtil::ForEachSubshape(
-      shaped_buffer->on_device_shape(), [&](const Shape&, const ShapeIndex&) {
-        CHECK(iterator != shaped_buffer->buffers().end());
-        buffers.push_back(iterator->second);
-        iterator->second = se::DeviceMemoryBase();
-        ++iterator;
-      });
-  CHECK(iterator == shaped_buffer->buffers().end());
-  return std::make_shared<TrackedDeviceBuffer>(
-      shaped_buffer->memory_allocator(), shaped_buffer->device_ordinal(),
-      absl::Span<se::DeviceMemoryBase>(buffers), definition_events,
-      /*on_delete_callback=*/nullptr);
+class AllocatedRawSEDeviceMemory : public RawSEDeviceMemory {
+ public:
+  AllocatedRawSEDeviceMemory(se::DeviceMemoryBase value, int device_ordinal,
+                             se::DeviceMemoryAllocator* allocator)
+      : RawSEDeviceMemory(value),
+        allocator_(allocator),
+        device_ordinal_(device_ordinal) {}
+
+  ~AllocatedRawSEDeviceMemory() override {
+    if (allocator_) {
+      absl::Status status = allocator_->Deallocate(device_ordinal_, mem());
+      if (!status.ok()) {
+        LOG(ERROR) << "Buffer deallocation failed: " << status;
+      }
+    }
+  }
+
+  void UnsafeReleaseMemory() override { allocator_ = nullptr; }
+
+ private:
+  se::DeviceMemoryAllocator* allocator_;
+  int device_ordinal_;
+};
+
+tsl::RCReference<RawSEDeviceMemory> RawSEDeviceMemory::Create(
+    se::DeviceMemoryBase value, PjRtLocalDeviceId device_id,
+    se::DeviceMemoryAllocator* allocator) {
+  return tsl::MakeRef<AllocatedRawSEDeviceMemory>(value, device_id.value(),
+                                                  allocator);
+}
+
+class ForeignRawSEDeviceMemory : public RawSEDeviceMemory {
+ public:
+  ForeignRawSEDeviceMemory(se::DeviceMemoryBase value,
+                           absl::AnyInvocable<void() &&> on_delete_callback)
+      : RawSEDeviceMemory(value),
+        on_delete_callback_(std::move(on_delete_callback)) {}
+
+  ~ForeignRawSEDeviceMemory() override { std::move(on_delete_callback_)(); }
+
+  void UnsafeReleaseMemory() override {
+    LOG(FATAL) << "ForeignRawSEDeviceMemory cannot be donated.";
+  }
+
+ private:
+  absl::AnyInvocable<void() &&> on_delete_callback_;
+};
+
+tsl::RCReference<RawSEDeviceMemory> RawSEDeviceMemory::CreateForeign(
+    se::DeviceMemoryBase value,
+    absl::AnyInvocable<void() &&> on_delete_callback) {
+  return tsl::MakeRef<ForeignRawSEDeviceMemory>(value,
+                                                std::move(on_delete_callback));
 }
 
 ShapedBuffer TrackedDeviceBuffer::AsShapedBuffer(
     const Shape& on_device_shape) const {
-  ShapedBuffer shaped_buffer(on_device_shape, device_ordinal_);
+  ShapedBuffer shaped_buffer(on_device_shape,
+                             device_->local_device_id().value(),
+                             device_->local_hardware_id().value());
   ShapeTree<se::DeviceMemoryBase>::iterator iterator =
       shaped_buffer.buffers().begin();
-  for (const se::DeviceMemoryBase& buf : device_memory_) {
+  if (device_memory_) {
     CHECK(iterator != shaped_buffer.buffers().end());
-    iterator->second = buf;
+    iterator->second = device_memory_->mem();
     ++iterator;
   }
   CHECK(iterator == shaped_buffer.buffers().end());
   return shaped_buffer;
 }
 
-// See comment on ExecutionInput in xla/service/executable.h to understand
-// the meaning of owned/unowned in that class.
-
-void TrackedDeviceBuffer::AddToInputAsImmutable(
-    ShapeTree<MaybeOwningDeviceMemory>::iterator* iterator,
-    const ShapeTree<MaybeOwningDeviceMemory>::iterator& end) const {
-  for (const se::DeviceMemoryBase& buf : device_memory_) {
-    CHECK(*iterator != end);
-    // Set buffers to be case (1) in the comment on ExecutionInput.
-    (*iterator)->second = MaybeOwningDeviceMemory(buf);
-    ++(*iterator);
-  }
-}
-
-void TrackedDeviceBuffer::AddToInputAsDonated(
-    ShapeTree<MaybeOwningDeviceMemory>::iterator* iterator,
-    const ShapeTree<MaybeOwningDeviceMemory>::iterator& end,
-    ExecutionInput* execution_input,
-    se::DeviceMemoryAllocator* allocator) const {
-  for (const se::DeviceMemoryBase& buf : device_memory_) {
-    CHECK(*iterator != end);
-    // Set buffers to be case (2) in the comment on ExecutionInput.
-    (*iterator)->second = MaybeOwningDeviceMemory(
-        se::OwningDeviceMemory(buf, device_ordinal_, allocator));
-    execution_input->SetUnownedIndex((*iterator)->first);
-    ++(*iterator);
-  }
-}
-
 TrackedDeviceBuffer::TrackedDeviceBuffer(
-    se::DeviceMemoryAllocator* allocator, int device_ordinal,
-    absl::Span<se::DeviceMemoryBase const> device_memory,
-    absl::Span<const std::shared_ptr<BufferSequencingEvent>> definition_events,
-    absl::AnyInvocable<void() &&> on_delete_callback)
-    : allocator_(allocator),
-      device_ordinal_(device_ordinal),
-      device_memory_(device_memory.begin(), device_memory.end()),
+    PjRtDevice* device, tsl::RCReference<RawSEDeviceMemory> device_memory,
+    absl::Span<const BufferSequencingEventRef> definition_events)
+    : device_(device),
+      device_memory_(std::move(device_memory)),
       definition_events_(std::make_move_iterator(definition_events.begin()),
                          std::make_move_iterator(definition_events.end())),
-      in_use_(true),
-      on_delete_callback_(std::move(on_delete_callback)) {}
+      in_use_(true) {}
 
-TrackedDeviceBuffer::~TrackedDeviceBuffer() {
-  if (allocator_) {
-    for (const se::DeviceMemoryBase& buffer : device_memory_) {
-      absl::Status status = allocator_->Deallocate(device_ordinal_, buffer);
-      if (!status.ok()) {
-        LOG(ERROR) << "Buffer deallocation failed: " << status;
-      }
-    }
-  }
-  if (on_delete_callback_) {
-    std::move(on_delete_callback_)();
-  }
+TrackedDeviceBuffer::~TrackedDeviceBuffer() = default;
+
+void TrackedDeviceBuffer::ReleaseDeviceMemory() {
+  device_memory_ = tsl::RCReference<RawSEDeviceMemory>();
 }
 
-void TrackedDeviceBuffer::AddUsageEvent(
-    se::Stream* usage_stream, std::shared_ptr<BufferSequencingEvent> event,
-    bool reference_held) {
+void TrackedDeviceBuffer::ConfirmDonation() {
+  // As a sanity check ensure no more usage events can be added to the buffer.
+  LockUseAndTransferUsageEvents();
+  // Release the memory so that no new usage is possible.
+  ReleaseDeviceMemory();
+}
+
+void TrackedDeviceBuffer::AddUsageEvent(BufferSequencingEventRef event,
+                                        bool reference_held) {
   CHECK(in_use_);
 
   // If the event is 0, it means that the event is not recorded yet and the task
   // related to this event is deferred, so just add it.
-  if (*event == 0) {
-    usage_events_.push_back({usage_stream, event, reference_held});
+  if (!event->IsDefined()) {
+    usage_events_.push_back({event, reference_held});
     return;
   }
+  auto* usage_stream = event->definition_stream();
 
   for (auto& existing : usage_events_) {
     // If the existing event is 0, it means that the event is not recorded yet
     // and the task related to this event is deferred, so don't replace it.
-    if (*existing.event == 0) continue;
-    if (existing.stream == usage_stream) {
+    if (!existing.event->IsDefined()) continue;
+    if (existing.event->definition_stream() == usage_stream) {
       if (*existing.event < *event) {
         existing.event = event;
         existing.reference_held = reference_held;
@@ -273,7 +282,7 @@ void TrackedDeviceBuffer::AddUsageEvent(
       return;
     }
   }
-  usage_events_.push_back({usage_stream, event, reference_held});
+  usage_events_.push_back({event, reference_held});
 }
 
 TrackedDeviceBuffer::StreamAndEventContainer
@@ -283,26 +292,65 @@ TrackedDeviceBuffer::LockUseAndTransferUsageEvents() {
   return std::move(usage_events_);
 }
 
+std::vector<tsl::RCReference<tsl::AsyncValue>>
+TrackedDeviceBuffer::GetAsyncValueDefinitionEvents() {
+  std::vector<tsl::RCReference<tsl::AsyncValue>> avs;
+  avs.reserve(definition_events_.size());
+  for (const auto& ev : definition_events_) {
+    avs.push_back(ev.CopyRCRef());
+  }
+  return avs;
+}
+
+tsl::RCReference<CommonPjRtRawBuffer> TrackedDeviceBuffer::GetRawBuffer(
+    PjRtMemorySpace* memory_space) {
+  return tsl::MakeRef<PjRtStreamExecutorRawBuffer>(
+      tensorflow::down_cast<PjRtStreamExecutorClient*>(memory_space->client()),
+      memory_space,
+      tensorflow::down_cast<PjRtStreamExecutorDevice*>(
+          memory_space->devices()[0])
+          ->local_device_state(),
+      device_memory_);
+}
+
+void TrackedDeviceBuffer::AddUsageEvent(
+    tsl::RCReference<PjRtDeviceEvent> event) {
+  if (event) {
+    AddUsageEvent(
+        tensorflow::down_cast<PjRtStreamExecutorDeviceEvent*>(event.get())
+            ->event(),
+        true);
+  }
+}
+
 void GetDeviceBufferEvents(
     const TrackedDeviceBuffer& buffer, bool get_usage_events,
     absl::flat_hash_set<BufferSequencingEvent*>* events) {
   if (get_usage_events) {
     for (const auto& e : buffer.usage_events()) {
-      events->insert(e.event.get());
+      events->insert(&*e.event);
     }
   } else {
     for (const auto& e : buffer.definition_events()) {
-      events->insert(e.get());
+      events->insert(&*e);
     }
   }
 }
 
-void WaitForBufferDefinitionEventsOnStream(const TrackedDeviceBuffer& buffer,
-                                           se::Stream* stream) {
-  absl::flat_hash_set<BufferSequencingEvent*> events;
-  GetDeviceBufferEvents(buffer, /*get_usage_events=*/false, &events);
-  for (BufferSequencingEvent* event : events) {
-    event->WaitForEventOnStream(stream);
+void WaitForBufferDefinitionEventsOnStream(
+    absl::Span<const BufferSequencingEventRef> definition_events,
+    se::Stream* stream) {
+  if (definition_events.size() <= 1) {
+    for (const auto& event : definition_events) {
+      event->WaitForEventOnStream(stream);
+    }
+  } else {
+    absl::flat_hash_set<BufferSequencingEvent*> events;
+    for (const auto& event : definition_events) {
+      if (events.emplace(&*event).second) {
+        event->WaitForEventOnStream(stream);
+      }
+    }
   }
 }
 

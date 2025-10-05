@@ -19,10 +19,13 @@
 
 #include <memory>
 
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
+#include "llvm/Support/ExtensibleRTTI.h"
 #include "xla/python/ifrt/client.h"
 #include "xla/python/ifrt/compiler.h"
+#include "xla/python/ifrt/device_list.h"
 #include "xla/python/ifrt/executable.h"
 #include "xla/python/ifrt/program.h"
 #include "xla/python/ifrt/topology.h"
@@ -34,18 +37,25 @@ namespace proxy {
 
 class Compiler final : public llvm::RTTIExtends<Compiler, xla::ifrt::Compiler> {
  public:
+  using xla::ifrt::Compiler::Compile;
+
   Compiler(xla::ifrt::Client* client, std::shared_ptr<RpcHelper> rpc_helper);
 
-  absl::StatusOr<std::unique_ptr<xla::ifrt::LoadedExecutable>> Compile(
+  absl::StatusOr<xla::ifrt::LoadedExecutableRef> CompileAndLoad(
       std::unique_ptr<xla::ifrt::Program> program,
       std::unique_ptr<xla::ifrt::CompileOptions> options) override;
 
-  absl::StatusOr<std::unique_ptr<Executable>> Compile(
+  absl::StatusOr<xla::ifrt::ExecutableRef> Compile(
       std::unique_ptr<Program> program, const Topology& topology,
       std::unique_ptr<CompileOptions> options) override;
 
-  absl::StatusOr<std::unique_ptr<xla::ifrt::LoadedExecutable>>
-  DeserializeLoadedExecutable(
+  absl::Status IsExecutableVersionCompatible(
+      const xla::ifrt::ExecutableVersion& executable_version,
+      const xla::ifrt::DeviceListRef& devices) const override {
+    return absl::UnimplementedError("Not implemented");
+  }
+
+  absl::StatusOr<xla::ifrt::LoadedExecutableRef> DeserializeLoadedExecutable(
       absl::string_view serialized,
       std::unique_ptr<xla::ifrt::DeserializeExecutableOptions> options)
       override;

@@ -15,19 +15,18 @@ limitations under the License.
 
 // Native XLA implementations of simple unary Ops
 
-#include "tensorflow/compiler/tf2xla/kernels/cwise_ops.h"
+#include <cmath>
+
+#include "absl/status/statusor.h"
 #include "tensorflow/compiler/tf2xla/mlir_xla_op_kernel.h"
-#include "tensorflow/compiler/tf2xla/type_util.h"
-#include "tensorflow/compiler/tf2xla/xla_helpers.h"
+#include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "xla/client/client_library.h"
-#include "xla/client/lib/arithmetic.h"
-#include "xla/client/lib/constants.h"
-#include "xla/client/lib/math.h"
-#include "xla/client/xla_builder.h"
-#include "xla/primitive_util.h"
+#include "xla/hlo/builder/lib/constants.h"
+#include "xla/hlo/builder/lib/math.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "xla/tsl/platform/statusor.h"
 #include "xla/xla_data.pb.h"
-#include "tensorflow/core/framework/kernel_def_builder.h"
+#include "tensorflow/core/framework/op_kernel.h"
 
 namespace tensorflow {
 namespace {
@@ -54,15 +53,15 @@ XLAJIT_MAKE_UNARY(Conj, xla::Conj(x));
 
 // Return x if x>0, otherwise -x.
 REGISTER_XLA_OP(Name("Abs"), MlirXlaOpKernel);
-XLAJIT_MAKE_UNARY(Acos, xla::Acos(x));
-XLAJIT_MAKE_UNARY(Acosh, xla::Acosh(x));
-XLAJIT_MAKE_UNARY(Asin, xla::Asin(x))
+REGISTER_XLA_OP(Name("Acos"), MlirXlaOpKernel);
+REGISTER_XLA_OP(Name("Acosh"), MlirXlaOpKernel);
+REGISTER_XLA_OP(Name("Asin"), MlirXlaOpKernel);
 XLAJIT_MAKE_UNARY(Asinh, xla::Asinh(x));
 REGISTER_XLA_OP(Name("Atan"), MlirXlaOpKernel);
-XLAJIT_MAKE_UNARY(Atanh, xla::Atanh(x));
+REGISTER_XLA_OP(Name("Atanh"), MlirXlaOpKernel);
 REGISTER_XLA_OP(Name("Ceil"), MlirXlaOpKernel);
 REGISTER_XLA_OP(Name("Cos"), MlirXlaOpKernel);
-XLAJIT_MAKE_UNARY(Cosh, xla::Cosh(x));
+REGISTER_XLA_OP(Name("Cosh"), MlirXlaOpKernel);
 XLAJIT_MAKE_UNARY(Sin, xla::Sin(x));
 XLAJIT_MAKE_UNARY(Tan, xla::Tan(x));
 REGISTER_XLA_OP(Name("Exp"), MlirXlaOpKernel);
@@ -92,7 +91,7 @@ REGISTER_XLA_OP(Name("Sigmoid"), MlirXlaOpKernel);
 
 // Returns NaN if x is NaN, 0 if x is 0, -1 if x < 0 and 1 if x > 0.
 REGISTER_XLA_OP(Name("Sign"), MlirXlaOpKernel);
-XLAJIT_MAKE_UNARY(Sinh, xla::Sinh(x));
+REGISTER_XLA_OP(Name("Sinh"), MlirXlaOpKernel);
 
 static xla::XlaOp Softplus(xla::XlaBuilder* b, xla::XlaOp features) {
   return b->ReportErrorOrReturn([&]() -> absl::StatusOr<xla::XlaOp> {

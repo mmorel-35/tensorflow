@@ -42,7 +42,7 @@ class OptionalVariant {
     values_ = std::make_shared<std::vector<Tensor>>(std::move(values));
   }
 
-  OptionalVariant(const OptionalVariant& other) : values_(other.values_) {}
+  OptionalVariant(const OptionalVariant& other) = default;
 
   // Returns true if `this` represents an actual value.
   bool has_value() const { return values_ != nullptr; }
@@ -83,14 +83,14 @@ class OptionalVariant {
 
   string DebugString() const {
     if (values_) {
-      return strings::StrCat("OptionalVariant<", "values: (",
-                             absl::StrJoin(*values_, ", ",
-                                           [](string* s, const Tensor& elem) {
-                                             *s = elem.DebugString();
-                                           }),
-                             ")>");
+      return absl::StrCat("OptionalVariant<", "values: (",
+                          absl::StrJoin(*values_, ", ",
+                                        [](string* s, const Tensor& elem) {
+                                          *s = elem.DebugString();
+                                        }),
+                          ")>");
     } else {
-      return strings::StrCat("OptionalVariant<None>");
+      return absl::StrCat("OptionalVariant<None>");
     }
   }
 
@@ -98,17 +98,17 @@ class OptionalVariant {
   std::shared_ptr<const std::vector<Tensor>> values_;
 };
 
-Status OptionalZerosLike(OpKernelContext* ctx, const OptionalVariant& x,
-                         OptionalVariant* y,
-                         std::function<Status(OpKernelContext* ctx,
-                                              const Tensor& input, Tensor* out)>
-                             zeros_like_func);
+absl::Status OptionalZerosLike(
+    OpKernelContext* ctx, const OptionalVariant& x, OptionalVariant* y,
+    std::function<absl::Status(OpKernelContext* ctx, const Tensor& input,
+                               Tensor* out)>
+        zeros_like_func);
 
-Status OptionalBinaryAdd(
+absl::Status OptionalBinaryAdd(
     OpKernelContext* ctx, const OptionalVariant& a, const OptionalVariant& b,
     OptionalVariant* out,
-    std::function<Status(OpKernelContext* ctx, const Tensor& a, const Tensor& b,
-                         Tensor* out)>
+    std::function<absl::Status(OpKernelContext* ctx, const Tensor& a,
+                               const Tensor& b, Tensor* out)>
         binary_add_func);
 
 }  // namespace data

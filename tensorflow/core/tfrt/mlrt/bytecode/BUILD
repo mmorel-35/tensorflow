@@ -1,3 +1,4 @@
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load(
     "//tensorflow:tensorflow.bzl",
     "tf_cc_test",
@@ -56,6 +57,7 @@ tf_cc_test(
     srcs = ["bytecode_test.cc"],
     deps = [
         ":bytecode",
+        "@com_google_absl//absl/strings:string_view",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -64,6 +66,7 @@ tf_cc_test(
     name = "kernel_test",
     srcs = ["kernel_test.cc"],
     deps = [
+        ":bytecode",
         ":kernel",
         "@com_google_googletest//:gtest_main",
     ],
@@ -73,7 +76,9 @@ tf_cc_test(
     name = "function_test",
     srcs = ["function_test.cc"],
     deps = [
+        ":bytecode",
         ":function",
+        ":kernel",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -82,6 +87,7 @@ tf_cc_test(
     name = "executable_test",
     srcs = ["executable_test.cc"],
     deps = [
+        ":bytecode",
         ":executable",
         "@com_google_googletest//:gtest_main",
     ],
@@ -91,6 +97,7 @@ tf_cc_test(
     name = "span_test",
     srcs = ["span_test.cc"],
     deps = [
+        ":bytecode",
         ":span",
         "@com_google_googletest//:gtest_main",
     ],

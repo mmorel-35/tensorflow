@@ -71,6 +71,7 @@ cc_library(
     deps = [
         "//tensorflow/core:portable_gif_internal",
         "//tensorflow/core/runtime_fallback/util:attr_util",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@llvm-project//llvm:Support",
         "@tf_runtime//:core_runtime",
@@ -101,6 +102,7 @@ cc_library(
         "//tensorflow/core/common_runtime:copy_tensor",
         "//tensorflow/core/runtime_fallback/runtime:kernel_utils",
         "//tensorflow/core/runtime_fallback/util:attr_util",
+        "@com_google_absl//absl/synchronization",
         "@llvm-project//llvm:Support",
         "@tf_runtime//:core_runtime",
         "@tf_runtime//:hostcontext",
@@ -127,6 +129,7 @@ tf_cc_test(
     deps = [
         ":attr_util",
         "//tensorflow/c:tf_tensor",
+        "@com_google_absl//absl/status",
         "@tf_runtime//:core_runtime",
         "@tf_runtime//:hostcontext",
         "@tf_runtime//:support",

@@ -175,16 +175,28 @@ enum class AppleGpu {
   kA15,
   kA16,
   kA17Pro,
+  kA18,
+  kA18Pro,
+  kA19,
+  kA19Pro,
   kM1,
   kM1Pro,
   kM1Max,
   kM1Ultra,
   kM2,
+  kM2Pro,
+  kM2Max,
+  kM2Ultra,
+  kM3,
+  kM3Pro,
+  kM3Max,
+  kM4,
 };
 
 struct AppleInfo {
   // https://developer.apple.com/documentation/metal/mtlgpufamily
   enum class Family {
+    kApple10 = 10,
     kApple9 = 9,
     kApple8 = 8,
     kApple7 = 7,
@@ -209,6 +221,7 @@ struct AppleInfo {
   bool IsFamilyApple7() const;
   bool IsFamilyApple8() const;
   bool IsFamilyApple9() const;
+  bool IsFamilyApple10() const;
 
   bool IsFamilyOrLower(Family family) const;
 
@@ -216,6 +229,9 @@ struct AppleInfo {
 
   bool IsBionic() const;
   bool IsM1Series() const;
+  bool IsM2Series() const;
+  bool IsM3Series() const;
+  bool IsM4Series() const;
 
   bool IsSIMDMatMulSupported() const;
   // Often, fp32 alu performance is 1/2 of fp16 alu performance
@@ -447,6 +463,8 @@ struct OpenClInfo {
   // PowerVR supports only rtz
   bool supports_fp32_rtn;
   bool supports_fp16_rtn;
+
+  bool supports_register_allocation_arm = false;
 
   struct SupportedImage2dTypes {
     absl::flat_hash_set<DataType> r_layout;

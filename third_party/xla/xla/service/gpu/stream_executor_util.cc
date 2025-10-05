@@ -15,6 +15,7 @@ limitations under the License.
 
 #include "xla/service/gpu/stream_executor_util.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <iterator>
 #include <limits>
@@ -23,7 +24,7 @@ limitations under the License.
 #include <optional>
 #include <random>
 #include <sstream>
-#include <string_view>
+#include <string>
 #include <tuple>
 #include <type_traits>
 #include <utility>
@@ -39,7 +40,8 @@ limitations under the License.
 #include "absl/synchronization/mutex.h"
 #include "absl/time/time.h"
 #include "absl/types/span.h"
-#include "Eigen/Core"  // from @eigen_archive
+#include "Eigen/Core"
+#include "xla/autotuning.pb.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/layout.h"
 #include "xla/layout_util.h"
@@ -51,19 +53,20 @@ limitations under the License.
 #include "xla/stream_executor/data_type.h"
 #include "xla/stream_executor/device_memory.h"
 #include "xla/stream_executor/dnn.h"
+#include "xla/stream_executor/gpu/gpu_kernel_registry.h"
+#include "xla/stream_executor/gpu/repeat_buffer_kernel.h"
 #include "xla/stream_executor/kernel.h"
-#include "xla/stream_executor/kernel_factory.h"
 #include "xla/stream_executor/kernel_spec.h"
 #include "xla/stream_executor/launch_dim.h"
 #include "xla/stream_executor/platform.h"
 #include "xla/stream_executor/stream.h"
-#include "xla/stream_executor/typed_kernel_factory.h"
-#include "xla/tsl/util/env_var.h"
+#include "xla/stream_executor/stream_executor.h"
+#include "xla/tsl/platform/statusor.h"
+#include "xla/tsl/protobuf/dnn.pb.h"
 #include "xla/tsl/util/proto/proto_utils.h"
 #include "xla/util.h"
+#include "xla/xla_data.pb.h"
 #include "tsl/platform/ml_dtypes.h"
-#include "tsl/platform/status.h"
-#include "tsl/platform/statusor.h"
 
 namespace xla {
 namespace gpu {
@@ -333,15 +336,15 @@ FindVectorizedFeatureDims(const ConvolutionDimensionNumbers& dnums,
                           const Shape& input, const Shape& filter,
                           const Shape& output) {
   return {
-      FindVectorizedDim(input.dimensions_size(), dnums.input_batch_dimension(),
-                        dnums.input_feature_dimension(),
-                        dnums.input_spatial_dimensions()),
-      FindVectorizedDim(filter.dimensions_size(),
+      FindVectorizedDim(
+          input.dimensions().size(), dnums.input_batch_dimension(),
+          dnums.input_feature_dimension(), dnums.input_spatial_dimensions()),
+      FindVectorizedDim(filter.dimensions().size(),
                         dnums.kernel_input_feature_dimension(),
                         dnums.kernel_output_feature_dimension(),
                         dnums.kernel_spatial_dimensions()),
       FindVectorizedDim(
-          output.dimensions_size(), dnums.output_batch_dimension(),
+          output.dimensions().size(), dnums.output_batch_dimension(),
           dnums.output_feature_dimension(), dnums.output_spatial_dimensions()),
   };
 }
@@ -354,7 +357,7 @@ absl::Mutex& GetGpuMutex(const se::StreamExecutor* stream_exec) {
       new std::map<std::pair<const se::Platform*, /*device_ordinal*/ int64_t>,
                    absl::Mutex>();
 
-  absl::MutexLock global_lock(&mu);
+  absl::MutexLock global_lock(mu);
   auto it = mutexes
                 ->emplace(std::piecewise_construct,
                           std::make_tuple(stream_exec->GetPlatform(),
@@ -366,18 +369,14 @@ absl::Mutex& GetGpuMutex(const se::StreamExecutor* stream_exec) {
 }
 
 absl::StatusOr<std::unique_ptr<se::Kernel>> CreateKernel(
-    absl::string_view kernel_name, uint64_t num_args, absl::string_view ptx,
-    absl::Span<const uint8_t> cubin_data, se::StreamExecutor* stream_exec,
-    uint32_t shared_mem_bytes) {
-  se::MultiKernelLoaderSpec loader_spec(num_args);
-  loader_spec.AddCudaPtxInMemory(ptx, kernel_name);
-
-  if (!cubin_data.empty()) {
-    loader_spec.AddCudaCubinInMemory(cubin_data, kernel_name);
-  }
+    std::string kernel_name, uint64_t num_args, absl::string_view ptx,
+    se::StreamExecutor* stream_exec, uint32_t shared_mem_bytes) {
+  se::KernelLoaderSpec loader_spec =
+      se::KernelLoaderSpec::CreateCudaPtxInMemorySpec(
+          ptx, std::move(kernel_name), num_args);
 
   TF_ASSIGN_OR_RETURN(std::unique_ptr<se::Kernel> kernel,
-                      se::KernelFactory::Create(stream_exec, loader_spec));
+                      stream_exec->LoadKernel(loader_spec));
 
   se::KernelMetadata m;
   m.set_shared_memory_bytes(shared_mem_bytes);
@@ -385,30 +384,33 @@ absl::StatusOr<std::unique_ptr<se::Kernel>> CreateKernel(
   return kernel;
 }
 
-absl::Status ExecuteKernelOnStream(const se::Kernel& kernel,
-                                   absl::Span<const se::DeviceMemoryBase> args,
-                                   const LaunchDimensions& dims,
-                                   se::Stream* stream) {
-  TF_ASSIGN_OR_RETURN(
-      std::unique_ptr<se::KernelArgsPackedArrayBase> kernel_args,
-      se::PackKernelArgs(args, kernel.metadata()));
+absl::StatusOr<std::unique_ptr<se::Kernel>> CreateKernel(
+    std::string kernel_name, uint64_t num_args,
+    absl::Span<const uint8_t> cubin_data, se::StreamExecutor* stream_exec,
+    uint32_t shared_mem_bytes) {
+  se::KernelLoaderSpec loader_spec =
+      se::KernelLoaderSpec::CreateCudaCubinInMemorySpec(
+          cubin_data, std::move(kernel_name), num_args);
 
-  return stream->parent()->Launch(stream, dims.thread_counts_per_block(),
-                                  dims.block_counts(), kernel, *kernel_args);
+  TF_ASSIGN_OR_RETURN(std::unique_ptr<se::Kernel> kernel,
+                      stream_exec->LoadKernel(loader_spec));
+
+  se::KernelMetadata m;
+  m.set_shared_memory_bytes(shared_mem_bytes);
+  kernel->set_metadata(m);
+  return kernel;
 }
 
-absl::Status ExecuteKernelOnStream(const se::Kernel& kernel,
-                                   absl::Span<const se::DeviceMemoryBase> args,
-                                   const LaunchDimensions& dims,
-                                   const se::ClusterDim& cluster_dim,
-                                   se::Stream* stream) {
+absl::Status ExecuteKernelOnStream(
+    se::Kernel& kernel, absl::Span<const se::KernelArgument> args,
+    const LaunchDimensions& dims,
+    const std::optional<se::ClusterDim>& cluster_dim, se::Stream* stream) {
   TF_ASSIGN_OR_RETURN(
       std::unique_ptr<se::KernelArgsPackedArrayBase> kernel_args,
       se::PackKernelArgs(args, kernel.metadata()));
 
-  return stream->parent()->Launch(stream, dims.thread_counts_per_block(),
-                                  dims.block_counts(), cluster_dim, kernel,
-                                  *kernel_args);
+  return kernel.Launch(dims.thread_counts_per_block(), dims.block_counts(),
+                       cluster_dim, stream, *kernel_args);
 }
 
 // Unimplemented for integers yet.
@@ -425,10 +427,6 @@ typename std::enable_if<std::is_floating_point<T>::value,
   return std::uniform_real_distribution<T>(lhs, rhs)(*gen);
 }
 
-namespace repeat_buffer_kernel {
-void* kernel();
-}
-
 template <typename T>
 static void InitializeTypedBuffer(se::Stream* stream,
                                   se::DeviceMemoryBase buffer,
@@ -438,7 +436,7 @@ static void InitializeTypedBuffer(se::Stream* stream,
 
   // Use a large prime number to fragment the accesses.
   constexpr int host_buffer_size = 10069;
-  static std::vector<T>* host_buffer = [] {
+  static std::vector<T>* host_buffer = [&] {
     auto* ret = new std::vector<T>(host_buffer_size);
     // Default-seeded random numbers.
     std::mt19937 gen;
@@ -493,15 +491,14 @@ static void InitializeTypedBuffer(se::Stream* stream,
     // Nothing more to do
     return;
   }
-#ifdef GOOGLE_CUDA
   // Repeat the host_buffer_size elements at the start of `buf` to the end
   CHECK_EQ(elements_to_fill, buffer.size() / sizeof(T) - host_buffer_size);
   se::StreamExecutor* executor = stream->parent();
   auto kernel =
-      se::TypedKernelFactory<se::DeviceMemoryBase, int64_t, int64_t>::Create(
-          executor, "RepeatBufferKernel", repeat_buffer_kernel::kernel());
+      stream_executor::gpu::GpuKernelRegistry::GetGlobalRegistry()
+          .LoadKernel<stream_executor::gpu::RepeatBufferKernel>(executor);
   if (!kernel.ok()) {
-    LOG(FATAL) << "Could not create RepeatBufferKernel: " << kernel.status();
+    LOG(FATAL) << "Could not load RepeatBufferKernel: " << kernel.status();
   }
   // Launch the kernel with at least host_buffer_bytes threads. Each thread
   // will read one byte of `host_buffer` from the start of `buffer`, where the
@@ -510,11 +507,10 @@ static void InitializeTypedBuffer(se::Stream* stream,
   constexpr int threads_per_block = 256;
   constexpr int blocks_per_grid =
       (host_buffer_bytes + threads_per_block - 1) / threads_per_block;
-  TF_CHECK_OK(stream->ThenLaunch(se::ThreadDim(threads_per_block, 1, 1),
-                                 se::BlockDim(blocks_per_grid, 1, 1), *kernel,
-                                 buffer, host_buffer_bytes,
-                                 static_cast<int64_t>(buffer.size())));
-#endif
+  TF_CHECK_OK(kernel->Launch(se::ThreadDim(threads_per_block, 1, 1),
+                             se::BlockDim(blocks_per_grid, 1, 1), stream,
+                             buffer, host_buffer_bytes,
+                             static_cast<int64_t>(buffer.size())));
 }
 
 void InitializeBuffer(se::Stream* stream, PrimitiveType buffer_type,
@@ -615,6 +611,10 @@ absl::StatusOr<se::dnn::DataType> GetDNNDataTypeFromPrimitiveType(
       return se::dnn::ToDataType<tsl::float8_e4m3fn>::value;
     case F8E5M2:
       return se::dnn::ToDataType<tsl::float8_e5m2>::value;
+    case F4E2M1FN:
+      return se::dnn::ToDataType<tsl::float4_e2m1fn>::value;
+    case F8E8M0FNU:
+      return se::dnn::ToDataType<tsl::float8_e8m0fnu>::value;
     default:
       break;
   }
@@ -622,16 +622,8 @@ absl::StatusOr<se::dnn::DataType> GetDNNDataTypeFromPrimitiveType(
 }
 
 bool RequireDeterminism(const HloModuleConfig& config) {
-  static bool require_cudnn_determinism = [] {
-    // TODO(reedwm): Remove the TF_CUDNN_DETERMINISTIC env var.
-    bool cudnn_deterministic = false;
-    TF_CHECK_OK(tsl::ReadBoolFromEnvVar("TF_CUDNN_DETERMINISTIC",
-                                        /*default_val=*/false,
-                                        &cudnn_deterministic));
-    return cudnn_deterministic;
-  }();
-  return require_cudnn_determinism ||
-         config.debug_options().xla_gpu_deterministic_ops();
+  return config.debug_options().xla_gpu_deterministic_ops() ||
+         config.debug_options().xla_gpu_exclude_nondeterministic_ops();
 }
 
 namespace {
@@ -651,7 +643,7 @@ std::vector<AutotuneResult> KeepNonFailures(
 }
 
 absl::Status AllAlgorithmsFailedInternalError(
-    std::optional<std::string_view> instr_str,
+    std::optional<absl::string_view> instr_str,
     absl::Span<AutotuneResult const> profile_results) {
   std::ostringstream msg;
   if (instr_str.has_value()) {
@@ -669,7 +661,7 @@ absl::Status AllAlgorithmsFailedInternalError(
 }
 
 absl::Status NoAlgorithmSuppliedInternalError(
-    std::optional<std::string_view> instr_str) {
+    std::optional<absl::string_view> instr_str) {
   std::ostringstream msg;
   if (instr_str.has_value()) {
     msg << "There are no algorithm candidates for computing: \n  "
@@ -713,7 +705,7 @@ absl::Span<AutotuneResult const> TopResultsWithinMeasurementError(
 
 absl::StatusOr<AutotuneResult> PickBestResult(
     absl::Span<AutotuneResult const> profile_results,
-    std::optional<std::string_view> instr_str,
+    std::optional<absl::string_view> instr_str,
     HloModuleConfig hlo_module_config) {
   if (profile_results.empty()) {
     return NoAlgorithmSuppliedInternalError(instr_str);

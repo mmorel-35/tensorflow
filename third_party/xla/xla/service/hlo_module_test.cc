@@ -24,24 +24,41 @@ limitations under the License.
 #include <vector>
 
 #include <gtest/gtest.h>
+#include "absl/container/flat_hash_map.h"
+#include "absl/container/flat_hash_set.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/str_format.h"
+#include "absl/strings/string_view.h"
 #include "absl/types/span.h"
+#include "xla/comparison_util.h"
+#include "xla/debug_options_flags.h"
+#include "xla/hlo/analysis/alias_info.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
+#include "xla/hlo/ir/hlo_opcode.h"
+#include "xla/hlo/ir/hlo_original_value.h"
+#include "xla/hlo/ir/hlo_print_options.h"
+#include "xla/hlo/testlib/hlo_hardware_independent_test_base.h"
+#include "xla/hlo/testlib/test.h"
+#include "xla/hlo/testlib/verified_hlo_module.h"
+#include "xla/hlo/transforms/simplifiers/hlo_memory_scheduler.h"
 #include "xla/hlo/utils/hlo_matchers.h"
-#include "xla/literal.h"
+#include "xla/literal_util.h"
+#include "xla/service/buffer_value.h"
 #include "xla/service/computation_placer.h"
-#include "xla/service/hlo_memory_scheduler.h"
+#include "xla/service/hlo_module_config.h"
 #include "xla/service/test_compilation_environment.pb.h"
+#include "xla/shape.h"
 #include "xla/shape_util.h"
-#include "xla/test.h"
-#include "xla/tests/hlo_test_base.h"
+#include "xla/tsl/lib/core/status_test_util.h"
+#include "xla/tsl/lib/strings/proto_serialization.h"
+#include "xla/tsl/platform/statusor.h"
+#include "xla/tuple_tree.h"
 #include "xla/xla.pb.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/lib/core/status_test_util.h"
-#include "tsl/lib/strings/proto_serialization.h"
-#include "tsl/platform/errors.h"
-#include "tsl/platform/statusor.h"
+#include "tsl/platform/casts.h"
+#include "tsl/platform/protobuf.h"
 
 namespace xla {
 
@@ -62,7 +79,7 @@ namespace {
 
 namespace op = ::xla::testing::opcode_matchers;
 
-class HloModuleTest : public HloTestBase {
+class HloModuleTest : public HloHardwareIndependentTestBase {
  protected:
   static void SetUpTestSuite() {
     CompilationEnvironments::RegisterProcessNewEnvFn(
@@ -235,8 +252,8 @@ ENTRY entry () -> s32[] {
   HloInstruction* cloned_custom_call =
       cloned_module->entry_computation()->GetInstructionWithName("custom-call");
 
-  EXPECT_TRUE(cloned_computation->IsCustomCallComputation());
-  EXPECT_EQ(cloned_computation->CustomCallInstruction(), cloned_custom_call);
+  EXPECT_EQ(cloned_computation->GetUniqueCaller(HloOpcode::kCustomCall),
+            cloned_custom_call);
 }
 
 TEST_F(HloModuleTest, CloneCustomCallComputationCalledComputations) {
@@ -275,10 +292,10 @@ ENTRY entry () -> s32[] {
   HloInstruction* cloned_custom_call =
       cloned_module->entry_computation()->GetInstructionWithName("custom-call");
 
-  EXPECT_TRUE(cloned_computation_0->IsCustomCallComputation());
-  EXPECT_EQ(cloned_computation_0->CustomCallInstruction(), cloned_custom_call);
-  EXPECT_TRUE(cloned_computation_1->IsCustomCallComputation());
-  EXPECT_EQ(cloned_computation_1->CustomCallInstruction(), cloned_custom_call);
+  EXPECT_EQ(cloned_computation_0->GetUniqueCaller(HloOpcode::kCustomCall),
+            cloned_custom_call);
+  EXPECT_EQ(cloned_computation_1->GetUniqueCaller(HloOpcode::kCustomCall),
+            cloned_custom_call);
 }
 
 TEST_F(HloModuleTest, CloneFusionComputation) {
@@ -452,7 +469,8 @@ ENTRY ReduceR3ToR2.v3 {
   auto size_fn = [](const BufferValue& buffer) {
     return ShapeUtil::ByteSizeOf(buffer.shape());
   };
-  HloMemoryScheduler scheduler(size_fn);
+  AliasInfo alias_info;
+  HloMemoryScheduler scheduler(&alias_info, size_fn);
   TF_ASSERT_OK(scheduler.Run(module.get()).status());
   ASSERT_TRUE(module->has_schedule());
 
@@ -491,13 +509,19 @@ ENTRY ReduceR3ToR2.v3 {
     }
   }
 
-  // Verify that the next unique ID which the module would have handed out is
-  // greater than the unique id of any instruction.
-  int next_id = module_copy->NewUniqueInstructionId();
+  // Verify that the next unique ID which any computation would have handed out
+  // is greater than the unique id of any existing instruction in that
+  // computation.
+  int32_t next_module_unique_id = module->next_unique_computation_id();
   for (const HloComputation* computation : module_copy->computations()) {
+    int32_t next_instruction_id_internal =
+        computation->next_unique_instruction_internal_id();
     for (const HloInstruction* instruction : computation->instructions()) {
-      EXPECT_GT(next_id, instruction->unique_id());
+      EXPECT_GT(next_instruction_id_internal, instruction->local_id());
     }
+    // Also verify that the next module unique id is greater than the module
+    // unique ids already present in the computation.
+    EXPECT_GT(next_module_unique_id, computation->unique_id());
   }
 }
 
@@ -697,13 +721,16 @@ TEST_F(HloModuleTest, TwoComputationsFilterexecution_threads) {
   auto* parallel_thread_computation = async_done->async_wrapped_computation();
 
   EXPECT_THAT(
-      module->MakeComputationPostOrder({HloInstruction::kMainExecutionThread}),
+      module->MakeComputationPostOrder(absl::flat_hash_set<absl::string_view>(
+          {HloInstruction::kMainExecutionThread})),
       ::testing::ElementsAre(main_thread_computation));
   EXPECT_THAT(module->MakeComputationPostOrder(),
               ::testing::ElementsAre(parallel_thread_computation,
                                      main_thread_computation));
-  EXPECT_THAT(module->MakeComputationPostOrder({kParallelThreadName}),
-              ::testing::ElementsAre(parallel_thread_computation));
+  EXPECT_THAT(
+      module->MakeComputationPostOrder(
+          absl::flat_hash_set<absl::string_view>({kParallelThreadName})),
+      ::testing::ElementsAre(parallel_thread_computation));
   // Test that computations(execution_thread) return the expected values.
   int num_all_computations = 0;
   for ([[maybe_unused]] const HloComputation* comp :
@@ -746,19 +773,16 @@ ENTRY ReduceR3ToR2.v3 {
   TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<VerifiedHloModule> module,
                           ParseAndReturnVerifiedModule(computation_text));
 
-  TF_ASSERT_OK_AND_ASSIGN(xla::HloModuleProtoWithConfig proto,
-                          module->ToProtoWithConfig());
+  xla::HloModuleProtoWithConfig proto = module->ToProtoWithConfig();
   std::string serialized_module;
   ASSERT_TRUE(tsl::SerializeToStringDeterministic(proto, &serialized_module));
-  std::string original_debug_str = proto.DebugString();
-  RecordProperty("serialized_module", original_debug_str);
+  RecordProperty("serialized_module", proto.DebugString());
 
   // Verify that we can create a module from our parsed proto copy
   TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> reconstructed_module,
                           HloModule::CreateFromProtoWithConfig(proto));
-  TF_ASSERT_OK_AND_ASSIGN(
-      xla::HloModuleProtoWithConfig reconstructed_module_proto,
-      reconstructed_module->ToProtoWithConfig());
+  xla::HloModuleProtoWithConfig reconstructed_module_proto =
+      reconstructed_module->ToProtoWithConfig();
 
   // The two protos should be equivalent except for the `id` field
   google::protobuf::util::MessageDifferencer diff;
@@ -817,7 +841,7 @@ static absl::StatusOr<HloModuleConfigProto> MakeTestModuleConfigProto() {
     DeviceAssignmentProto device_assignment_proto;
     DeviceAssignment device_assignment(/*replica_count=*/3,
                                        /*computation_count=*/2);
-    TF_RETURN_IF_ERROR(device_assignment.Serialize(&device_assignment_proto));
+    device_assignment.Serialize(&device_assignment_proto);
     proto.mutable_static_device_assignment()->Swap(&device_assignment_proto);
   }
   // Shardable Value Update Pairs
@@ -882,8 +906,7 @@ TEST_F(HloModuleTest, HloModuleConfigCreateFromProto) {
                           MakeTestModuleConfigProto());
   TF_ASSERT_OK_AND_ASSIGN(auto good_config,
                           HloModuleConfig::CreateFromProto(input_proto));
-  TF_ASSERT_OK_AND_ASSIGN(HloModuleConfigProto output_proto,
-                          good_config->ToProto());
+  HloModuleConfigProto output_proto = good_config->ToProto();
 
   google::protobuf::util::MessageDifferencer diff;
   diff.set_message_field_comparison(
@@ -894,13 +917,11 @@ TEST_F(HloModuleTest, HloModuleConfigCreateFromProto) {
 TEST_F(HloModuleTest, HloModuleConfigToProto) {
   auto module = CreateNewVerifiedModule();
   const HloModuleConfig& good_config = module->config();
-  TF_ASSERT_OK_AND_ASSIGN(HloModuleConfigProto first_proto,
-                          good_config.ToProto());
+  HloModuleConfigProto first_proto = good_config.ToProto();
   TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModuleConfig> remade_config,
                           HloModuleConfig::CreateFromProto(first_proto));
   ASSERT_NE(remade_config, nullptr);
-  TF_ASSERT_OK_AND_ASSIGN(HloModuleConfigProto second_proto,
-                          remade_config->ToProto());
+  HloModuleConfigProto second_proto = remade_config->ToProto();
 
   google::protobuf::util::MessageDifferencer diff;
   diff.set_message_field_comparison(
@@ -950,6 +971,34 @@ ENTRY main {
   EXPECT_EQ(stack_frame.function_name, index->function_names(0));
   EXPECT_EQ(stack_frame.line, location->line());
   EXPECT_EQ(stack_frame.column, location->column());
+}
+
+TEST_F(HloModuleTest, PrintOriginalValue) {
+  // Create a module with a single computation.
+  auto module = CreateNewVerifiedModule();
+  auto builder = HloComputation::Builder("Constant");
+  std::vector<float> values(16, 42.0);
+  auto instruction =
+      HloInstruction::CreateConstant(LiteralUtil::CreateR0<float>(42.0f));
+  auto original_value =
+      std::make_shared<OriginalValue>(TupleTree<std::optional<OriginalArray>>(
+          OriginalArray{std::string(instruction->name()), {}}));
+  instruction->set_original_value(original_value);
+  builder.AddInstruction(std::move(instruction));
+  module->AddEntryComputation(builder.Build());
+
+  EXPECT_EQ(
+      "HloModule PrintOriginalValue, "
+      "entry_computation_layout={()->f32[]}\n\nENTRY %Constant () -> "
+      "f32[] {\n  ROOT %constant = f32[] constant(42), "
+      "origin={{\"constant\"}}\n}\n\n",
+      module->ToString(HloPrintOptions().set_print_original_value(true)));
+
+  EXPECT_EQ(
+      "HloModule PrintOriginalValue, "
+      "entry_computation_layout={()->f32[]}\n\nENTRY %Constant () -> "
+      "f32[] {\n  ROOT %constant = f32[] constant(42)\n}\n\n",
+      module->ToString(HloPrintOptions().set_print_original_value(false)));
 }
 
 }  // namespace

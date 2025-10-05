@@ -15,6 +15,7 @@ limitations under the License.
 #include "tensorflow/lite/acceleration/configuration/proto_to_flatbuffer.h"
 
 #include <cstdint>
+#include <vector>
 
 #include "flatbuffers/buffer.h"  // from @flatbuffers
 #include "flatbuffers/flatbuffers.h"  // from @flatbuffers
@@ -392,7 +393,8 @@ Offset<EdgeTpuSettings> ConvertEdgeTpuSettings(
       static_cast<tflite::EdgeTpuSettings_::QosClass>(settings.qos_class()),
       hardware_cluster_ids_fb, public_model_id,
       static_cast<tflite::EdgeTpuSettings_::UseLayerIrTgcBackend>(
-          settings.use_layer_ir_tgc_backend()));
+          settings.use_layer_ir_tgc_backend()),
+      settings.use_tpu_server());
 }
 
 Offset<CompilationCachingSettings> ConvertCompilationCachingSettings(
@@ -428,7 +430,8 @@ Offset<MtkNeuronSettings> ConvertMtkNeuronSettings(
                                     settings.compile_options().end()),
       builder.CreateVectorOfStrings(settings.accelerator_names().begin(),
                                     settings.accelerator_names().end()),
-      builder.CreateString(settings.neuron_config_path()));
+      builder.CreateString(settings.neuron_config_path()),
+      settings.inference_deadline_ms(), settings.inference_abort_time_ms());
 }
 
 Offset<CoralSettings> ConvertCoralSettings(const proto::CoralSettings& settings,

@@ -13,6 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <memory>
 #include <utility>
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
@@ -42,7 +43,9 @@ class BFloat16TypeConverter : public TypeConverter {
  public:
   BFloat16TypeConverter() {
     addConversion([](const Type type) -> Type {
-      return IsLargeFloatType(type) ? ToBfloat16Type(type) : type;
+      return quant::stablehlo::IsLargeFloatType(type)
+                 ? quant::stablehlo::ToBfloat16Type(type)
+                 : type;
     });
   }
 };
@@ -126,10 +129,13 @@ class BFloat16TypePattern : public ConversionPattern {
     OperationState state(op->getLoc(), op->getName().getStringRef(), operands,
                          new_results, op->getAttrs(), op->getSuccessors());
     for (Region& region : op->getRegions()) {
-      Region& new_region = *state.addRegion();
-      rewriter.inlineRegionBefore(region, new_region, new_region.begin());
-      if (failed(rewriter.convertRegionTypes(&new_region, *getTypeConverter())))
+      auto new_region = std::make_unique<Region>(op);
+      rewriter.inlineRegionBefore(region, *new_region, new_region->begin());
+      if (failed(rewriter.convertRegionTypes(new_region.get(),
+                                             *getTypeConverter()))) {
         return failure();
+      }
+      state.addRegion(std::move(new_region));
     }
 
     // Convert value of ConstantOp to bfloat16.
@@ -162,7 +168,7 @@ class BitcastConvertOpPattern
   LogicalResult matchAndRewrite(
       mlir::stablehlo::BitcastConvertOp op,
       mlir::stablehlo::BitcastConvertOpAdaptor adaptor,
-      ConversionPatternRewriter &rewriter) const override {
+      ConversionPatternRewriter& rewriter) const override {
     const bool is_input_legal =
         getTypeConverter()->isLegal(op.getOperand().getType());
     const bool is_output_legal =

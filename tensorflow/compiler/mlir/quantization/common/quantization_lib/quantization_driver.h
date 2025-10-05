@@ -26,7 +26,7 @@ limitations under the License.
 #include "llvm/ADT/STLExtras.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"  // from @llvm-project
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
-#include "mlir/Dialect/Quant/QuantTypes.h"  // from @llvm-project
+#include "mlir/Dialect/Quant/IR/QuantTypes.h"  // from @llvm-project
 #include "mlir/IR/Builders.h"  // from @llvm-project
 #include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
 #include "mlir/IR/MLIRContext.h"  // from @llvm-project
@@ -77,9 +77,9 @@ using RequantizeStates = SmallVector<RequantizeState>;
 // across operations.
 //
 // The initial quantization parameters are extracted from the quantized type
-// between adjacent `quantfork::QuantizeCastOp` and
-// `quantfork::DequantizeCastOp`s. All these initial parameters are marked as
-// immutable because they are from quantization-aware training.
+// between adjacent `mlir::quant::ir::QuantizeCastOp` and
+// `mlir::quant::ir::DequantizeCastOp`s. All these initial parameters are marked
+// as immutable because they are from quantization-aware training.
 //
 // The algorithm traverses each op and sets the quantization parameters of its
 // operands and results, according to its quantization specification, and then
@@ -88,8 +88,8 @@ using RequantizeStates = SmallVector<RequantizeState>;
 // iteration), this process stops if the existing parameters are the immutable,
 // or adding `requantize` op to resolve the conflicts.
 //
-// After the algorithm is converged, pairs of `quantfork::QuantizeCastOp` and
-// `quantfork::DequantizeCastOp` are inserted to the right position to
+// After the algorithm is converged, pairs of `mlir::quant::ir::QuantizeCastOp`
+// and `mlir::quant::ir::DequantizeCastOp` are inserted to the right position to
 // materialize the propagation and requantize results.
 //
 class QuantizationDriver {

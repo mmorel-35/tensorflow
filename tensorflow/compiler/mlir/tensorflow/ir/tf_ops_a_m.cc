@@ -118,6 +118,7 @@ INFER_RETURN_TYPE_COMPONENTS_FROM_OPERANDS(CoshOp);
 INFER_RETURN_TYPE_COMPONENTS_FROM_OPERANDS(CrossOp);
 INFER_RETURN_TYPE_COMPONENTS_FROM_OPERANDS(DataFormatDimMapOp);
 INFER_RETURN_TYPE_COMPONENTS_FROM_OPERANDS(DataFormatVecPermuteOp);
+INFER_RETURN_TYPE_COMPONENTS_FROM_OPERANDS(DebugIdentityOp);
 INFER_RETURN_TYPE_COMPONENTS_FROM_OPERANDS(DigammaOp);
 INFER_RETURN_TYPE_COMPONENTS_FROM_OPERANDS(EluOp);
 INFER_RETURN_TYPE_COMPONENTS_FROM_OPERANDS(EluGradOp);
@@ -796,7 +797,7 @@ void GetOutputShapeForBroadcastGradientArgs(ArrayRef<int64_t> bcasted_shape,
 }  // namespace
 
 // Verifies that,
-// * Broadcast compatability for input shapes.
+// * Broadcast compatibility for input shapes.
 // * Output shape dimension matches the expected dimension size for input
 // shapes.
 LogicalResult BroadcastGradientArgsOp::verify() {
@@ -897,7 +898,8 @@ LogicalResult FoldConstantCaseOp::matchAndRewrite(
   auto func = mlir::cast<SymbolRefAttr>(op.getBranches()[index]);
   auto empty = rewriter.getStringAttr("");
   ReplaceTfOpWithNewOp<PartitionedCallOp>(
-      rewriter, op, op.getResultTypes(), op.getOperands().drop_front(), func,
+      rewriter, op, op.getResultTypes(), op.getOperands().drop_front(),
+      /*args_attrs=*/nullptr, /*res_attrs=*/nullptr, func,
       /*config=*/empty, /*config_proto=*/empty, /*executor_type=*/empty);
   return success();
 }
@@ -1358,7 +1360,7 @@ LogicalResult HoistCwiseBinaryOutOfConcat::matchAndRewrite(
       return failure();
 
     // All checks are passes, and we now prepare for rewrite.
-    auto identity_const = rewriter.create<TF::ConstOp>(loc, const_attr);
+    auto identity_const = TF::ConstOp::create(rewriter, loc, const_attr);
     for (const auto& kv : exceptions) {
       assert(!hoist_params->lhs_args[kv.second]);
       assert(!hoist_params->rhs_args[kv.second]);
@@ -1395,7 +1397,7 @@ LogicalResult HoistCwiseBinaryOutOfConcat::matchAndRewrite(
       assert(axis_type.getElementType().isInteger(64));
       attr = DenseIntElementsAttr::get(axis_type, axis);
     }
-    auto axis_const = rewriter.create<TF::ConstOp>(loc, attr);
+    auto axis_const = TF::ConstOp::create(rewriter, loc, attr);
 
     auto concat =
         CreateTfOp<ConcatV2Op>(rewriter, op, result_type, args, axis_const);
@@ -1635,15 +1637,13 @@ LogicalResult ConcatOffsetOp::fold(FoldAdaptor adaptor,
   if (concat_dim >= num_dims || concat_dim < 0) return failure();
 
   // Check all elements besides at concat_dim match across all shape tensors.
-  SmallVector<int32_t, 4> shape0;
-  shape0.reserve(num_dims);
-  for (int32_t dim : shapes.front().getValues<int32_t>()) shape0.push_back(dim);
+  DenseIntElementsAttr shape0 = shapes.front();
 
   for (DenseIntElementsAttr shape : llvm::drop_begin(shapes, 1)) {
     for (const auto& dims_and_idx : llvm::enumerate(llvm::zip(shape0, shape))) {
       if (dims_and_idx.index() == concat_dim) continue;
 
-      if (std::get<0>(dims_and_idx.value()) !=
+      if (std::get<0>(dims_and_idx.value()).getSExtValue() !=
           std::get<1>(dims_and_idx.value()).getSExtValue())
         return failure();
     }
@@ -1651,14 +1651,25 @@ LogicalResult ConcatOffsetOp::fold(FoldAdaptor adaptor,
 
   // Compute an exclusive cumulative sum of elements at concat_dim.
   results.reserve(shapes.size());
-  SmallVector<int32_t, 4> cumulative_sum(num_dims, 0);
-  RankedTensorType offset_type = tensorflow::GetTypeFromTFTensorShape(
-      {num_dims}, IntegerType::get(getContext(), 32));
-  for (DenseIntElementsAttr shape : shapes) {
-    results.push_back(DenseIntElementsAttr::get(offset_type, cumulative_sum));
-    cumulative_sum[concat_dim] += shape.getValues<int32_t>()[concat_dim];
+  if (getShapeType().isInteger(32)) {
+    SmallVector<int32_t, 4> cumulative_sum(num_dims, 0);
+    RankedTensorType offset_type = tensorflow::GetTypeFromTFTensorShape(
+        {num_dims}, IntegerType::get(getContext(), 32));
+    for (DenseIntElementsAttr shape : shapes) {
+      results.push_back(DenseIntElementsAttr::get(offset_type, cumulative_sum));
+      cumulative_sum[concat_dim] += shape.getValues<int32_t>()[concat_dim];
+    }
+  } else if (getShapeType().isInteger(64)) {
+    SmallVector<int64_t, 4> cumulative_sum(num_dims, 0);
+    RankedTensorType offset_type = tensorflow::GetTypeFromTFTensorShape(
+        {num_dims}, IntegerType::get(getContext(), 64));
+    for (DenseIntElementsAttr shape : shapes) {
+      results.push_back(DenseIntElementsAttr::get(offset_type, cumulative_sum));
+      cumulative_sum[concat_dim] += shape.getValues<int64_t>()[concat_dim];
+    }
+  } else {
+    return failure();
   }
-
   return success();
 }
 
@@ -1944,7 +1955,7 @@ static LogicalResult inferConvReturnTypeComponents(
       // Skip if input or filter size is dynamic.
       if (input_ty.isDynamicDim(dim) || filter_ty.isDynamicDim(i)) continue;
       // Calculate the expected_output_size.
-      tensorflow::Status status = tensorflow::GetWindowedOutputSizeVerbose(
+      absl::Status status = tensorflow::GetWindowedOutputSizeVerbose(
           input_ty.getDimSize(dim), filter_ty.getDimSize(i),
           get_int(dilations[dim]), stride, padding, &expected_output_size,
           &pad_low, &pad_high);
@@ -2050,8 +2061,8 @@ LogicalResult Conv2DBackpropFilterOp::UpdateDataFormat(StringRef data_format) {
 
   // Permute filter sizes operand.
   OpBuilder builder(getOperation());
-  auto filter_sizes_permuted = builder.create<TF::DataFormatVecPermuteOp>(
-      getLoc(), getFilterSizes(),
+  auto filter_sizes_permuted = TF::DataFormatVecPermuteOp::create(
+      builder, getLoc(), getFilterSizes(),
       StringAttr::get(getContext(), src_data_format),
       StringAttr::get(getContext(), data_format));
   setOperand(1, filter_sizes_permuted);
@@ -2125,8 +2136,9 @@ LogicalResult Conv2DBackpropInputOp::UpdateDataFormat(StringRef data_format) {
 
   // Permute input sizes operand.
   OpBuilder builder(getOperation());
-  auto input_sizes_permuted = builder.create<TF::DataFormatVecPermuteOp>(
-      getLoc(), getInputSizes(), StringAttr::get(getContext(), src_data_format),
+  auto input_sizes_permuted = TF::DataFormatVecPermuteOp::create(
+      builder, getLoc(), getInputSizes(),
+      StringAttr::get(getContext(), src_data_format),
       StringAttr::get(getContext(), data_format));
   setOperand(0, input_sizes_permuted);
 
@@ -2278,7 +2290,7 @@ class DivNoNanOrMulNoNanConstantY : public OpRewritePattern<OpT> {
     // TF::ConstOp, i.e., if `y` is defined by an op and it is the tf.Const op.
     // In that case, `yDefOp` stores this tf.Const op.
     // Note that if `y` is a block argument, `y.getDefiningOp()` will return
-    // null, which will get propogated by dyn_cast_or_null to `yDefOp`.
+    // null, which will get propagated by dyn_cast_or_null to `yDefOp`.
     // Further, if `y` is defined by an op other than tf.Const,
     // `y.getDefiningOp()` will not return null but dyn_cast_or_null will.
     if (auto yDefOp = dyn_cast_or_null<TF::ConstOp>(y.getDefiningOp())) {
@@ -2450,13 +2462,13 @@ LogicalResult DynamicStitchOp::verify() {
 //===----------------------------------------------------------------------===//
 
 // Verifies that,
-// * Arity of the op is at most two.
+// * Arity of the op is one or two.
 //
 // TODO(hinsu): Verify einsum equation attribute.
 LogicalResult EinsumOp::verify() {
   EinsumOp op = *this;
-  if (op.getN() > 2) {
-    return op.emitOpError("supports at most two operands");
+  if (op.getN() != 1 && op.getN() != 2) {
+    return op.emitOpError("must have 1 or 2 operands");
   }
   return success();
 }
@@ -2630,7 +2642,8 @@ namespace {
 // Flips the incompatible_shape_error attribute to true if the shapes are known
 // to be compatible.
 template <typename Ty>
-static LogicalResult flipComatibleShapeError(Ty op, PatternRewriter& rewriter) {
+static LogicalResult flipCompatibleShapeError(Ty op,
+                                              PatternRewriter& rewriter) {
   if (op.getIncompatibleShapeError()) {
     return rewriter.notifyMatchFailure(op, "the attribute is already true");
   }
@@ -2663,12 +2676,12 @@ static LogicalResult flipComatibleShapeError(Ty op, PatternRewriter& rewriter) {
 
 void EqualOp::getCanonicalizationPatterns(RewritePatternSet& results,
                                           MLIRContext* context) {
-  results.add(flipComatibleShapeError<EqualOp>);
+  results.add(flipCompatibleShapeError<EqualOp>);
 }
 
 void NotEqualOp::getCanonicalizationPatterns(RewritePatternSet& results,
                                              MLIRContext* context) {
-  results.add(flipComatibleShapeError<NotEqualOp>);
+  results.add(flipCompatibleShapeError<NotEqualOp>);
 }
 
 //===----------------------------------------------------------------------===//
@@ -2861,9 +2874,6 @@ OpFoldResult FillOp::fold(FoldAdaptor adaptor) {
 // FusedBatchNormGradOp
 //===----------------------------------------------------------------------===//
 
-// TODO(b/150954845): Add benchmarks to verify that layout preference didn't
-// change in the latest GPU generations.
-
 LogicalResult FusedBatchNormGradV3Op::UpdateDataFormat(StringRef data_format) {
   return ::mlir::TF::UpdateDataFormat(data_format, this);
 }
@@ -2923,7 +2933,7 @@ LogicalResult FusedBatchNormOp::verify() {
 template <class Op>
 static LogicalResult InferenceFoldOperandsPermutation(
     ArrayRef<int64_t> permutation, Op* op) {
-  // FusedBatchNorm in training mode is a layout sentitive operation, and should
+  // FusedBatchNorm in training mode is a layout sensitive operation, and should
   // have already assigned an optimal data format.
   if (op->getIsTraining()) return failure();
   return ::mlir::TF::FoldOperandsPermutation(permutation, op);
@@ -3142,7 +3152,8 @@ LogicalResult FoldConstantIfOp::matchAndRewrite(
   auto rewrite = [&](auto op_type) {
     auto empty = rewriter.getStringAttr("");
     ReplaceTfOpWithNewOp<typename decltype(op_type)::CallOp>(
-        rewriter, op, op.getResultTypes(), op.getInput(), func,
+        rewriter, op, op.getResultTypes(), op.getInput(),
+        /*args_attrs=*/nullptr, /*res_attrs=*/nullptr, func,
         /*config=*/empty, /*config_proto=*/empty, /*executor_type=*/empty);
   };
 
@@ -3220,8 +3231,8 @@ LogicalResult FoldConstantIfRegionOp::matchAndRewrite(
     Type result_type = std::get<0>(it);
     if (result_type != updated_result.getType()) {
       updated_result =
-          rewriter.create<TF::CastOp>(op.getLoc(), result_type, updated_result,
-                                      /*Truncate=*/rewriter.getBoolAttr(false));
+          TF::CastOp::create(rewriter, op.getLoc(), result_type, updated_result,
+                             /*Truncate=*/rewriter.getBoolAttr(false));
     }
   }
   // Inline the region into the block containing the IfRegion.
@@ -3559,7 +3570,7 @@ LogicalResult MeanOp::FoldOperandsPermutation(ArrayRef<int64_t> permutation) {
       {static_cast<int64_t>(shuffled_reduction.size())},
       builder.getIntegerType(32));
   auto values = mlir::DenseIntElementsAttr::get(type, shuffled_reduction);
-  auto shuffled_reduction_op = builder.create<TF::ConstOp>(getLoc(), values);
+  auto shuffled_reduction_op = TF::ConstOp::create(builder, getLoc(), values);
 
   // Use new reduction indices.
   setOperand(1, shuffled_reduction_op);

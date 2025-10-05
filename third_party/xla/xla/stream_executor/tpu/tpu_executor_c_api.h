@@ -26,17 +26,14 @@ extern "C" {
 
 SE_Platform* TpuPlatform_New();
 void TpuPlatform_Free(SE_Platform* platform);
-void TpuPlatform_Initialize(SE_Platform* platform, size_t options_size,
-                            const char** options_key,
-                            const char** options_value, TF_Status* status);
+void TpuPlatform_Initialize(SE_Platform* platform, TF_Status* status);
 bool TpuPlatform_Initialized(SE_Platform* platform);
-SE_StreamExecutor* TpuPlatform_GetExecutor(SE_Platform* platform,
-                                           SE_StreamExecutorConfig* config,
+SE_StreamExecutor* TpuPlatform_GetExecutor(SE_Platform* platform, int ordinal,
                                            TF_Status* status);
 SE_PlatformId TpuPlatform_Id(SE_Platform* platform);
 int64_t TpuPlatform_VisibleDeviceCount(SE_Platform* platform);
 bool TpuPlatform_ShouldRegisterTpuDeviceToDeviceCopy(SE_Platform* platform);
-SE_TpuTopology* TpuPlatform_GetTopologyPtr(SE_Platform* platform);
+const SE_TpuTopology* TpuPlatform_GetTopologyPtr(SE_Platform* platform);
 SE_TpuTopology_Host* TpuPlatform_GetHostLocation(SE_Platform* platform);
 TpuRuntimeVersion TpuPlatform_GetRuntimeVersion(SE_Platform* platform);
 
@@ -93,18 +90,9 @@ void TpuExecutor_EnqueueInfeed(SE_StreamExecutor* executor,
 void TpuExecutor_DequeueOutfeed(SE_StreamExecutor* executor,
                                 int32_t outfeed_queue_index, uint8_t* data,
                                 int64_t size, TF_Status* status);
-void TpuExecutor_WaitForInfeedReady(SE_StreamExecutor* executor,
-                                    int32_t infeed_queue_index,
-                                    TF_Status* status);
-void TpuExecutor_WaitForOutfeedReady(SE_StreamExecutor* executor,
-                                     int32_t outfeed_queue_index,
-                                     TF_Status* status);
 
 void TpuExecutor_BlockHostUntilDone(SE_StreamExecutor* executor,
                                     SE_Stream* stream, TF_Status* status);
-void TpuExecutor_BlockUntilDoneOrFailed(SE_StreamExecutor* executor,
-                                        TF_Status* status);
-void TpuExecutor_SyncAndForgetFailedStreams(SE_StreamExecutor* executor);
 bool TpuExecutor_SynchronizeAllActivity(SE_StreamExecutor* executor);
 
 void TpuExecutor_UnloadAllPrograms(SE_StreamExecutor* executor,
@@ -142,10 +130,6 @@ void TpuStatus_Free(TF_Status* status);
 const char* TpuStatus_Message(TF_Status* status);
 int TpuStatus_Code(TF_Status* status);
 bool TpuStatus_Ok(TF_Status* status);
-
-SE_StreamExecutorConfig* TpuStreamExecutorConfig_Default();
-void TpuStreamExecutorConfig_SetOrdinal(SE_StreamExecutorConfig*, int ordinal);
-void TpuStreamExecutorConfig_Free(SE_StreamExecutorConfig*);
 
 SE_DeviceDescription* TpuDeviceDescription_New();
 void TpuDeviceDescription_Free(SE_DeviceDescription* description);
@@ -229,31 +213,33 @@ void TpuComputationPlacer_AssignLocalDevices(SE_TpuTopology_Host* host,
                                              int* assignment,
                                              TF_Status* status);
 
-int TpuTopology_LogicalDevicesPerHost(SE_TpuTopology* tpu_topology,
+int TpuTopology_LogicalDevicesPerHost(const SE_TpuTopology* tpu_topology,
                                       TpuCoreTypeEnum tpu_core_type);
-int TpuTopology_LogicalDevicesPerChip(SE_TpuTopology* tpu_topology,
+int TpuTopology_LogicalDevicesPerChip(const SE_TpuTopology* tpu_topology,
                                       TpuCoreTypeEnum tpu_core_type);
-int TpuTopology_HostCount(SE_TpuTopology* tpu_topology);
-int TpuTopology_ChipsPerHost(SE_TpuTopology* tpu_topology);
+int TpuTopology_HostCount(const SE_TpuTopology* tpu_topology);
+int TpuTopology_ChipsPerHost(const SE_TpuTopology* tpu_topology);
 
-int TpuTopology_ChipBounds_X(SE_TpuTopology* tpu_topology);
-int TpuTopology_ChipBounds_Y(SE_TpuTopology* tpu_topology);
-int TpuTopology_ChipBounds_Z(SE_TpuTopology* tpu_topology);
-bool TpuTopology_HasChip(SE_TpuTopology* tpu_topology, int x, int y, int z);
-SE_TpuTopology_Core* TpuTopology_CoreForId(SE_TpuTopology* tpu_topology,
+int TpuTopology_ChipBounds_X(const SE_TpuTopology* tpu_topology);
+int TpuTopology_ChipBounds_Y(const SE_TpuTopology* tpu_topology);
+int TpuTopology_ChipBounds_Z(const SE_TpuTopology* tpu_topology);
+bool TpuTopology_HasChip(const SE_TpuTopology* tpu_topology, int x, int y,
+                         int z);
+SE_TpuTopology_Core* TpuTopology_CoreForId(const SE_TpuTopology* tpu_topology,
                                            TpuCoreTypeEnum tpu_core_type,
                                            int id);
-SE_TpuTopology_Core* TpuTopology_Core(SE_TpuTopology* tpu_topology,
+SE_TpuTopology_Core* TpuTopology_Core(const SE_TpuTopology* tpu_topology,
                                       TpuCoreTypeEnum tpu_core_type, int x,
                                       int y, int z, int index);
-int TpuTopology_NumCores(SE_TpuTopology* tpu_topology,
+int TpuTopology_NumCores(const SE_TpuTopology* tpu_topology,
                          TpuCoreTypeEnum tpu_core_type);
 // 'cores' should be a preallocated array of size TpuTopology_NumCores.
-void TpuTopology_Cores(SE_TpuTopology* tpu_topology,
+void TpuTopology_Cores(const SE_TpuTopology* tpu_topology,
                        TpuCoreTypeEnum tpu_core_type,
                        SE_TpuTopology_Core** cores);
-int TpuTopology_IdForHost(SE_TpuTopology* tpu_topology, int x, int y, int z);
-TpuVersionEnum TpuTopology_Version(SE_TpuTopology* tpu_topology);
+int TpuTopology_IdForHost(const SE_TpuTopology* tpu_topology, int x, int y,
+                          int z);
+TpuVersionEnum TpuTopology_Version(const SE_TpuTopology* tpu_topology);
 void TpuCoreLocation_ChipCoordinates(SE_TpuTopology_Core* tpu_core_location,
                                      int* x, int* y, int* z);
 void TpuCoreLocation_HostCoordinates(SE_TpuTopology_Core* tpu_core_location,
@@ -305,7 +291,6 @@ TFTPU_CAPI_EXPORT void TpuCompiler_DefaultDeviceShapeRepresentation(
 TFTPU_CAPI_EXPORT void TpuExecutable_ExecuteAsyncOnStream(
     SE_Executable* executable, SE_ExecutableRunOptions* se_options,
     SE_ExecutionInput** se_arguments, int se_arguments_size,
-    SE_HloExecutionProfile* hlo_execution_profile,
     SE_ExecutionOutput* se_output, TF_Status* status);
 
 // This frees the XLA_ShapeIndex* array allocated when se_output is returned by
@@ -427,10 +412,6 @@ struct TfTpu_ExecutorApiFn {
   TFTPU_ADD_FN_IN_STRUCT(TpuStatus_Message);
   TFTPU_ADD_FN_IN_STRUCT(TpuStatus_Code);
   TFTPU_ADD_FN_IN_STRUCT(TpuStatus_Ok);
-
-  TFTPU_ADD_FN_IN_STRUCT(TpuStreamExecutorConfig_Default);
-  TFTPU_ADD_FN_IN_STRUCT(TpuStreamExecutorConfig_SetOrdinal);
-  TFTPU_ADD_FN_IN_STRUCT(TpuStreamExecutorConfig_Free);
 
   TFTPU_ADD_FN_IN_STRUCT(TpuDeviceDescription_New);
   TFTPU_ADD_FN_IN_STRUCT(TpuDeviceDescription_Free);

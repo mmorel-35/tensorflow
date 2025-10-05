@@ -1,6 +1,7 @@
 # Description:
 #   Utilities to perform MLIR TFG graph transformations.
 
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load(
     "//tensorflow:tensorflow.bzl",
     "tf_cc_binary",
@@ -26,7 +27,8 @@ cc_library(
         "//tensorflow/core/platform:path",
         "//tensorflow/core/platform:status",
         "//tensorflow/core/protobuf:for_core_protos_cc",
-        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status",
     ],
 )
 
@@ -61,7 +63,11 @@ tf_cc_binary(
     srcs = [
         "tfg_graph_transforms_main.cc",
     ],
-    deps = TFG_GRAPH_TRANSFORM_DEPS,
+    deps = TFG_GRAPH_TRANSFORM_DEPS + [
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status:statusor",
+        "@llvm-project//mlir:Support",
+    ],
 )
 
 # Description:
@@ -73,5 +79,9 @@ cc_library(
         "tfg_graph_transforms_main.cc",
     ],
     visibility = ["//visibility:public"],
-    deps = TFG_GRAPH_TRANSFORM_DEPS,
+    deps = TFG_GRAPH_TRANSFORM_DEPS + [
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status:statusor",
+        "@llvm-project//mlir:Support",
+    ],
 )

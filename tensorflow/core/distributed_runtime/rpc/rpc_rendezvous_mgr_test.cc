@@ -15,12 +15,12 @@ limitations under the License.
 
 #include "tensorflow/core/distributed_runtime/rpc/rpc_rendezvous_mgr.h"
 
+#include "absl/synchronization/notification.h"
 #include "tensorflow/core/common_runtime/process_util.h"
 #include "tensorflow/core/distributed_runtime/test_utils.h"
 #include "tensorflow/core/framework/cancellation.h"
 #include "tensorflow/core/framework/control_flow.h"
 #include "tensorflow/core/lib/core/errors.h"
-#include "tensorflow/core/lib/core/notification.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/platform/blocking_counter.h"
 #include "tensorflow/core/platform/env.h"
@@ -80,11 +80,11 @@ class DummyWorkerCache : public WorkerCacheInterface {
     }
     return dummy_remote_worker_;
   }
-  Status GetEagerClientCache(
+  absl::Status GetEagerClientCache(
       std::unique_ptr<eager::EagerClientCache>* eager_client_cache) override {
     return errors::Unimplemented("Unimplemented.");
   }
-  Status GetCoordinationClientCache(
+  absl::Status GetCoordinationClientCache(
       std::unique_ptr<CoordinationClientCache>* coord_client_cache) override {
     return errors::Unimplemented("Unimplemented.");
   }
@@ -103,7 +103,7 @@ static Device* CreateDevice(const char* type, const char* name) {
   class FakeDevice : public Device {
    public:
     explicit FakeDevice(const DeviceAttributes& attr) : Device(nullptr, attr) {}
-    Status Sync() override { return absl::OkStatus(); }
+    absl::Status Sync() override { return absl::OkStatus(); }
     Allocator* GetAllocator(AllocatorAttributes) override { return nullptr; }
   };
   DeviceAttributes attr;
@@ -177,7 +177,7 @@ TEST_F(RpcRendezvousMgrTest, LocalAbort) {
     bool val_dead = false;
     Rendezvous::Args args;
     TF_ASSERT_OK(rendez->Initialize(&worker_session_));
-    EXPECT_TRUE(errors::IsAborted(rendez->Recv(key, args, &val, &val_dead)));
+    EXPECT_TRUE(absl::IsAborted(rendez->Recv(key, args, &val, &val_dead)));
   }
   {  // Cleanup causes Abort().
     const int64_t step_id = 321;
@@ -190,7 +190,7 @@ TEST_F(RpcRendezvousMgrTest, LocalAbort) {
     bool val_dead = false;
     Rendezvous::Args args;
     TF_ASSERT_OK(rendez->Initialize(&worker_session_));
-    EXPECT_TRUE(errors::IsAborted(rendez->Recv(key, args, &val, &val_dead)));
+    EXPECT_TRUE(absl::IsAborted(rendez->Recv(key, args, &val, &val_dead)));
   }
 }
 
@@ -201,7 +201,7 @@ TEST_F(RpcRendezvousMgrTest, LocalCancel) {
   auto* cm = new CancellationManager();
   const int64_t step_id = 123;
   tsl::core::RefCountPtr<RemoteRendezvous> rendez = rmgr_.Find(step_id);
-  Notification n;
+  absl::Notification n;
   SchedClosure([this, cm, &n]() {
     env.env->SleepForMicroseconds(100 * 1000);
     cm->StartCancel();
@@ -212,7 +212,7 @@ TEST_F(RpcRendezvousMgrTest, LocalCancel) {
   Rendezvous::Args args;
   args.cancellation_manager = cm;
   TF_ASSERT_OK(rendez->Initialize(&worker_session_));
-  EXPECT_TRUE(errors::IsCancelled(rendez->Recv(key, args, &val, &val_dead)));
+  EXPECT_TRUE(absl::IsCancelled(rendez->Recv(key, args, &val, &val_dead)));
   n.WaitForNotification();
   delete cm;
 }
@@ -224,7 +224,7 @@ TEST_F(RpcRendezvousMgrTest, CancelAfterReceived) {
   auto* cm = new CancellationManager();
   const int64_t step_id = 123;
   tsl::core::RefCountPtr<RemoteRendezvous> rendez = rmgr_.Find(step_id);
-  Notification n;
+  absl::Notification n;
   SchedClosure([this, rendez = rendez.get(), key, cm, &n]() {
     env.env->SleepForMicroseconds(100 * 1000);
     TF_ASSERT_OK(rendez->Send(key, Rendezvous::Args(), V("peach"), false));
@@ -269,10 +269,10 @@ TEST_F(RpcRendezvousMgrTest, TransferDummyDeviceContext) {
     TF_ASSERT_OK(rendez->Send(key, args, V("peach"), false));
   }
   {
-    Notification n;
+    absl::Notification n;
     rmgr_.RecvLocalAsync(
         step_id, key,
-        [&n](const Status& s, const Rendezvous::Args send_args,
+        [&n](const absl::Status& s, const Rendezvous::Args send_args,
              const Rendezvous::Args recv_args, const Tensor& val,
              bool is_dead) {
           auto send_dev_context =
@@ -320,21 +320,21 @@ TEST_F(RpcRendezvousMgrTest, RemoteRecvAsyncMany) {
     int num_requests = 10000;
     Tensor val(DT_STRING);
     mutex mu_;
-    Status status = absl::OkStatus();
+    absl::Status status = absl::OkStatus();
     BlockingCounter counter(num_requests);
 
     for (int i = 0; i < num_requests; i++) {
-      rendez->RecvAsync(
-          key, args,
-          [&mu_, &status, &counter](const Status& s, const Rendezvous::Args&,
-                                    const Rendezvous::Args&, const Tensor&,
-                                    const bool) {
-            {
-              mutex_lock l(mu_);
-              status.Update(s);
-            }
-            counter.DecrementCount();
-          });
+      rendez->RecvAsync(key, args,
+                        [&mu_, &status, &counter](const absl::Status& s,
+                                                  const Rendezvous::Args&,
+                                                  const Rendezvous::Args&,
+                                                  const Tensor&, const bool) {
+                          {
+                            mutex_lock l(mu_);
+                            status.Update(s);
+                          }
+                          counter.DecrementCount();
+                        });
     }
     counter.Wait();
     TF_ASSERT_OK(status);

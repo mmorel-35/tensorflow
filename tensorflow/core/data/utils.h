@@ -18,9 +18,11 @@ limitations under the License.
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/statusor.h"
+#include "tensorflow/core/framework/tf_data_file_logger_options.h"
 #include "tensorflow/core/protobuf/data_service.pb.h"
 
 namespace tensorflow {
@@ -47,13 +49,14 @@ std::string LocalityOptimizedPath(const std::string& path);
 // Returns `true` if tf.data service compression should be disabled at runtime
 // based on (1) the inputs or (2) the properties of the calling trainer.
 absl::StatusOr<bool> DisableCompressionAtRuntime(
-    const std::string& data_transfer_protocol, DeploymentMode deployment_mode);
+    const std::string& data_transfer_protocol, DeploymentMode deployment_mode,
+    DataServiceMetadata::Compression compression);
 
 // Log filenames into TfDataLogger. Uses the same  TfDataFileLoggerClient at
 // every call. Thread safe.
 // TODO (shushanik) Implement streamz error reporting in case the logging is not
 // successful
-void LogFilenames(const std::vector<std::string>& files);
+void LogFilenames(const LogFilenamesOptions& options);
 
 }  // namespace data
 }  // namespace tensorflow

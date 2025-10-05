@@ -1,3 +1,5 @@
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     default_visibility = ["//visibility:public"],
@@ -23,6 +25,7 @@ cc_library(
         ":calculator",
         "//tensorflow/lite/delegates/gpu/common:gpu_info",
         "//tensorflow/lite/delegates/gpu/common:types",
+        "//tensorflow/lite/delegates/gpu/gl/compiler:shader_code",
     ],
 )
 
@@ -44,7 +47,10 @@ cc_library(
             "@com_google_absl//absl/memory",
             "@flatbuffers",
         ],
-    }),
+    }) + [
+        "//tensorflow/lite/delegates/gpu/common:model",
+        "//tensorflow/lite/delegates/gpu/gl/compiler:shader_code",
+    ],
 )
 
 cc_library(

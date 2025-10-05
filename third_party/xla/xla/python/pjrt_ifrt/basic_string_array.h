@@ -27,16 +27,20 @@ limitations under the License.
 #include "absl/base/thread_annotations.h"
 #include "absl/container/inlined_vector.h"
 #include "absl/log/check.h"
-#include "absl/strings/string_view.h"
+#include "absl/strings/cord.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "llvm/Support/ExtensibleRTTI.h"
 #include "xla/pjrt/pjrt_layout.h"
 #include "xla/python/ifrt/array.h"
+#include "xla/python/ifrt/device.h"
+#include "xla/python/ifrt/device_list.h"
 #include "xla/python/ifrt/dtype.h"
-#include "xla/python/ifrt/future.h"
+#include "xla/python/ifrt/memory.h"
 #include "xla/python/ifrt/shape.h"
 #include "xla/python/ifrt/sharding.h"
+#include "xla/python/ifrt/user_context.h"
+#include "xla/tsl/concurrency/future.h"
 #include "xla/tsl/concurrency/ref_count.h"
 
 namespace xla {
@@ -51,7 +55,7 @@ class BasicStringArray final
     : public llvm::RTTIExtends<BasicStringArray, Array> {
  public:
   // Must be in dense major to minor order.
-  using Buffer = absl::Span<const absl::string_view>;
+  using Buffer = absl::Span<const absl::Cord>;
 
   // One Buffer per shard.
   static constexpr int kBuffersInlineSize = 1;
@@ -62,16 +66,16 @@ class BasicStringArray final
   using OnDoneWithBuffer = std::function<void()>;
 
   // General array construction. The `buffers` and their elements
-  // (absl::string_views) must live until the `on_done_with_buffer` is called.
+  // (absl::Cords) must live until the `on_done_with_buffer` is called.
   // The number and order of buffers must match the number and order of devices
   // in `sharding`.
   static absl::StatusOr<tsl::RCReference<BasicStringArray>> Create(
-      Client* client, Shape shape, std::shared_ptr<const Sharding> sharding,
-      Future<Buffers> buffers, OnDoneWithBuffer on_done_with_buffer);
+      Client* client, Shape shape, ShardingRef sharding,
+      tsl::Future<Buffers> buffers, OnDoneWithBuffer on_done_with_buffer);
 
   ~BasicStringArray() override;
 
-  absl::StatusOr<tsl::RCReference<Array>> FullyReplicatedShard(
+  absl::StatusOr<ArrayRef> FullyReplicatedShard(
       ArrayCopySemantics semantics) override;
 
   // ifrt::Array API
@@ -96,28 +100,33 @@ class BasicStringArray final
     return *sharding_;
   }
 
-  std::shared_ptr<const Sharding> shared_ptr_sharding() const override {
+  ShardingRef shared_ptr_sharding() const override {
     DCHECK(this);
     return sharding_;
   }
 
-  absl::StatusOr<std::unique_ptr<PjRtLayout>> layout() const override;
+  absl::StatusOr<std::shared_ptr<const xla::PjRtLayout>> pjrt_layout()
+      const override;
 
-  absl::StatusOr<std::vector<tsl::RCReference<Array>>>
-  DisassembleIntoSingleDeviceArrays(ArrayCopySemantics semantics) override;
+  UserContextRef user_context() const override { return user_context_; }
+
+  absl::StatusOr<std::vector<ArrayRef>> DisassembleIntoSingleDeviceArrays(
+      ArrayCopySemantics array_copy_semantics,
+      SingleDeviceShardSemantics single_device_shard_semantics) override;
 
   ABSL_MUST_USE_RESULT
-  Future<> CopyToHostBuffer(
+  tsl::Future<> CopyToHostBuffer(
       void* data, std::optional<absl::Span<const int64_t>> byte_strides,
       ArrayCopySemantics semantics) override;
 
-  absl::StatusOr<tsl::RCReference<Array>> Reshard(
-      std::shared_ptr<const Sharding> new_sharding,
-      ArrayCopySemantics semantics) override;
+  absl::StatusOr<ArrayRef> Copy(
+      std::optional<xla::ifrt::DeviceListRef> devices,
+      std::optional<xla::ifrt::MemoryKind> memory_kind,
+      ArrayCopySemantics semantics);
 
-  Future<> GetReadyFuture() const override;
+  tsl::Future<> GetReadyFuture() const override;
 
-  Future<> Delete() override;
+  tsl::Future<> Delete() override;
   bool IsDeleted() const override;
 
   std::string DebugString() const override;
@@ -126,7 +135,7 @@ class BasicStringArray final
 
   // Returns a future holding the string buffers underlying this array. Valid
   // only while this Array object is alive.
-  Future<Buffers> buffers() const {
+  tsl::Future<Buffers> buffers() const {
     return buffers_;  // Future copying is not considered expensive.
   }
 
@@ -136,9 +145,8 @@ class BasicStringArray final
   template <typename T, typename... Args>
   friend tsl::RCReference<T> tsl::MakeRef(Args&&... args);
 
-  BasicStringArray(Client* client, Shape shape,
-                   std::shared_ptr<const Sharding> sharding,
-                   Future<Buffers> buffers, Future<> ready_future,
+  BasicStringArray(Client* client, Shape shape, ShardingRef sharding,
+                   tsl::Future<Buffers> buffers, tsl::Future<> ready_future,
                    OnDoneWithBuffer on_done_with_buffer);
 
   // Internal implementation of delete.
@@ -146,9 +154,10 @@ class BasicStringArray final
 
   Client* client_;
   Shape shape_;
-  std::shared_ptr<const Sharding> sharding_;
-  Future<Buffers> buffers_;
-  Future<> ready_future_;
+  ShardingRef sharding_;
+  const UserContextRef user_context_;
+  tsl::Future<Buffers> buffers_;
+  tsl::Future<> ready_future_;
 
   mutable absl::Mutex mu_;
   OnDoneWithBuffer on_done_with_buffer_ ABSL_GUARDED_BY(mu_);

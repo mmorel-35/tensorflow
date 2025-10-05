@@ -16,25 +16,42 @@ limitations under the License.
 
 #include "xla/tests/local_client_test_base.h"
 
+#include <cstdint>
 #include <memory>
+#include <utility>
 #include <vector>
 
+#include "absl/base/const_init.h"
+#include "absl/log/log.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
-#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
+#include "absl/synchronization/mutex.h"
+#include "absl/types/span.h"
+#include "unsupported/Eigen/CXX11/Tensor"
+#include "xla/client/client_library.h"
+#include "xla/client/executable_build_options.h"
 #include "xla/client/local_client.h"
-#include "xla/client/xla_computation.h"
-#include "xla/map_util.h"
+#include "xla/executable_run_options.h"
+#include "xla/hlo/builder/xla_computation.h"
+#include "xla/hlo/parser/hlo_parser.h"
+#include "xla/hlo/testlib/test_helpers.h"
 #include "xla/service/hlo_module_config.h"
-#include "xla/service/hlo_parser.h"
-#include "xla/shape_util.h"
+#include "xla/service/platform_util.h"
+#include "xla/service/shaped_buffer.h"
+#include "xla/service/stream_pool.h"
+#include "xla/service/transfer_manager.h"
+#include "xla/shape.h"
 #include "xla/status_macros.h"
-#include "xla/statusor.h"
+#include "xla/stream_executor/device_memory.h"
+#include "xla/stream_executor/device_memory_allocator.h"
+#include "xla/stream_executor/platform.h"
+#include "xla/stream_executor/stream.h"
 #include "xla/stream_executor/stream_executor_memory_allocator.h"
-#include "xla/test_helpers.h"
-#include "tsl/platform/env.h"
-#include "tsl/platform/errors.h"
-#include "tsl/platform/logging.h"
-#include "tsl/platform/threadpool.h"
+#include "xla/tsl/platform/env.h"
+#include "xla/tsl/platform/errors.h"
+#include "xla/tsl/platform/statusor.h"
+#include "xla/tsl/platform/threadpool.h"
 
 namespace xla {
 
@@ -45,7 +62,7 @@ absl::StatusOr<se::OwningDeviceMemory> TestAllocator::Allocate(
     int64_t memory_space) {
   VLOG(2) << "Allocate(" << device_ordinal << ", " << size << ")";
   {
-    absl::MutexLock lock(&count_mutex_);
+    absl::MutexLock lock(count_mutex_);
     allocation_count_++;
     device_allocation_count_[device_ordinal]++;
   }
@@ -57,7 +74,7 @@ absl::Status TestAllocator::Deallocate(int device_ordinal,
                                        se::DeviceMemoryBase mem) {
   VLOG(2) << "Deallocate(" << device_ordinal << ")";
   {
-    absl::MutexLock lock(&count_mutex_);
+    absl::MutexLock lock(count_mutex_);
     deallocation_count_++;
     device_deallocation_count_[device_ordinal]++;
   }
@@ -65,12 +82,12 @@ absl::Status TestAllocator::Deallocate(int device_ordinal,
 }
 
 int64_t TestAllocator::allocation_count() const {
-  absl::MutexLock lock(&count_mutex_);
+  absl::MutexLock lock(count_mutex_);
   return allocation_count_;
 }
 
 int64_t TestAllocator::allocation_count(int device_ordinal) const {
-  absl::MutexLock lock(&count_mutex_);
+  absl::MutexLock lock(count_mutex_);
   auto it = device_allocation_count_.find(device_ordinal);
   if (it == device_allocation_count_.end()) {
     return 0;
@@ -80,12 +97,12 @@ int64_t TestAllocator::allocation_count(int device_ordinal) const {
 }
 
 int64_t TestAllocator::deallocation_count() const {
-  absl::MutexLock lock(&count_mutex_);
+  absl::MutexLock lock(count_mutex_);
   return deallocation_count_;
 }
 
 int64_t TestAllocator::deallocation_count(int device_ordinal) const {
-  absl::MutexLock lock(&count_mutex_);
+  absl::MutexLock lock(count_mutex_);
   auto it = device_deallocation_count_.find(device_ordinal);
   if (it == device_deallocation_count_.end()) {
     return 0;
@@ -97,7 +114,7 @@ int64_t TestAllocator::deallocation_count(int device_ordinal) const {
 /* static */ TestAllocator* LocalClientTestBase::GetOrCreateAllocator(
     se::Platform* platform) {
   static absl::Mutex mu(absl::kConstInit);
-  absl::MutexLock lock(&mu);
+  absl::MutexLock lock(mu);
 
   if (allocator_ == nullptr) {
     allocator_ = new TestAllocator(
@@ -200,12 +217,15 @@ absl::StatusOr<ScopedShapedBuffer> LocalClientTestBase::ExecuteLocally(
       build_options.device_ordinal() == -1 ? 0 : build_options.device_ordinal();
   auto* stream = run_options.stream();
   if (!stream) {
-    stream = local_client_->mutable_backend()
-                 ->BorrowStream(device_ordinal)
-                 .value()
-                 .get();
+    std::unique_ptr<stream_executor::Stream, xla::StreamPool::PtrDeleter>
+        stream_borrowed = local_client_->mutable_backend()
+                              ->BorrowStream(device_ordinal)
+                              .value();
+    TF_RETURN_IF_ERROR(stream_borrowed->BlockHostUntilDone());
+  } else {
+    TF_RETURN_IF_ERROR(stream->BlockHostUntilDone());
   }
-  TF_RETURN_IF_ERROR(stream->BlockHostUntilDone());
+
   return std::move(ret);
 }
 

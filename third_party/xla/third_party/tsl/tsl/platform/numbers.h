@@ -16,11 +16,16 @@ limitations under the License.
 #ifndef TENSORFLOW_TSL_PLATFORM_NUMBERS_H_
 #define TENSORFLOW_TSL_PLATFORM_NUMBERS_H_
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
+#include "absl/base/macros.h"
+#include "absl/strings/numbers.h"
+#include "absl/strings/string_view.h"
+#include "xla/tsl/platform/types.h"
 #include "tsl/platform/stringpiece.h"
-#include "tsl/platform/types.h"
 
 namespace tsl {
 namespace strings {
@@ -46,7 +51,7 @@ namespace strings {
 //     Int64, UInt64, Int, Uint:        22 bytes
 //     Time:                            30 bytes
 // Use kFastToBufferSize rather than hardcoding constants.
-static const int kFastToBufferSize = 32;
+inline constexpr int kFastToBufferSize = 32;
 
 // ----------------------------------------------------------------------
 // FastInt32ToBufferLeft()
@@ -74,85 +79,129 @@ size_t FastUInt64ToBufferLeft(uint64_t i, char* buffer);  // at least 22 bytes
 size_t DoubleToBuffer(double value, char* buffer);
 size_t FloatToBuffer(float value, char* buffer);
 
+namespace strings_internal {
+// AlphaNumBuffer allows a way to pass a string to absl::StrCat without having
+// to do memory allocation. It is simply a pair of a fixed-size character
+// array, and a size.  Please don't use outside of the "strings" package.
+struct AlphaNumBuffer {
+  std::array<char, kFastToBufferSize> data;
+  size_t size;
+
+  // Support for absl::StrCat() etc.
+  template <typename Sink>
+  friend void AbslStringify(Sink& sink, const AlphaNumBuffer& buffer) {
+    sink.Append(absl::string_view(buffer.data.data(), buffer.size));
+  }
+};
+}  // namespace strings_internal
+
+// Helper function for legacy google formatting.
+template <typename T>
+const T& LegacyPrecision(const T& t) {
+  return t;
+}
+
+// Have to use overloads rather than specialization because specialization can't
+// change the function return type.
+
+// Helper function for the old strings::StrCat default "float" format, which was
+// either %.6g, %.7g, %.8g, or %.9g, basically the smallest string that would
+// round-trip back to the original float. This is fast.
+strings_internal::AlphaNumBuffer LegacyPrecision(float f);
+
+// Helper function for the old strings::StrCat default "double" format, which
+// was either %.15g or %.17g, depending on whether the %.15g format would
+// round-trip back to the original double.  This is approx. 20-30x slower than
+// the others.
+strings_internal::AlphaNumBuffer LegacyPrecision(double d);
+
 // Convert a 64-bit fingerprint value to an ASCII representation.
 std::string FpToString(Fprint fp);
 
-// Attempt to parse a fingerprint in the form encoded by FpToString.  If
-// successful, stores the fingerprint in *fp and returns true.  Otherwise,
-// returns false.
-bool StringToFp(const std::string& s, Fprint* fp);
-
-// Convert a 64-bit fingerprint value to an ASCII representation that
-// is terminated by a '\0'.
-// Buf must point to an array of at least kFastToBufferSize characters
-StringPiece Uint64ToHexString(uint64_t v, char* buf);
-
-// Attempt to parse a uint64 in the form encoded by FastUint64ToHexString.  If
-// successful, stores the value in *v and returns true.  Otherwise,
-// returns false.
-bool HexStringToUint64(const StringPiece& s, uint64_t* result);
+// Attempt to parse a `uint64_t` in the form encoded by
+// `absl::StrCat(absl::Hex(*result))`.  If successful, stores the value in
+// `result` and returns true.  Otherwise, returns false.
+bool HexStringToUint64(absl::string_view s, uint64_t* result);
 
 // Convert strings to 32bit integer values.
 // Leading and trailing spaces are allowed.
 // Return false with overflow or invalid input.
-bool safe_strto32(StringPiece str, int32_t* value);
+ABSL_DEPRECATE_AND_INLINE()
+inline bool safe_strto32(absl::string_view str, int32_t* value) {
+  return absl::SimpleAtoi(str, value);
+}
 
 // Convert strings to unsigned 32bit integer values.
 // Leading and trailing spaces are allowed.
 // Return false with overflow or invalid input.
-bool safe_strtou32(StringPiece str, uint32_t* value);
+ABSL_DEPRECATE_AND_INLINE()
+inline bool safe_strtou32(absl::string_view str, uint32_t* value) {
+  return absl::SimpleAtoi(str, value);
+}
 
 // Convert strings to 64bit integer values.
 // Leading and trailing spaces are allowed.
 // Return false with overflow or invalid input.
-bool safe_strto64(StringPiece str, int64_t* value);
+ABSL_DEPRECATE_AND_INLINE()
+inline bool safe_strto64(absl::string_view str, int64_t* value) {
+  return absl::SimpleAtoi(str, value);
+}
 
 // Convert strings to unsigned 64bit integer values.
 // Leading and trailing spaces are allowed.
 // Return false with overflow or invalid input.
-bool safe_strtou64(StringPiece str, uint64_t* value);
+ABSL_DEPRECATE_AND_INLINE()
+inline bool safe_strtou64(absl::string_view str, uint64_t* value) {
+  return absl::SimpleAtoi(str, value);
+}
 
 // Convert strings to floating point values.
 // Leading and trailing spaces are allowed.
 // Values may be rounded on over- and underflow.
 // Returns false on invalid input or if `strlen(value) >= kFastToBufferSize`.
-bool safe_strtof(StringPiece str, float* value);
+ABSL_DEPRECATE_AND_INLINE()
+inline bool safe_strtof(absl::string_view str, float* value) {
+  return absl::SimpleAtof(str, value);
+}
 
 // Convert strings to double precision floating point values.
 // Leading and trailing spaces are allowed.
 // Values may be rounded on over- and underflow.
 // Returns false on invalid input or if `strlen(value) >= kFastToBufferSize`.
-bool safe_strtod(StringPiece str, double* value);
-
-inline bool ProtoParseNumeric(StringPiece s, int32_t* value) {
-  return safe_strto32(s, value);
+ABSL_DEPRECATE_AND_INLINE()
+inline bool safe_strtod(absl::string_view str, double* value) {
+  return absl::SimpleAtod(str, value);
 }
 
-inline bool ProtoParseNumeric(StringPiece s, uint32_t* value) {
-  return safe_strtou32(s, value);
+inline bool ProtoParseNumeric(absl::string_view s, int32_t* value) {
+  return absl::SimpleAtoi(s, value);
 }
 
-inline bool ProtoParseNumeric(StringPiece s, int64_t* value) {
-  return safe_strto64(s, value);
+inline bool ProtoParseNumeric(absl::string_view s, uint32_t* value) {
+  return absl::SimpleAtoi(s, value);
 }
 
-inline bool ProtoParseNumeric(StringPiece s, uint64_t* value) {
-  return safe_strtou64(s, value);
+inline bool ProtoParseNumeric(absl::string_view s, int64_t* value) {
+  return absl::SimpleAtoi(s, value);
 }
 
-inline bool ProtoParseNumeric(StringPiece s, float* value) {
-  return safe_strtof(s, value);
+inline bool ProtoParseNumeric(absl::string_view s, uint64_t* value) {
+  return absl::SimpleAtoi(s, value);
 }
 
-inline bool ProtoParseNumeric(StringPiece s, double* value) {
-  return safe_strtod(s, value);
+inline bool ProtoParseNumeric(absl::string_view s, float* value) {
+  return absl::SimpleAtof(s, value);
+}
+
+inline bool ProtoParseNumeric(absl::string_view s, double* value) {
+  return absl::SimpleAtod(s, value);
 }
 
 // Convert strings to number of type T.
 // Leading and trailing spaces are allowed.
 // Values may be rounded on over- and underflow.
 template <typename T>
-bool SafeStringToNumeric(StringPiece s, T* value) {
+bool SafeStringToNumeric(absl::string_view s, T* value) {
   return ProtoParseNumeric(s, value);
 }
 

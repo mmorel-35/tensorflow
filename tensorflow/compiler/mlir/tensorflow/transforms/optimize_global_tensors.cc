@@ -17,7 +17,8 @@ limitations under the License.
 
 #include <cstddef>
 #include <map>
-#include <set>
+#include <memory>
+#include <vector>
 
 #include "llvm/ADT/DenseMap.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
@@ -136,7 +137,7 @@ void EraseUnusedGlobalTensors(ModuleOp module,
   }
 }
 
-void EraseUnusedBoundInputs(ModuleOp module) {
+LogicalResult EraseUnusedBoundInputs(ModuleOp module) {
   for (auto func : module.getOps<func::FuncOp>()) {
     llvm::BitVector args_to_erase(func.getNumArguments());
     for (int i = 0, e = func.getNumArguments(); i < e; i++) {
@@ -145,8 +146,12 @@ void EraseUnusedBoundInputs(ModuleOp module) {
         args_to_erase.set(i);
       }
     }
-    func.eraseArguments(args_to_erase);
+
+    if (failed(func.eraseArguments(args_to_erase))) {
+      return failure();
+    }
   }
+  return success();
 }
 
 void OptimizeGlobalTensorsPass::runOnOperation() {
@@ -155,7 +160,9 @@ void OptimizeGlobalTensorsPass::runOnOperation() {
     return;
   }
 
-  EraseUnusedBoundInputs(module);
+  if (failed(EraseUnusedBoundInputs(module))) {
+    return signalPassFailure();
+  }
 
   TF::ResourceAnalyzer resource_analyzer(module);
 

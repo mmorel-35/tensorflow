@@ -19,9 +19,9 @@ limitations under the License.
 #include <gtest/gtest.h>
 #include "xla/pjrt/c/pjrt_c_api.h"
 #include "xla/pjrt/c/pjrt_c_api_wrapper_impl.h"
-#include "tsl/lib/core/status_test_util.h"
+#include "xla/tsl/lib/core/status_test_util.h"
+#include "xla/tsl/protobuf/error_codes.pb.h"
 #include "tsl/platform/status_matchers.h"
-#include "tsl/protobuf/error_codes.pb.h"
 namespace {
 
 using ::testing::HasSubstr;
@@ -44,11 +44,13 @@ TEST(PjRtApiTest, SetAndGetGlobalPjRtApi) {
   EXPECT_EQ(output, &api);
   EXPECT_EQ(output_lowercase, &api);
   EXPECT_THAT(pjrt::SetPjrtApi("CPU", &api),
-              StatusIs(tensorflow::error::ALREADY_EXISTS,
-                       HasSubstr("PJRT_Api already exists for device type")));
+              absl_testing::StatusIs(
+                  tensorflow::error::ALREADY_EXISTS,
+                  HasSubstr("PJRT_Api already exists for device type")));
   EXPECT_THAT(pjrt::PjrtApi("TPU"),
-              StatusIs(tensorflow::error::NOT_FOUND,
-                       HasSubstr("PJRT_Api not found for device type tpu")));
+              absl_testing::StatusIs(
+                  tensorflow::error::NOT_FOUND,
+                  HasSubstr("PJRT_Api not found for device type tpu")));
 }
 
 TEST(PjRtApiTest, InitPjRtPlugin) {

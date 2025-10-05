@@ -15,15 +15,29 @@ limitations under the License.
 
 #include "tensorflow/compiler/mlir/tf2xla/api/v1/compile_mlir_util.h"
 
+#include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <numeric>
+#include <optional>
 #include <string>
+#include <utility>
+#include <variant>
+#include <vector>
 
 #include "tensorflow/compiler/mlir/tf2xla/mlir_bridge_rollout_policy.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
+#include "absl/strings/string_view.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/Dialect/Shape/IR/Shape.h"  // from @llvm-project
@@ -35,10 +49,12 @@ limitations under the License.
 #include "mlir/IR/Location.h"  // from @llvm-project
 #include "mlir/IR/MLIRContext.h"  // from @llvm-project
 #include "mlir/IR/OpDefinition.h"  // from @llvm-project
+#include "mlir/IR/Verifier.h"  // from @llvm-project
 #include "mlir/Pass/PassManager.h"  // from @llvm-project
 #include "mlir/Support/LLVM.h"  // from @llvm-project
+#include "mlir/Support/LogicalResult.h"  // from @llvm-project
 #include "mlir/Transforms/Passes.h"  // from @llvm-project
-#include "stablehlo/dialect/Register.h"  // from @stablehlo
+#include "stablehlo/dialect/Base.h"  // from @stablehlo
 #include "tensorflow/compiler/mlir/quantization/stablehlo/passes/bridge/passes.h"
 #include "tensorflow/compiler/mlir/tensorflow/dialect_registration.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_executor.h"
@@ -52,12 +68,14 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/tensorflow/utils/convert_tensor.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/convert_type.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/data_dumper_logger_config.h"
+#include "tensorflow/compiler/mlir/tensorflow/utils/deserialize_mlir_module_utils.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/dump_mlir_util.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/dynamic_shape_utils.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/error_util.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/serialize_mlir_module_utils.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/translate_utils.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/xla_sharding_util.h"
+#include "tensorflow/compiler/mlir/tf2xla/api/v2/graph_to_tf_executor.h"
 #include "tensorflow/compiler/mlir/tf2xla/internal/mlir_pass_instrumentation.h"
 #include "tensorflow/compiler/mlir/tf2xla/internal/passes/lowering_passes.h"
 #include "tensorflow/compiler/mlir/tf2xla/transforms/passes.h"
@@ -65,17 +83,23 @@ limitations under the License.
 #include "tensorflow/compiler/tf2xla/shape_util.h"
 #include "tensorflow/compiler/tf2xla/type_util.h"
 #include "tensorflow/compiler/tf2xla/xla_helpers.h"
-#include "xla/client/xla_computation.h"
+#include "xla/hlo/builder/xla_computation.h"
 #include "xla/hlo/ir/hlo_sharding.h"
+#include "xla/hlo/translate/mhlo_to_hlo/layout_util.h"
+#include "xla/hlo/translate/mhlo_to_hlo/mlir_hlo_to_hlo.h"
+#include "xla/hlo/translate/mhlo_to_hlo/type_to_shape.h"
+#include "xla/hlo/translate/register.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
-#include "xla/mlir_hlo/mhlo/IR/register.h"
 #include "xla/mlir_hlo/mhlo/transforms/passes.h"
+#include "xla/mlir_hlo/stablehlo_ext/transforms/passes.h"
+#include "xla/service/hlo.pb.h"
 #include "xla/shape.h"
-#include "xla/translate/mhlo_to_hlo/layout_util.h"
-#include "xla/translate/mhlo_to_hlo/mlir_hlo_to_hlo.h"
-#include "xla/translate/mhlo_to_hlo/type_to_shape.h"
+#include "xla/tsl/platform/errors.h"
+#include "xla/tsl/platform/statusor.h"
 #include "xla/xla_data.pb.h"
+#include "tensorflow/core/framework/graph_debug_info.pb.h"
 #include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/platform/error_payloads.h"
 #include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/logging.h"
@@ -83,7 +107,6 @@ limitations under the License.
 #include "tensorflow/core/protobuf/core_platform_payloads.pb.h"
 #include "tensorflow/core/tpu/tpu_defs.h"
 #include "tensorflow/core/util/debug_data_dumper.h"
-#include "tsl/platform/errors.h"
 
 namespace tensorflow {
 namespace {
@@ -96,7 +119,7 @@ constexpr absl::string_view kGroupKeyAttrName =
 // that is converted to a TensorShape.
 absl::StatusOr<TensorShape> GetTensorShapeFromXlaArgument(
     const XlaArgument& arg) {
-  if (absl::holds_alternative<xla::Shape>(arg.shape)) {
+  if (std::holds_alternative<xla::Shape>(arg.shape)) {
     TensorShape arg_shape;
     TF_RETURN_IF_ERROR(
         XLAShapeToTensorShape(std::get<xla::Shape>(arg.shape), &arg_shape));
@@ -106,7 +129,7 @@ absl::StatusOr<TensorShape> GetTensorShapeFromXlaArgument(
   }
 }
 
-Status MaybeRewriteLayoutWithShardedShape(
+absl::Status MaybeRewriteLayoutWithShardedShape(
     mlir::StringAttr sharding,
     const XlaShapeLayoutHelpers::ShapeDeterminationFns shape_determination_fns,
     xla::Shape* shape) {
@@ -125,7 +148,7 @@ Status MaybeRewriteLayoutWithShardedShape(
 }
 
 // Converts arg_shapes to xla::Shape's and store into xla_input_shapes.
-Status GetXlaInputShapes(
+absl::Status GetXlaInputShapes(
     mlir::ModuleOp module, llvm::ArrayRef<TensorOrResourceShape> arg_shapes,
     bool use_tuple_args,
     const XlaShapeLayoutHelpers::ShapeDeterminationFns shape_determination_fns,
@@ -180,12 +203,12 @@ mlir::RankedTensorType GetBufferType(mlir::Type ty) {
 
   int64_t rank = ranked_ty.getRank();
   llvm::SmallVector<int64_t, 4> dims = llvm::to_vector<4>(ranked_ty.getShape());
-  auto encoding = mlir::dyn_cast_or_null<mlir::mhlo::TypeExtensionsAttr>(
-      ranked_ty.getEncoding());
-  if (encoding && !encoding.getBounds().empty()) {
+  llvm::ArrayRef<int64_t> bounds =
+      mlir::hlo::encodingToBounds(ranked_ty.getEncoding());
+  if (!bounds.empty()) {
     for (int64_t dim = 0; dim < rank; ++dim) {
       if (dims[dim] == mlir::ShapedType::kDynamic) {
-        dims[dim] = encoding.getBounds()[dim];
+        dims[dim] = bounds[dim];
       }
     }
   }
@@ -195,7 +218,7 @@ mlir::RankedTensorType GetBufferType(mlir::Type ty) {
 // Calculates computation output shape and build OutputDescription for each
 // output based on static shapes in MLIR module. If an output is a resource
 // write, `resource_updates` is populated instead of `outputs` for that output.
-Status GetOutputInfo(
+absl::Status GetOutputInfo(
     mlir::ModuleOp module, bool use_resource_updates_for_aliases,
     XlaShapeLayoutHelpers::ShapeDeterminationFns shape_determination_fns,
     xla::Shape* xla_output_shape, std::vector<XlaOutputDescription>* outputs,
@@ -325,8 +348,7 @@ void GetInputMappingForMlir(int num_inputs, std::vector<int>* input_mapping) {
 
 static void RegisterDialects(mlir::DialectRegistry& registry) {
   mlir::RegisterAllTensorFlowDialects(registry);
-  mlir::mhlo::registerAllMhloDialects(registry);
-  mlir::stablehlo::registerAllDialects(registry);
+  xla::RegisterMlirToHloDependentDialects(registry);
 }
 
 // Checks if functions can be inlined after TF -> HLO legalization. Currently
@@ -367,6 +389,89 @@ void AddLegalizationPasses(mlir::OpPassManager& pm, bool legalize_chlo,
   }
 }
 
+// Builds a pipeline that runs only those passes required to lower TF to HLO.
+void CreateMlirLoweringPassesPipeline(mlir::PassManager& pm) {
+  applyTensorflowAndCLOptions(pm);
+
+  pm.addNestedPass<mlir::func::FuncOp>(mlir::TF::CreateLowerQuantizedPass());
+  pm.addNestedPass<mlir::func::FuncOp>(
+      mlir::quant::stablehlo::CreateConvertTFQuantTypesPass());
+  pm.addNestedPass<mlir::func::FuncOp>(mlir::createCanonicalizerPass());
+  pm.addPass(mlir::mhlo::createStablehloLegalizeToHloPass());
+  pm.addPass(mlir::mhlo::CreateLegalizeTFCollectivePass());
+  mlir::quant::stablehlo::AddQuantizationLoweringPasses(pm);
+  // Legalize to HLO but force MLIR native only.
+  pm.addPass(mlir::mhlo::createLegalizeTFPass(
+      /*legalize_chlo=*/true,
+      /*tf2xla_fallback_device_type=*/std::nullopt, /*prefer_tf2xla=*/false));
+  pm.addNestedPass<mlir::func::FuncOp>(mlir::createCanonicalizerPass());
+  pm.addPass(mlir::TF::CreateTFShapeInferencePass());
+  pm.addPass(mlir::mhlo::CreateLegalizeTFCommunicationPass());
+
+  auto pass_instrumentors = mlir::GetPassInstrumentors();
+  for (const auto& creator : pass_instrumentors) {
+    pm.addInstrumentation(creator());
+  }
+}
+
+// If the module should be dumped then dumps the file and turns on the before
+// and after IR printing for the passes.
+void MaybeDumpMlirModuleAndPasses(mlir::PassManager& pm,
+                                  mlir::ModuleOp module_op,
+                                  std::string module_name, std::string tag) {
+  if (DEBUG_DATA_DUMPER()->ShouldDump(module_name, kDebugGroupMain) ||
+      VLOG_IS_ON(1)) {
+    tensorflow::DumpMlirOpToFile(
+        DEBUG_DATA_DUMPER()->GetDumpFilename(module_name, kDebugGroupMain, tag),
+        module_op, /*dirname=*/"", &pm);
+  }
+
+  if (VLOG_IS_ON(2) ||
+      DEBUG_DATA_DUMPER()->ShouldDump(module_name, kDebugGroupBridgePhase2)) {
+    // Print the whole module after each pass which requires disabling
+    // multi-threading as well.
+    module_op.getContext()->disableMultithreading();
+    pm.enableIRPrinting(std::make_unique<::tensorflow::DataDumperLoggerConfig>(
+        [module_name](const std::string& pass_tag_name, mlir::Operation* op) {
+          return DEBUG_DATA_DUMPER()->GetDumpFilename(
+              module_name, kDebugGroupBridgePhase2, pass_tag_name);
+        },
+        /*pass_prefix=*/"",
+        /*print_module_scope=*/true));
+  }
+}
+
+// Runs the MLIR pipeline and if successful dumps the results if enabled.
+absl::Status RunMlirPipelineAndMaybeDumpResults(mlir::PassManager& pm,
+                                                mlir::ModuleOp module_op,
+                                                std::string module_name = "") {
+  // Make sure we catch any error reported by MLIR and forward it to the TF
+  // error reporting system. Report a generic error if pass manager failed
+  // without emitting a diagnostic.
+  mlir::StatusScopedDiagnosticHandler error_handler(module_op.getContext());
+
+  if (failed(pm.run(module_op))) {
+    auto status = absl::InvalidArgumentError("TF to XLA legalization failed: ");
+    tensorflow::OkOrSetErrorCounterPayload(
+        tensorflow::core::platform::ErrorSourceProto::MLIR_BRIDGE_PHASE_2,
+        status);
+    return error_handler.Combine(status);
+  }
+
+  if (DEBUG_DATA_DUMPER()->ShouldDump(module_name, kDebugGroupMain) ||
+      VLOG_IS_ON(1)) {
+    tensorflow::DumpMlirOpToFile(
+        DEBUG_DATA_DUMPER()->GetDumpFilename(module_name, kDebugGroupMain,
+                                             "legalize_hlo_after"),
+        module_op, /*dirname=*/"", &pm);
+  }
+
+  absl::Status status = error_handler.ConsumeStatus();
+  tensorflow::OkOrSetErrorCounterPayload(
+      tensorflow::core::platform::ErrorSourceProto::MLIR_BRIDGE_PHASE_2,
+      status);
+  return status;
+}
 }  //  namespace
 
 // Creates the MLIR Pipeline.
@@ -381,7 +486,7 @@ void CreateConvertMlirToXlaHloPipeline(
   bool legalize_chlo = true;
 
   pm.addNestedPass<mlir::func::FuncOp>(
-      tensorflow::tf2xla::internal::CreateInputLoweringMetricsPass());
+      tf2xla::internal::CreateInputLoweringMetricsPass());
 
   pm.addNestedPass<mlir::func::FuncOp>(
       mlir::mhlo::CreateTFXLADeviceSpecificTransformsPass(device_type));
@@ -477,7 +582,7 @@ void CreateConvertMlirToXlaHloPipeline(
     // Everything should be MHLO after this.
     if (!allow_partial_conversion) {
       pm.addNestedPass<mlir::func::FuncOp>(
-          mlir::mhlo::CreateVerifyTFXLALegalizationPass(legalize_chlo));
+          mlir::hlo::CreateVerifyTFXLALegalizationPass(legalize_chlo));
     }
   }
 
@@ -488,11 +593,11 @@ void CreateConvertMlirToXlaHloPipeline(
   // In order to export to XLA, we must sink constants to control flow regions,
   // since XLA uses functional control flow.
   pm.addNestedPass<mlir::func::FuncOp>(
-      mlir::mhlo::createSinkConstantsToControlFlowPass());
+      mlir::stablehlo_ext::createSinkConstantsToControlFlowPass());
 }
 
-Status RefineShapes(llvm::ArrayRef<TensorOrResourceShape> arg_shapes,
-                    mlir::ModuleOp module) {
+absl::Status RefineShapes(llvm::ArrayRef<TensorOrResourceShape> arg_shapes,
+                          mlir::ModuleOp module) {
   auto producer_or = GetTfGraphProducerVersion(module);
   if (!producer_or.ok()) return producer_or.status();
   int64_t producer_version = producer_or.value();
@@ -541,13 +646,12 @@ Status RefineShapes(llvm::ArrayRef<TensorOrResourceShape> arg_shapes,
   return error_handler.ConsumeStatus();
 }
 
-Status CreateAndRunMlirBridge(mlir::ModuleOp module_op,
-                              llvm::StringRef device_type,
-                              bool enable_op_fallback,
-                              llvm::MutableArrayRef<std::unique_ptr<mlir::Pass>>
-                                  custom_legalization_passes,
-                              bool lower_to_xla_hlo,
-                              llvm::StringRef module_name = llvm::StringRef()) {
+absl::Status CreateAndRunMlirBridge(
+    mlir::ModuleOp module_op, llvm::StringRef device_type,
+    bool enable_op_fallback,
+    llvm::MutableArrayRef<std::unique_ptr<mlir::Pass>>
+        custom_legalization_passes,
+    bool lower_to_xla_hlo, llvm::StringRef module_name = llvm::StringRef()) {
   mlir::PassManager tf2xla(module_op.getContext());
   applyTensorflowAndCLOptions(tf2xla);
   CreateConvertMlirToXlaHloPipeline(tf2xla, device_type, enable_op_fallback,
@@ -559,64 +663,19 @@ Status CreateAndRunMlirBridge(mlir::ModuleOp module_op,
   for (const auto& creator : pass_instrumentors) {
     tf2xla.addInstrumentation(creator());
   }
-  if (DEBUG_DATA_DUMPER()->ShouldDump(module_name.str(), kDebugGroupMain) ||
-      VLOG_IS_ON(1)) {
-    tensorflow::DumpMlirOpToFile(
-        DEBUG_DATA_DUMPER()->GetDumpFilename(module_name.str(), kDebugGroupMain,
-                                             "legalize_hlo_before"),
-        module_op, "", &tf2xla);
-  }
+  MaybeDumpMlirModuleAndPasses(tf2xla, module_op, module_name.str(),
+                               /*tag=*/"legalize_hlo_before");
 
-  if (VLOG_IS_ON(2) || DEBUG_DATA_DUMPER()->ShouldDump(
-                           module_name.str(), kDebugGroupBridgePhase2)) {
-    // Print the whole module after each pass which requires disabling
-    // multi-threading as well.
-    module_op.getContext()->disableMultithreading();
-    tf2xla.enableIRPrinting(
-        std::make_unique<::tensorflow::DataDumperLoggerConfig>(
-            [module_name](const std::string& pass_tag_name,
-                          mlir::Operation* op) {
-              return DEBUG_DATA_DUMPER()->GetDumpFilename(
-                  module_name.str(), kDebugGroupBridgePhase2, pass_tag_name);
-            },
-            "",
-            /*print_module_scope=*/true));
-  }
-
-  // Make sure we catch any error reported by MLIR and forward it to the TF
-  // error reporting system. Report a generic error if pass manager failed
-  // without emitting a diagnostic.
-  mlir::StatusScopedDiagnosticHandler error_handler(module_op.getContext());
-
-  if (failed(tf2xla.run(module_op))) {
-    Status status = errors::InvalidArgument("TF to XLA legalization failed: ");
-    tensorflow::OkOrSetErrorCounterPayload(
-        tensorflow::core::platform::ErrorSourceProto::MLIR_BRIDGE_PHASE_2,
-        status);
-    return error_handler.Combine(status);
-  }
-
-  if (DEBUG_DATA_DUMPER()->ShouldDump(module_name.str(), kDebugGroupMain) ||
-      VLOG_IS_ON(1)) {
-    tensorflow::DumpMlirOpToFile(
-        DEBUG_DATA_DUMPER()->GetDumpFilename(module_name.str(), kDebugGroupMain,
-                                             "legalize_hlo_after"),
-        module_op, "", &tf2xla);
-  }
-
-  Status status = error_handler.ConsumeStatus();
-  tensorflow::OkOrSetErrorCounterPayload(
-      tensorflow::core::platform::ErrorSourceProto::MLIR_BRIDGE_PHASE_2,
-      status);
-  return status;
+  return RunMlirPipelineAndMaybeDumpResults(tf2xla, module_op,
+                                            module_name.str());
 }
 
-Status BuildHloFromTfInner(mlir::ModuleOp module_op, xla::XlaBuilder& builder,
-                           llvm::ArrayRef<xla::XlaOp> xla_params,
-                           std::vector<xla::XlaOp>& returns,
-                           llvm::StringRef device_type,
-                           llvm::MutableArrayRef<std::unique_ptr<mlir::Pass>>
-                               custom_legalization_passes) {
+absl::Status BuildHloFromTfInner(
+    mlir::ModuleOp module_op, xla::XlaBuilder& builder,
+    llvm::ArrayRef<xla::XlaOp> xla_params, std::vector<xla::XlaOp>& returns,
+    llvm::StringRef device_type,
+    llvm::MutableArrayRef<std::unique_ptr<mlir::Pass>>
+        custom_legalization_passes) {
   TF_RETURN_IF_ERROR(CreateAndRunMlirBridge(module_op, device_type,
                                             /*enable_op_fallback=*/false,
                                             custom_legalization_passes,
@@ -627,7 +686,7 @@ Status BuildHloFromTfInner(mlir::ModuleOp module_op, xla::XlaBuilder& builder,
   return mlir::BuildHloFromMlirHlo(block, builder, xla_params, returns);
 }
 
-Status ConvertMLIRWithOptionalXlaComputation(
+absl::Status ConvertMLIRWithOptionalXlaComputation(
     mlir::ModuleOp module_op, llvm::StringRef device_type,
     xla::XlaComputation* xla_computation, bool use_tuple_args,
     bool enable_op_fallback, bool return_tuple,
@@ -671,7 +730,7 @@ Status ConvertMLIRWithOptionalXlaComputation(
 }
 
 // Wraps the optional lowering version to keep the api the same for clients.
-Status ConvertMLIRToXlaComputation(
+absl::Status ConvertMLIRToXlaComputation(
     mlir::ModuleOp module_op, llvm::StringRef device_type,
     xla::XlaComputation* xla_computation, bool use_tuple_args,
     bool enable_op_fallback, bool return_tuple,
@@ -685,8 +744,9 @@ Status ConvertMLIRToXlaComputation(
       custom_legalization_passes, module_name, /*lower_to_xla_hlo=*/true);
 }
 
-Status CompileMlirSetup(mlir::ModuleOp module_op,
-                        llvm::ArrayRef<TensorOrResourceShape> arg_shapes) {
+absl::Status CompileMlirSetup(
+    mlir::ModuleOp module_op,
+    llvm::ArrayRef<TensorOrResourceShape> arg_shapes) {
   // Use arg_shapes to improve the mlir type information of `main` in module_op.
   TF_RETURN_IF_ERROR(RefineShapes(arg_shapes, module_op));
 
@@ -696,13 +756,13 @@ Status CompileMlirSetup(mlir::ModuleOp module_op,
   return absl::OkStatus();
 }
 
-Status BuildHloFromTf(mlir::ModuleOp module_op, xla::XlaBuilder& builder,
-                      llvm::ArrayRef<xla::XlaOp> xla_params,
-                      std::vector<xla::XlaOp>& returns,
-                      llvm::ArrayRef<TensorOrResourceShape> arg_shapes,
-                      llvm::StringRef device_type,
-                      llvm::MutableArrayRef<std::unique_ptr<mlir::Pass>>
-                          custom_legalization_passes) {
+absl::Status BuildHloFromTf(mlir::ModuleOp module_op, xla::XlaBuilder& builder,
+                            llvm::ArrayRef<xla::XlaOp> xla_params,
+                            std::vector<xla::XlaOp>& returns,
+                            llvm::ArrayRef<TensorOrResourceShape> arg_shapes,
+                            llvm::StringRef device_type,
+                            llvm::MutableArrayRef<std::unique_ptr<mlir::Pass>>
+                                custom_legalization_passes) {
   if (VLOG_IS_ON(2))
     tensorflow::DumpMlirOpToFile("build_hlo_tf_before", module_op);
 
@@ -719,8 +779,8 @@ Status BuildHloFromTf(mlir::ModuleOp module_op, xla::XlaBuilder& builder,
   return absl::OkStatus();
 }
 
-Status PopulateCollectiveInfo(mlir::ModuleOp module_op,
-                              XlaCompilationResult* compilation_result) {
+absl::Status PopulateCollectiveInfo(mlir::ModuleOp module_op,
+                                    XlaCompilationResult* compilation_result) {
   // The StringRef cast is necessary before cxx14.
   mlir::IntegerAttr group_key_attr =
       module_op->getAttrOfType<mlir::IntegerAttr>(
@@ -746,7 +806,7 @@ Status PopulateCollectiveInfo(mlir::ModuleOp module_op,
   return absl::OkStatus();
 }
 
-Status PopulateResultIOInfo(
+absl::Status PopulateResultIOInfo(
     mlir::ModuleOp module_op, llvm::ArrayRef<TensorOrResourceShape> arg_shapes,
     bool use_tuple_args, bool use_resource_updates_for_aliases,
     const XlaShapeLayoutHelpers::ShapeDeterminationFns shape_determination_fns,
@@ -767,7 +827,7 @@ Status PopulateResultIOInfo(
       &compilation_result->resource_updates);
 }
 
-absl::StatusOr<std::string> CompileMlirToXlaHlo(
+absl::Status CompileMlirToXlaHlo(
     mlir::ModuleOp module_op, llvm::ArrayRef<TensorOrResourceShape> arg_shapes,
     llvm::StringRef device_type, bool use_tuple_args, bool enable_op_fallback,
     bool use_return_tuple, bool use_resource_updates_for_aliases,
@@ -794,7 +854,10 @@ absl::StatusOr<std::string> CompileMlirToXlaHlo(
       shape_determination_fns, custom_legalization_passes, module_name,
       lower_to_xla_hlo));
 
-  auto mlir_compilation = SerializeMlirModule(module_op);
+  if (failed(mlir::verify(module_op))) {
+    return absl::AbortedError(
+        "Verification failure. MLIR to Xla conversion aborted.");
+  }
 
   // Only attempt to fill in the compilation result's IO info if lowering.
   if (lower_to_xla_hlo) {
@@ -808,7 +871,26 @@ absl::StatusOr<std::string> CompileMlirToXlaHlo(
       return populate_result;
     }
   }
-  return mlir_compilation;
+
+  return absl::OkStatus();
+}
+
+absl::StatusOr<std::string> CompileMlirToXlaHloAndSerialize(
+    mlir::ModuleOp module_op, llvm::ArrayRef<TensorOrResourceShape> arg_shapes,
+    llvm::StringRef device_type, bool use_tuple_args, bool enable_op_fallback,
+    bool use_return_tuple, bool use_resource_updates_for_aliases,
+    XlaShapeLayoutHelpers::ShapeDeterminationFns shape_determination_fns,
+    XlaCompilationResult* compilation_result,
+    llvm::MutableArrayRef<std::unique_ptr<mlir::Pass>>
+        custom_legalization_passes,
+    llvm::StringRef module_name, bool lower_to_xla_hlo) {
+  TF_RETURN_IF_ERROR(CompileMlirToXlaHlo(
+      module_op, arg_shapes, device_type, use_tuple_args, enable_op_fallback,
+      use_return_tuple, use_resource_updates_for_aliases,
+      shape_determination_fns, compilation_result, custom_legalization_passes,
+      module_name, lower_to_xla_hlo));
+
+  return SerializeMlirModule(module_op);
 }
 
 absl::StatusOr<std::string> CompileSerializedMlirToXlaHlo(
@@ -830,7 +912,7 @@ absl::StatusOr<std::string> CompileSerializedMlirToXlaHlo(
   tensor_or_resource_shapes.reserve(arg_shapes.size());
   for (const auto& arg_shape : arg_shapes)
     tensor_or_resource_shapes.push_back({arg_shape});
-  return CompileMlirToXlaHlo(
+  return CompileMlirToXlaHloAndSerialize(
       mlir_module.get(), tensor_or_resource_shapes, device_type, use_tuple_args,
       enable_op_fallback, /*use_return_tuple=*/true,
       /*use_resource_updates_for_aliases=*/false, shape_determination_fns,
@@ -838,10 +920,10 @@ absl::StatusOr<std::string> CompileSerializedMlirToXlaHlo(
       lower_to_xla_hlo);
 }
 
-// Rewrites the given module with specified args. For each of the constant args,
-// it gets inlined in the "main' function and the corresponding argument is
-// removed from the signature. For resource args, their subtypes are populated.
-// Returns the original indices for the other arguments on success.
+// Rewrites the given module with specified args. Each of the constant args gets
+// inlined in the "main' function and the corresponding argument is removed from
+// the signature. For resource args, their subtypes are populated. Returns the
+// original indices for the other arguments on success.
 static absl::StatusOr<std::vector<int>> RewriteWithArgs(
     mlir::ModuleOp module_op, llvm::ArrayRef<XlaArgument> args) {
   mlir::func::FuncOp main_fn =
@@ -907,12 +989,14 @@ static absl::StatusOr<std::vector<int>> RewriteWithArgs(
                                 main_fn.getFunctionType().getResults()));
   }
 
-  for (int idx : llvm::reverse(args_to_erase)) main_fn.eraseArgument(idx);
+  for (int idx : llvm::reverse(args_to_erase)) {
+    CHECK(llvm::succeeded(main_fn.eraseArgument(idx)));
+  }
 
   return params;
 }
 
-Status CompileGraphSetup(
+absl::Status CompileGraphSetup(
     mlir::ModuleOp module_op, llvm::ArrayRef<XlaArgument> args,
     std::vector<int>* remaining_params,
     llvm::SmallVector<TensorOrResourceShape, 4>& arg_shapes) {
@@ -949,25 +1033,41 @@ Status CompileGraphSetup(
   return absl::OkStatus();
 }
 
-Status BuildHloFromModule(mlir::ModuleOp module_op, xla::XlaBuilder& builder,
-                          llvm::ArrayRef<xla::XlaOp> xla_params,
-                          std::vector<xla::XlaOp>& returns,
-                          llvm::ArrayRef<XlaArgument> args,
-                          llvm::StringRef device_type,
-                          llvm::MutableArrayRef<std::unique_ptr<mlir::Pass>>
-                              custom_legalization_passes) {
+absl::Status BuildHloFromModule(mlir::ModuleOp module_op,
+                                xla::XlaBuilder& builder,
+                                llvm::ArrayRef<xla::XlaOp> xla_params,
+                                std::vector<xla::XlaOp>& returns,
+                                llvm::ArrayRef<XlaArgument> args,
+                                llvm::StringRef device_type) {
   std::vector<int> remaining_params;
   llvm::SmallVector<TensorOrResourceShape, 4> arg_shapes;
   TF_RETURN_IF_ERROR(
       CompileGraphSetup(module_op, args, &remaining_params, arg_shapes));
-  // Passing down only remaining (non-constant) xla_params.
   llvm::SmallVector<xla::XlaOp, 2> remaining_xla_params;
   for (auto i : remaining_params) remaining_xla_params.push_back(xla_params[i]);
-  return BuildHloFromTf(module_op, builder, remaining_xla_params, returns,
-                        arg_shapes, device_type, custom_legalization_passes);
+  TF_RETURN_IF_ERROR(CompileMlirSetup(module_op, arg_shapes));
+
+  mlir::PassManager tf2xla(module_op.getContext());
+  CreateMlirLoweringPassesPipeline(tf2xla);
+
+  MaybeDumpMlirModuleAndPasses(tf2xla, module_op, /*module_name=*/"",
+                               /*tag=*/"legalize_hlo_before");
+
+  TF_RETURN_IF_ERROR(RunMlirPipelineAndMaybeDumpResults(tf2xla, module_op));
+
+  mlir::Block& block =
+      module_op.lookupSymbol<mlir::func::FuncOp>("main").front();
+  TF_RETURN_IF_ERROR(
+      mlir::BuildHloFromMlirHlo(block, builder, remaining_xla_params, returns));
+
+  if (VLOG_IS_ON(2)) {
+    tensorflow::DumpMlirOpToFile("build_hlo_tf_after", module_op);
+  }
+
+  return absl::OkStatus();
 }
 
-Status CompileGraphToXlaHlo(
+absl::Status CompileGraphToXlaHlo(
     mlir::ModuleOp module_op, llvm::ArrayRef<XlaArgument> args,
     llvm::StringRef device_type, bool use_tuple_args, bool enable_op_fallback,
     bool use_return_tuple,
@@ -986,14 +1086,13 @@ Status CompileGraphToXlaHlo(
       /*use_resource_updates_for_aliases=*/true, shape_determination_fns,
       compilation_result, custom_legalization_passes);
   compilation_result->input_mapping = remaining_params;
-  return compile_mlir_result.status();
+  return compile_mlir_result;
 }
 
 absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> GraphToModule(
     bool unconditionally_use_set_output_shapes, const Graph& graph,
     llvm::ArrayRef<std::string> control_rets,
-    const FunctionLibraryDefinition& flib_def, const GraphDebugInfo& debug_info,
-    mlir::MLIRContext* context) {
+    const FunctionLibraryDefinition& flib_def, mlir::MLIRContext* context) {
   mlir::DialectRegistry registry;
   RegisterDialects(registry);
   context->appendDialectRegistry(registry);
@@ -1011,24 +1110,22 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> GraphToModule(
   // do it optionally.
   config.unconditionally_use_set_output_shapes =
       unconditionally_use_set_output_shapes;
-  return ConvertGraphToMlir(graph, debug_info, flib_def, config, context);
+  GraphDebugInfo debug_info;
+  return tensorflow::tf2xla::v2::ConvertGraphToTfExecutor(
+      graph, debug_info, flib_def, config, context);
 }
 
-Status BuildHloFromGraph(
+absl::Status BuildHloFromGraph(
     const Graph& graph, xla::XlaBuilder& builder,
     mlir::MLIRContext& mlir_context, llvm::ArrayRef<xla::XlaOp> xla_params,
     std::vector<xla::XlaOp>& returns, bool unconditionally_use_output_shapes,
     llvm::ArrayRef<XlaArgument> args, llvm::ArrayRef<std::string> control_rets,
-    llvm::StringRef device_type, const FunctionLibraryDefinition& flib_def,
-    const GraphDebugInfo& debug_info,
-    llvm::MutableArrayRef<std::unique_ptr<mlir::Pass>>
-        custom_legalization_passes) {
-  TF_ASSIGN_OR_RETURN(
-      mlir::OwningOpRef<mlir::ModuleOp> module,
-      GraphToModule(unconditionally_use_output_shapes, graph, control_rets,
-                    flib_def, debug_info, &mlir_context));
+    llvm::StringRef device_type, const FunctionLibraryDefinition& flib_def) {
+  TF_ASSIGN_OR_RETURN(mlir::OwningOpRef<mlir::ModuleOp> module,
+                      GraphToModule(unconditionally_use_output_shapes, graph,
+                                    control_rets, flib_def, &mlir_context));
   return BuildHloFromModule(module.get(), builder, xla_params, returns, args,
-                            device_type, custom_legalization_passes);
+                            device_type);
 }
 
 void RegisterConvertMlirToXlaHloPipelineWithDefaults() {

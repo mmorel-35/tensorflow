@@ -15,37 +15,44 @@ limitations under the License.
 
 #include "xla/service/gpu/model/hlo_op_profiler.h"
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <random>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
 #include "absl/log/check.h"
 #include "absl/log/log.h"
+#include "absl/status/statusor.h"
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
+#include "absl/types/span.h"
 #include "xla/debug_options_flags.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/literal.h"
 #include "xla/primitive_util.h"
-#include "xla/service/executable.h"
 #include "xla/service/gpu/model/hlo_op_profile.pb.h"
 #include "xla/service/hlo_module_config.h"
 #include "xla/service/hlo_runner.h"
+#include "xla/service/hlo_runner_interface.h"
+#include "xla/service/hlo_verifier.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
-#include "xla/statusor.h"
 #include "xla/stream_executor/device_description.h"
 #include "xla/tests/test_utils.h"
+#include "xla/tsl/platform/errors.h"
+#include "xla/tsl/platform/statusor.h"
 #include "xla/util.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/platform/errors.h"
-#include "tsl/platform/statusor.h"
 
 #ifdef GOOGLE_CUDA
+#include <algorithm>  // IWYU pragma: keep
+
+#include "xla/backends/profiler/gpu/cupti_buffer_events.h"
 #include "xla/backends/profiler/gpu/cupti_collector.h"
 #include "xla/backends/profiler/gpu/cupti_tracer.h"
 #endif
@@ -53,8 +60,179 @@ limitations under the License.
 namespace xla {
 namespace gpu {
 
+static constexpr std::array<PrimitiveType, 13> dtypes = {
+    S8, S16, S32, S64, U8, U16, U32, U64, F16, F32, F64, C64, C128,
+};
+
+static constexpr std::array<HloOpcode, 74> ops = {
+    // Unary
+    // go/keep-sorted start
+    HloOpcode::kAbs,
+    HloOpcode::kBitcast,
+    HloOpcode::kBitcastConvert,
+    HloOpcode::kBroadcast,
+    HloOpcode::kCbrt,
+    HloOpcode::kCeil,
+    HloOpcode::kCholesky,
+    HloOpcode::kClz,
+    HloOpcode::kCollectivePermuteDone,
+    HloOpcode::kConvert,
+    HloOpcode::kCopy,
+    HloOpcode::kCos,
+    HloOpcode::kDomain,
+    HloOpcode::kErf,
+    HloOpcode::kExp,
+    HloOpcode::kExpm1,
+    HloOpcode::kFft,
+    HloOpcode::kFloor,
+    HloOpcode::kGetDimensionSize,
+    HloOpcode::kGetTupleElement,
+    HloOpcode::kImag,
+    HloOpcode::kIsFinite,
+    HloOpcode::kLog,
+    HloOpcode::kLog1p,
+    HloOpcode::kLogistic,
+    HloOpcode::kNegate,
+    HloOpcode::kNot,
+    HloOpcode::kPopulationCount,
+    HloOpcode::kReal,
+    HloOpcode::kReducePrecision,
+    HloOpcode::kReshape,
+    HloOpcode::kReverse,
+    HloOpcode::kRngBitGenerator,
+    HloOpcode::kRoundNearestAfz,
+    HloOpcode::kRoundNearestEven,
+    HloOpcode::kRsqrt,
+    HloOpcode::kSign,
+    HloOpcode::kSin,
+    HloOpcode::kSlice,
+    HloOpcode::kSqrt,
+    HloOpcode::kTan,
+    HloOpcode::kTanh,
+    HloOpcode::kTopK,
+    HloOpcode::kTranspose,
+    // go/keep-sorted end
+    // Binary
+    // go/keep-sorted start
+    HloOpcode::kAdd,
+    HloOpcode::kAddDependency,
+    HloOpcode::kAnd,
+    HloOpcode::kAtan2,
+    HloOpcode::kCompare,
+    HloOpcode::kConvolution,
+    HloOpcode::kDivide,
+    HloOpcode::kDot,
+    HloOpcode::kGather,
+    HloOpcode::kMaximum,
+    HloOpcode::kMinimum,
+    HloOpcode::kMultiply,
+    HloOpcode::kOr,
+    HloOpcode::kOutfeed,
+    HloOpcode::kPad,
+    HloOpcode::kPower,
+    HloOpcode::kRemainder,
+    HloOpcode::kSetDimensionSize,
+    HloOpcode::kShiftLeft,
+    HloOpcode::kShiftRightArithmetic,
+    HloOpcode::kShiftRightLogical,
+    HloOpcode::kStochasticConvert,
+    HloOpcode::kSubtract,
+    HloOpcode::kTriangularSolve,
+    HloOpcode::kXor,
+    // go/keep-sorted end
+    // TODO(b/443800190): HloOpcode::kComplex
+};
+
+static const std::unordered_set<HloOpcode> TooFastToMeasureOps = {
+    // go/keep-sorted start
+    HloOpcode::kAbs,
+    HloOpcode::kAnd,
+    HloOpcode::kBitcast,
+    HloOpcode::kBitcastConvert,
+    HloOpcode::kCeil,
+    HloOpcode::kClz,
+    HloOpcode::kCopy,
+    HloOpcode::kFloor,
+    HloOpcode::kImag,
+    HloOpcode::kIsFinite,
+    HloOpcode::kMaximum,
+    HloOpcode::kMinimum,
+    HloOpcode::kNegate,
+    HloOpcode::kNot,
+    HloOpcode::kOr,
+    HloOpcode::kReal,
+    HloOpcode::kSign,
+    HloOpcode::kXor
+    // go/keep-sorted end
+};
+
+static const std::unordered_set<HloOpcode> UnsupportedOps = {
+    // These Opcodes need custom APIs to create instructions that can be
+    // used for profiling. They are not created by HloInstruction::CreateUnary
+    // or HloInstruction::CreateBinary functions.
+
+    // TODO(444503555): Add support for these Opcodes by using custom APIs.
+    // Unary
+    // go/keep-sorted start
+    HloOpcode::kBitcastConvert,
+    HloOpcode::kBroadcast,
+    HloOpcode::kCholesky,
+    HloOpcode::kCollectivePermuteDone,
+    HloOpcode::kConvert,
+    HloOpcode::kDomain,
+    HloOpcode::kFft,
+    HloOpcode::kGetDimensionSize,
+    HloOpcode::kGetTupleElement,
+    HloOpcode::kOutfeed,
+    HloOpcode::kPad,
+    HloOpcode::kPower,
+    HloOpcode::kReducePrecision,
+    HloOpcode::kRemainder,
+    HloOpcode::kReshape,
+    HloOpcode::kReverse,
+    HloOpcode::kRngBitGenerator,
+    HloOpcode::kSetDimensionSize,
+    HloOpcode::kShiftLeft,
+    HloOpcode::kShiftRightArithmetic,
+    HloOpcode::kShiftRightLogical,
+    HloOpcode::kSlice,
+    HloOpcode::kStochasticConvert,
+    HloOpcode::kTopK,
+    HloOpcode::kTranspose,
+    // go/keep-sorted end
+    // Binary
+    // go/keep-sorted start
+    HloOpcode::kAddDependency,
+    HloOpcode::kCompare,
+    HloOpcode::kConvolution,
+    HloOpcode::kDot,
+    HloOpcode::kGather,
+    HloOpcode::kOutfeed,
+    HloOpcode::kPad,
+    HloOpcode::kSetDimensionSize,
+    HloOpcode::kTriangularSolve,
+    // go/keep-sorted end
+};
+
+absl::Span<const PrimitiveType> HloOpProfiler::AllSupportedDtypes() {
+  return absl::MakeConstSpan(dtypes);
+}
+
+absl::Span<const HloOpcode> HloOpProfiler::AllSupportedOps() {
+  return absl::MakeConstSpan(ops);
+}
+
+const std::unordered_set<HloOpcode>& HloOpProfiler::Unsupported() {
+  return UnsupportedOps;
+}
+
+const std::unordered_set<HloOpcode>& HloOpProfiler::TooFastToMeasure() {
+  return TooFastToMeasureOps;
+}
+
 #ifdef GOOGLE_CUDA
-class CuptiKernelTracer : public profiler::CuptiTraceCollector {
+class CuptiKernelTracer : public HloOpProfiler::KernelTracer,
+                          public profiler::CuptiTraceCollector {
  public:
   CuptiKernelTracer()
       : profiler::CuptiTraceCollector({}),
@@ -65,17 +243,17 @@ class CuptiKernelTracer : public profiler::CuptiTraceCollector {
         // Not interested in API callbacks, but empty list enables them all.
         CUPTI_DRIVER_TRACE_CBID_cu64GLMapBufferObject);
     options.activities_selected.push_back(CUPTI_ACTIVITY_KIND_KERNEL);
-    cupti_tracer_->Enable(options, this);
+    cupti_tracer_->Enable(options, this).IgnoreError();
   }
 
-  uint64_t getMedianKernelTimeNs() && {
+  uint64_t getMedianKernelTimeNs() && override {
     cupti_tracer_->Disable();  // Also flushes buffer.
     if (kernel_times_ns_.empty()) {
       LOG(ERROR) << "No kernel events";
       return 0;
     }
     std::sort(kernel_times_ns_.begin(), kernel_times_ns_.end());
-    size_t i = kernel_times_ns_.size() / 2;
+    auto i = kernel_times_ns_.size() / 2;
     // Return median value if number of values is odd.
     if (kernel_times_ns_.size() % 2 != 0) {
       return kernel_times_ns_[i];
@@ -103,13 +281,18 @@ class CuptiKernelTracer : public profiler::CuptiTraceCollector {
   std::vector<uint64_t> kernel_times_ns_;
 };
 #else
-class CuptiKernelTracer {
+class CuptiKernelTracer : public HloOpProfiler::KernelTracer {
  public:
   uint64_t getMedianKernelTimeNs() && {
     LOG(FATAL) << "Not built with --config=cuda";
   }
 };
 #endif
+
+/*static*/ std::unique_ptr<HloOpProfiler::KernelTracer>
+HloOpProfiler::GetKernelTracer() {
+  return std::make_unique<CuptiKernelTracer>();
+}
 
 /*static*/ std::unique_ptr<HloModule> HloOpProfiler::MakeModuleForMeasurements(
     HloOpcode op, PrimitiveType data_type, int chain_length) {
@@ -125,6 +308,8 @@ class CuptiKernelTracer {
   HloInstruction* pf = fusion_builder.AddInstruction(
       HloInstruction::CreateParameter(0, shape, "pf"));
   HloInstruction* last = pf;
+  // TODO(appujee): This only works when the op takes `Shape` as input; i.e.,
+  // fails for kComplex for example.
   for (int i = 0; i < chain_length; ++i) {
     switch (HloOpcodeArity(op).value_or(0)) {
       case 1:
@@ -158,6 +343,9 @@ absl::StatusOr<absl::Duration> HloOpProfiler::MeasureOpChainDuration(
 
   std::unique_ptr<HloModule> module =
       MakeModuleForMeasurements(op, data_type, chain_length);
+  HloVerifier verifier(/*layout_sensitive=*/true,
+                       /*allow_mixed_precision=*/false);
+  TF_RETURN_IF_ERROR(verifier.Run(&*module).status());
 
   std::minstd_rand0 engine;
   // Some operations have dynamic duration that depends on the input values.
@@ -169,7 +357,7 @@ absl::StatusOr<absl::Duration> HloOpProfiler::MeasureOpChainDuration(
                                                       /*use_large_range=*/true)
                                         .value();
   const absl::Time t_compile_start = absl::Now();
-  TF_ASSIGN_OR_RETURN(std::unique_ptr<Executable> ex,
+  TF_ASSIGN_OR_RETURN(std::unique_ptr<OpaqueExecutable> ex,
                       runner_.CreateExecutable(std::move(module),
                                                /*run_hlo_passes=*/false));
   if (absl::Now() - t_compile_start > absl::Seconds(10)) {

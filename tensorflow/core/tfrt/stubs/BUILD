@@ -1,3 +1,5 @@
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     default_visibility = [
@@ -16,12 +18,10 @@ cc_library(
     deps = [
         "//tensorflow/core/tfrt/graph_executor:executable_context",
         "//tensorflow/core/tfrt/graph_executor:sync_resource_state",
-        "//tensorflow/core/tfrt/mlrt/bytecode:executable",
         "//tensorflow/core/tfrt/mlrt/interpreter:context",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@llvm-project//mlir:IR",
-        "@llvm-project//mlir:Pass",
         "@tf_runtime//:hostcontext",
     ],
 )

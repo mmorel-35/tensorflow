@@ -28,6 +28,8 @@ limitations under the License.
 #include "absl/container/inlined_vector.h"
 #include "absl/log/check.h"
 #include "absl/types/span.h"
+#include "xla/python/ifrt/serdes_default_version_accessor.h"
+#include "xla/python/ifrt/serdes_version.h"
 #include "xla/python/ifrt/shape.pb.h"
 
 namespace xla {
@@ -54,21 +56,36 @@ class Shape {
   static absl::StatusOr<Shape> FromProto(const ShapeProto& proto);
 
   // Returns a `ShapeProto` representation.
-  ShapeProto ToProto() const;
+  ShapeProto ToProto(
+      SerDesVersion version = SerDesDefaultVersionAccessor::Get()) const;
 
   absl::Span<const int64_t> dims() const { return dims_; }
 
   bool operator==(const Shape& other) const { return dims_ == other.dims_; }
   bool operator!=(const Shape& other) const { return dims_ != other.dims_; }
 
+  template <typename H>
+  friend H AbslHashValue(H h, const Shape& shape);
+
   // Total number of elements in this shape.
   int64_t num_elements() const;
 
+  // TODO(hyeontaek): Remove this method in favor of AbslStringify.
   std::string DebugString() const;
+
+  template <typename Sink>
+  friend void AbslStringify(Sink& sink, const Shape& shape) {
+    sink.Append(shape.DebugString());
+  }
 
  private:
   Dimensions dims_;
 };
+
+template <typename H>
+H AbslHashValue(H h, const Shape& shape) {
+  return H::combine(std::move(h), shape.dims_);
+}
 
 // A tag for `Shape` to indicate bounded dynamism. Should be used together with
 // `Shape` to represent a bounded dynamic shape where the number of dimensions
@@ -103,12 +120,18 @@ class BoundedDynamicShapeTag {
     return !(*this == other);
   }
 
+  template <typename H>
+  friend H AbslHashValue(H h, const BoundedDynamicShapeTag& value) {
+    return H::combine(std::move(h), value.dynamic_dims_);
+  }
+
   // Constructs `BoundedDynamicShapeTag` from `BoundedDynamicShapeTagProto`.
   static absl::StatusOr<BoundedDynamicShapeTag> FromProto(
       const BoundedDynamicShapeTagProto& proto);
 
   // Returns a `BoundedDynamicShapeTagProto` representation.
-  BoundedDynamicShapeTagProto ToProto() const;
+  BoundedDynamicShapeTagProto ToProto(
+      SerDesVersion version = SerDesDefaultVersionAccessor::Get()) const;
 
  private:
   // This vector is the same size as `Shape`'s 'dims()' and indicates whether
@@ -149,11 +172,18 @@ class DynamicShape {
   // Returns whether a certain dimension in the shape is dynamic.
   bool IsDynamicDim(int dimension) const;
 
+  template <typename H>
+  friend H AbslHashValue(H h, const DynamicShape& value) {
+    return H::combine(std::move(h), value.shape_,
+                      std::get<BoundedDynamicShapeTag>(value.tag_));
+  }
+
   // Constructs `DynamicShape` from `DynamicShapeProto`.
   static absl::StatusOr<DynamicShape> FromProto(const DynamicShapeProto& proto);
 
   // Returns a `DynamicShapeProto` representation.
-  DynamicShapeProto ToProto() const;
+  DynamicShapeProto ToProto(
+      SerDesVersion version = SerDesDefaultVersionAccessor::Get()) const;
 
   std::string DebugString() const;
 

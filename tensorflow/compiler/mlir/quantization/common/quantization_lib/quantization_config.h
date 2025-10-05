@@ -29,7 +29,6 @@ limitations under the License.
 #include "absl/container/flat_hash_set.h"
 #include "absl/strings/string_view.h"
 #include "tensorflow/core/framework/types.pb.h"
-#include "tensorflow/lite/tools/optimize/reduced_precision_support.h"
 
 namespace mlir {
 namespace quant {
@@ -43,7 +42,7 @@ struct CustomOpInfo {
 
 using CustomOpMap = std::unordered_map<std::string, CustomOpInfo>;
 enum CustomOpUpdateOptions { kInputIndices, kWeightOnly, kNoSideEffect };
-enum class QDQConversionMode { kQDQNone, kQDQStatic, kQDQDynamic };
+enum class QDQConversionMode { kQDQNone, kQDQStatic, kQDQDynamic, kQDQStrict };
 
 struct QuantizationSpecs {
   // Which function this node quant specifications belong to.
@@ -133,10 +132,6 @@ struct QuantizationSpecs {
   // the tensors with known names.
   std::string serialized_quant_stats = "";
 
-  // A bitmask to encode support for reduced precision inference in the model.
-  tflite::optimize::ReducedPrecisionSupport support_mask =
-      tflite::optimize::ReducedPrecisionSupport::None;
-
   // Whether to run the passes to propagate the quantization parameters and
   // graph rewrites. Returns false if the inference_type is DT_FLOAT or
   // `weight_quantization` flag is set.
@@ -215,6 +210,10 @@ struct QuantizationSpecs {
   // If other than kQDQNone, the model is a floating point graph with QDQ ops
   // to be eliminated and fused into quantized kernels.
   QDQConversionMode qdq_conversion_mode = QDQConversionMode::kQDQNone;
+
+  // When set, adheres to the QDQ annotations added by the framework when
+  // possible rather than quantizing any op that is possible to quantize.
+  bool strict_qdq_mode = false;
 };
 
 // Parses the command line flag strings to the CustomOpMap specification.
@@ -242,6 +241,9 @@ bool GetInputNodeQuantSpecs(const std::vector<std::string>& node_names,
 
 // Returns a human-readable string of the QDQQuantMode enum class
 std::string GetQDQQuantModeString(QDQConversionMode mode);
+
+// Returns the QDQQuantMode enum class from a human-readable string
+QDQConversionMode GetQDQQuantModeFromString(const std::string& mode_str);
 }  // namespace quant
 }  // namespace mlir
 

@@ -1427,12 +1427,12 @@ TEST_F(OpLevelCostEstimatorTest, OpDimensionsFromInputsError) {
       // n, h, w, c, kx, ky, sx, sy, data_format, padding.
       ASSERT_THAT(
           CallOpDimensionsFromInputs(10, 14, 14, 3840, 3, 3, 0, 2, f, p),
-          testing::StatusIs(
+          absl_testing::StatusIs(
               error::INVALID_ARGUMENT,
               "Stride must be > 0 for Height and Width, but got (2, 0)"));
       ASSERT_THAT(
           CallOpDimensionsFromInputs(10, 14, 14, 3840, 3, 3, 2, 0, f, p),
-          testing::StatusIs(
+          absl_testing::StatusIs(
               error::INVALID_ARGUMENT,
               "Stride must be > 0 for Height and Width, but got (0, 2)"));
     }
@@ -2363,6 +2363,15 @@ TEST_F(OpLevelCostEstimatorTest, CropAndResizeExecutionTime) {
     EXPECT_FALSE(cost.inaccurate);
     EXPECT_EQ(cost.num_ops_with_unknown_shapes, 0);
   }
+}
+
+TEST_F(OpLevelCostEstimatorTest, GetDeviceInfo_EmptyCpu) {
+  OpLevelCostEstimator estimator;
+  DeviceProperties device_properties;
+  device_properties.set_type("CPU");
+  const auto device_info = estimator.GetDeviceInfo(device_properties);
+  EXPECT_GT(device_info.gigaops, 0);
+  EXPECT_GT(device_info.gb_per_sec, 0);
 }
 
 }  // end namespace grappler

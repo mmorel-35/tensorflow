@@ -34,7 +34,7 @@ namespace tensorflow {
 namespace {
 // Returning a Status instead of using OP_REQUIRES directly since that doesn't
 // seem to work outside the main OpKernel functions.
-Status RemapVectorToMap(
+absl::Status RemapVectorToMap(
     const TTypes<const int64_t>::Vec& remapping, std::vector<bool>* id_present,
     std::unordered_map<int64_t, int64_t>* old_id_to_new_id) {
   id_present->clear();
@@ -81,7 +81,7 @@ class LoadAndRemapMatrixOp : public OpKernel {
                                 row_remapping_t->shape().DebugString()));
     const auto row_remapping = row_remapping_t->vec<int64_t>();
     OP_REQUIRES(context, row_remapping.size() == num_rows_,
-                errors::InvalidArgument(strings::StrCat(
+                errors::InvalidArgument(absl::StrCat(
                     "Size of row_remapping is ", row_remapping.size(),
                     " instead of being equal to num_rows=", num_rows_)));
     OP_REQUIRES_OK(context, RemapVectorToMap(row_remapping, &row_id_present,
@@ -115,7 +115,7 @@ class LoadAndRemapMatrixOp : public OpKernel {
     if (remap_cols) {
       OP_REQUIRES(
           context, col_remapping.size() == num_cols_,
-          errors::InvalidArgument(strings::StrCat(
+          errors::InvalidArgument(absl::StrCat(
               "Provided col_remapping, but its size is ", col_remapping.size(),
               " instead of being equal to num_cols=", num_cols_)));
       OP_REQUIRES_OK(context, RemapVectorToMap(col_remapping, &col_id_present,

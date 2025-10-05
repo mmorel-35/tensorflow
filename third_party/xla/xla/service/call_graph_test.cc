@@ -15,25 +15,40 @@ limitations under the License.
 
 #include "xla/service/call_graph.h"
 
+#include <cstdint>
+#include <iterator>
+#include <memory>
+#include <string>
+#include <utility>
 #include <vector>
 
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include "absl/algorithm/container.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/status/status.h"
+#include "xla/comparison_util.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
+#include "xla/hlo/ir/hlo_opcode.h"
+#include "xla/hlo/testlib/hlo_hardware_independent_test_base.h"
 #include "xla/hlo/utils/hlo_matchers.h"
+#include "xla/literal_util.h"
+#include "xla/shape.h"
 #include "xla/shape_util.h"
-#include "xla/tests/hlo_test_base.h"
+#include "xla/tsl/lib/core/status_test_util.h"
 #include "xla/util.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/lib/core/status_test_util.h"
+#include "tsl/platform/errors.h"
+#include "tsl/platform/statusor.h"
 
 namespace xla {
 namespace {
 
 using ::testing::UnorderedElementsAre;
 
-class CallGraphTest : public HloTestBase {
+class CallGraphTest : public HloHardwareIndependentTestBase,
+                      public ::testing::WithParamInterface<bool> {
  protected:
   // Build and return a trivial computation taking and returning a scalar.
   std::unique_ptr<HloComputation> MakeScalarComputation(
@@ -301,7 +316,7 @@ TEST_F(CallGraphTest, ComputationWithConditional) {
   EXPECT_EQ(entry_computation, false_node.callers()[0]);
 }
 
-TEST_F(CallGraphTest, ComplexGraph) {
+TEST_P(CallGraphTest, ComplexGraph) {
   // Test a call graph of a module with several computation called in various
   // contexts. The call graph looks like:
   //
@@ -377,10 +392,20 @@ TEST_F(CallGraphTest, ComplexGraph) {
   // Visit the graph and verify nodes were visited in callee-before-caller
   // order.
   std::vector<const HloComputation*> visited;
-  TF_ASSERT_OK(call_graph->VisitNodes([&visited](const CallGraphNode& node) {
-    visited.push_back(node.computation());
-    return absl::OkStatus();
-  }));
+  if (GetParam()) {
+    TF_ASSERT_OK(call_graph->VisitNodes([&visited](const CallGraphNode& node) {
+      visited.push_back(node.computation());
+      return absl::OkStatus();
+    }));
+  } else {
+    TF_ASSERT_OK(
+        call_graph
+            ->VisitNodesWithReturn([&visited](const CallGraphNode& node) {
+              visited.push_back(node.computation());
+              return false;
+            })
+            .status());
+  }
   EXPECT_EQ(visited.size(), 5);
   // All values in visited should be unique.
   EXPECT_EQ(
@@ -430,6 +455,9 @@ TEST_F(CallGraphTest, ComplexGraph) {
 
   EXPECT_TRUE(call_graph->Dominates(cond_computation, cond_computation));
 }
+
+INSTANTIATE_TEST_SUITE_P(CallGraphTestInstantiation, CallGraphTest,
+                         ::testing::Bool());
 
 TEST_F(CallGraphTest, ComplexGraphNearestAncestors) {
   // Test NearestAncestorsInSameComputation on a call graph of a module with
@@ -698,6 +726,52 @@ TEST_F(CallGraphTest, VisitUnreachableComputation) {
     EXPECT_THAT(visited, UnorderedElementsAre(entry_computation,
                                               unreachable_computation));
   }
+}
+
+TEST_F(CallGraphTest, VisitComputationWithReturn) {
+  auto module = CreateNewVerifiedModule();
+  HloComputation* callee_computation =
+      module->AddEmbeddedComputation(MakeScalarComputation());
+
+  HloComputation::Builder builder(TestName());
+  HloInstruction* param0 = builder.AddInstruction(
+      HloInstruction::CreateParameter(0, kScalarShape, "param0"));
+  builder.AddInstruction(
+      HloInstruction::CreateCall(kScalarShape, {param0}, callee_computation));
+  HloComputation* entry_computation =
+      module->AddEntryComputation(builder.Build());
+  std::unique_ptr<CallGraph> call_graph = CallGraph::Build(module.get());
+
+  std::vector<HloComputation*> visited_false;
+  auto result =
+      call_graph->VisitNodesWithReturn([&](const CallGraphNode& node) {
+        visited_false.push_back(node.computation());
+        return false;
+      });
+  EXPECT_THAT(visited_false,
+              UnorderedElementsAre(entry_computation, callee_computation));
+  TF_ASSERT_OK(result);
+  EXPECT_FALSE(result.value());
+
+  std::vector<HloComputation*> visited_true_entry;
+  result = call_graph->VisitNodesWithReturn([&](const CallGraphNode& node) {
+    visited_true_entry.push_back(node.computation());
+    return node.computation() == entry_computation;
+  });
+  EXPECT_THAT(visited_true_entry,
+              UnorderedElementsAre(entry_computation, callee_computation));
+  TF_ASSERT_OK(result);
+  EXPECT_TRUE(result.value());
+
+  std::vector<HloComputation*> visited_true_callee;
+  result = call_graph->VisitNodesWithReturn([&](const CallGraphNode& node) {
+    visited_true_callee.push_back(node.computation());
+    return node.computation() == callee_computation;
+  });
+  EXPECT_THAT(visited_true_callee,
+              UnorderedElementsAre(entry_computation, callee_computation));
+  TF_ASSERT_OK(result);
+  EXPECT_TRUE(result.value());
 }
 
 TEST_F(CallGraphTest, VisitWithError) {

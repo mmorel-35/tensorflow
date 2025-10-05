@@ -44,8 +44,12 @@ limitations under the License.
 
 #include "absl/container/flat_hash_set.h"
 #include "absl/strings/str_split.h"
+#include "absl/synchronization/notification.h"
 #include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "xla/stream_executor/gpu/gpu_init.h"
+#include "xla/tsl/framework/allocator.h"
+#include "xla/tsl/framework/device_id.h"
+#include "xla/tsl/framework/device_id_utils.h"
 #include "tensorflow/core/common_runtime/device/device_event_mgr.h"
 #include "tensorflow/core/common_runtime/device_factory.h"
 #include "tensorflow/core/common_runtime/device_id_utils.h"
@@ -68,12 +72,8 @@ limitations under the License.
 #include "tensorflow/core/lib/strings/numbers.h"
 #include "tensorflow/core/lib/strings/str_util.h"
 #include "tensorflow/core/lib/strings/strcat.h"
-#include "tsl/framework/allocator.h"
-#include "tsl/framework/device_id.h"
-#include "tsl/framework/device_id_utils.h"
 #if GOOGLE_CUDA
 #include "third_party/gpus/cudnn/cudnn.h"
-#include "xla/stream_executor/cuda/cuda_activation.h"
 #elif TENSORFLOW_USE_ROCM
 #include "tensorflow/core/platform/rocm.h"
 #endif
@@ -82,11 +82,7 @@ limitations under the License.
 #include "xla/pjrt/gpu/gpu_helpers.h"
 #include "xla/pjrt/gpu/se_gpu_pjrt_client.h"
 #include "xla/pjrt/pjrt_client.h"
-#include "xla/pjrt/pjrt_stream_executor_client.h"
-#include "xla/stream_executor/integrations/device_host_allocator.h"
 #endif  // TF_GPU_USE_PJRT
-#include "xla/stream_executor/gpu/gpu_stream.h"
-#include "xla/stream_executor/platform/dso_loader.h"
 #include "tensorflow/core/framework/log_memory.h"
 #include "tensorflow/core/platform/fingerprint.h"
 #include "tensorflow/core/platform/logging.h"
@@ -96,6 +92,7 @@ limitations under the License.
 #include "tensorflow/core/profiler/lib/scoped_annotation.h"
 #include "tensorflow/core/profiler/lib/scoped_memory_debug_annotation.h"
 #include "tensorflow/core/public/session_options.h"
+#include "tsl/platform/dso_loader.h"
 #ifdef TF_GPU_USE_PJRT
 #include "tensorflow/core/tfrt/common/pjrt_util.h"
 #endif  // TF_GPU_USE_PJRT
@@ -141,14 +138,12 @@ int GetPriority(const int tf_device_id, const GPUOptions& options) {
 typedef cudaStream_t gpuStream_t;
 typedef cudaDeviceProp gpuDeviceProp_t;
 #define EIGEN_GPU_SCRATCH_SIZE (Eigen::kGpuScratchSize)
-using se::cuda::ScopedActivateExecutorContext;
 
 #elif TENSORFLOW_USE_ROCM
 
 typedef hipStream_t gpuStream_t;
 typedef hipDeviceProp_t gpuDeviceProp_t;
 #define EIGEN_GPU_SCRATCH_SIZE (Eigen::kGpuScratchSize)
-using se::rocm::ScopedActivateExecutorContext;
 
 #endif
 
@@ -500,7 +495,7 @@ Status BaseGPUDevice::InitScratchBuffers() {
     }
     se::DeviceMemory<char> mem(
         se::DeviceMemoryBase(scratch_buffer, scratch_buffer_size));
-    TF_RETURN_IF_ERROR(executor_->SynchronousMemZero(
+    TF_RETURN_IF_ERROR(stream_->compute->MemZero(
         &mem, Eigen::kGpuScratchSize + sizeof(unsigned int)));
     scratch_ = static_cast<char*>(scratch_buffer);
   }
@@ -790,9 +785,10 @@ void BaseGPUDevice::Compute(OpKernel* op_kernel, OpKernelContext* context) {
       kernel_tracker_->PauseWhilePendingExceeds(pending_cap_);
     }
   }
-  ScopedActivateExecutorContext scoped_activation{stream->parent()};
-  profiler::ScopedMemoryDebugAnnotation op_annotation(
-      op_kernel->name_view().data(), context->step_id());
+  std::unique_ptr<stream_executor::ActivateContext> scoped_activation =
+      stream->parent()->Activate();
+  profiler::ScopedMemoryDebugAnnotation op_annotation(op_kernel->name_view(),
+                                                      context->step_id());
   bool should_log_inputs_and_outputs = ShouldLogInputsAndOutputs(op_kernel);
 
   if (should_log_inputs_and_outputs) {
@@ -884,7 +880,8 @@ void BaseGPUDevice::ComputeAsync(AsyncOpKernel* op_kernel,
     };
   }
 
-  ScopedActivateExecutorContext scoped_activation{stream->parent()};
+  std::unique_ptr<stream_executor::ActivateContext> scoped_activation =
+      stream->parent()->Activate();
   op_kernel->ComputeAsync(context, std::move(done));
 }
 
@@ -962,14 +959,14 @@ Status BaseGPUDevice::MakeTensorFromProto(const TensorProto& tensor_proto,
     Tensor copy(cpu_allocator(numa_node), DT_VARIANT, parsed.shape());
     Variant* copy_variant = copy.flat<Variant>().data();
 
-    std::list<Notification> notifications;
+    std::list<absl::Notification> notifications;
     Status copy_status;
     auto copier = [this, &alloc_attrs, &notifications, &copy_status](
                       const Tensor& from, Tensor* to) {
       // Copier isn't run in a multithreaded environment, so we don't
       // have to worry about the notifications list being modified in parallel.
       notifications.emplace_back();
-      Notification& n = *notifications.rbegin();
+      absl::Notification& n = *notifications.rbegin();
       return MaybeCopyTensorToGPU(alloc_attrs, from, to,
                                   [&n, &copy_status](const Status& s) {
                                     if (copy_status.ok()) {
@@ -995,7 +992,7 @@ Status BaseGPUDevice::MakeTensorFromProto(const TensorProto& tensor_proto,
     *tensor = std::move(copy);
     return copy_status;
   } else {
-    Notification n;
+    absl::Notification n;
     Status status;
     TF_RETURN_IF_ERROR(MaybeCopyTensorToGPU(alloc_attrs, parsed, tensor,
                                             [&n, &status](const Status& s) {
@@ -1223,7 +1220,7 @@ Status SingleVirtualDeviceMemoryLimit(const GPUOptions& gpu_options,
       se->GetDeviceDescription().cuda_compute_capability();
   if ((per_process_gpu_memory_fraction > 1.0 ||
        gpu_options.experimental().use_unified_memory()) &&
-      !cc.IsAtLeast(se::CudaComputeCapability::PASCAL_)) {
+      !cc.IsAtLeast(se::CudaComputeCapability::kPascal)) {
     return errors::Internal(
         "Unified memory on GPUs with compute capability lower than 6.0 "
         "(pre-Pascal class GPUs) does not support oversubscription.");
@@ -1388,7 +1385,10 @@ Status BaseGPUDeviceFactory::GetDeviceDetails(
   auto desc = std::move(desc_status).value();
   (*details)["device_name"] = desc->name();
 #if GOOGLE_CUDA
-  (*details)["compute_capability"] = desc->cuda_compute_capability().ToString();
+  // Some users of this API expect the compute capability to be in the format
+  // X.Y. Therefore we don't expose the feature extension here.
+  (*details)["compute_capability"] =
+      desc->cuda_compute_capability().WithoutAnyFeatureExtension().ToString();
 #endif  // GOOGLE_CUDA
   return OkStatus();
 }
@@ -1401,17 +1401,34 @@ Status BaseGPUDeviceFactory::CreateDevices(
   if (gpu_manager == nullptr) {
     return OkStatus();
   }
-  // If there are no GPUs visible, do nothing.
-  if (gpu_manager->VisibleDeviceCount() <= 0) {
-    return OkStatus();
-  }
 
+  // This has to be checked first because calling `VisibleDeviceCount()` may
+  // result in initializing the platform and holding onto it in memory. This is
+  // the case for `stream_executor::gpu::CudaPlatform::VisibleDeviceCount`.
   size_t num_gpus_to_use = INT_MAX;
   auto iter = options.config.device_count().find("GPU");
   if (iter != options.config.device_count().end()) {
     num_gpus_to_use = iter->second;
   }
+  // Now if num_gpus_to_use is zero, we need to check if virtual devices are
+  // specified, in which case it is an error.
   const auto& gpu_options = options.config.gpu_options();
+  const auto& virtual_devices = gpu_options.experimental().virtual_devices();
+  if (num_gpus_to_use == 0) {
+    if (virtual_devices.empty()) {
+      return OkStatus();
+    }
+    // The verification below will obviously fail. Use this function to reuse
+    // the same error messages as when num_gpus_to_use is not zero.
+    TF_RETURN_IF_ERROR(
+        VerifyVirtualDeviceSettings(num_gpus_to_use, gpu_options, {}, {}, {}));
+  }
+
+  // If there are no GPUs visible, do nothing.
+  if (gpu_manager->VisibleDeviceCount() <= 0) {
+    return OkStatus();
+  }
+
   bool populate_pjrt_gpu_client_creation_info =
       gpu_options.experimental().populate_pjrt_gpu_client_creation_info();
 
@@ -1595,7 +1612,6 @@ Status BaseGPUDeviceFactory::CreateDevices(
     }
   }
 
-  const auto& virtual_devices = gpu_options.experimental().virtual_devices();
   if (!virtual_devices.empty()) {
     TF_RETURN_IF_ERROR(VerifyVirtualDeviceSettings(
         num_gpus_to_use, gpu_options, visible_gpu_order,
@@ -1722,10 +1738,10 @@ Status BaseGPUDeviceFactory::CreateDevices(
                                   : std::make_optional(allowed_devices)));
 
   bool should_create_new_pjrt_client = true;
-  xla::PjRtStreamExecutorClient* pjrt_se_client = nullptr;
+  xla::StreamExecutorGpuClient* pjrt_se_client = nullptr;
   auto obtained_pjrt_client = GetPjRtClient(DeviceType(DEVICE_GPU));
   if (obtained_pjrt_client.ok()) {
-    pjrt_se_client = tensorflow::down_cast<xla::PjRtStreamExecutorClient*>(
+    pjrt_se_client = tensorflow::down_cast<xla::StreamExecutorGpuClient*>(
         *obtained_pjrt_client);
     // TODO(b/291943099): This check may not be enough because the virtual
     // device options can change while the device count remains the same.
@@ -1828,7 +1844,7 @@ Status BaseGPUDeviceFactory::CreateDevices(
               << should_create_new_pjrt_client << " for device ordinal " << di
               << ". Re-using local_device_state";
       auto* pjrt_se_client =
-          tensorflow::down_cast<xla::PjRtStreamExecutorClient*>(
+          tensorflow::down_cast<xla::StreamExecutorGpuClient*>(
               *obtained_pjrt_client);
       local_device_state = &(pjrt_se_client->device_state(di));
     }
@@ -1930,7 +1946,10 @@ Status BaseGPUDeviceFactory::CreateDevices(
               /*allocator=*/std::move(allocator_adapter),
               /*host_memory_allocator=*/std::move(pjrt_gpu_host_allocator),
               /*should_stage_host_to_device_transfers=*/true,
-              /*gpu_run_options=*/std::move(gpu_run_options));
+              /*gpu_run_options=*/std::move(gpu_run_options),
+              /*kv_store=*/nullptr,
+              /*abort_collectives_on_failure=*/false, /*gpu_topology=*/nullptr,
+              /*num_nodes=*/std::nullopt);
 
       return SetPjRtClientInTFGlobalResourceManager(DeviceType(DEVICE_GPU),
                                                     std::move(pjrt_client));
@@ -2338,7 +2357,7 @@ Status BaseGPUDeviceFactory::GetValidDeviceIds(
 
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
   // Try to dlopen GPU libraries if they are supposed to be dynamically loaded.
-  auto handle_or = se::internal::DsoLoader::MaybeTryDlopenGPULibraries();
+  auto handle_or = tsl::internal::DsoLoader::MaybeTryDlopenGPULibraries();
   if (!handle_or.ok()) {
     LOG(WARNING) << "Cannot dlopen some GPU libraries. Please make sure the "
                     "missing libraries mentioned above are installed properly "
@@ -2358,7 +2377,11 @@ Status BaseGPUDeviceFactory::GetValidDeviceIds(
         "No supported cuda capabilities in binary.");
   }
   se::CudaComputeCapability min_supported_capability = *std::min_element(
-      cuda_supported_capabilities.begin(), cuda_supported_capabilities.end());
+      cuda_supported_capabilities.begin(), cuda_supported_capabilities.end(),
+      [](const stream_executor::CudaComputeCapability& a,
+         const stream_executor::CudaComputeCapability& b) {
+        return std::tie(a.major, a.minor) < std::tie(b.major, b.minor);
+      });
 #endif
 
   int min_gpu_core_count =
@@ -2381,7 +2404,8 @@ Status BaseGPUDeviceFactory::GetValidDeviceIds(
 #if GOOGLE_CUDA
     // Only GPUs with no less than the minimum supported compute capability is
     // accepted.
-    if (desc->cuda_compute_capability() < min_supported_capability) {
+    if (!desc->cuda_compute_capability().SupportsAllFeaturesOf(
+            min_supported_capability)) {
       LOG(INFO) << "Ignoring visible gpu device " << "("
                 << GetShortDeviceDescription(visible_gpu_id, *desc) << ") "
                 << "with Cuda compute capability "

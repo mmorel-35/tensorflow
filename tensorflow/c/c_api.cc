@@ -80,8 +80,8 @@ limitations under the License.
 #include "tensorflow/core/platform/stringpiece.h"
 #include "tensorflow/core/platform/thread_annotations.h"
 #include "tensorflow/core/platform/types.h"
+#include "tensorflow/core/public/release_version.h"
 #include "tensorflow/core/public/session.h"
-#include "tensorflow/core/public/version.h"
 
 // The implementation below is at the top level instead of the
 // brain namespace because we are defining 'extern "C"' functions.
@@ -285,8 +285,8 @@ void TF_GraphSetOutputHandleShapesAndTypes(TF_Graph* graph, TF_Output output,
 }
 
 // Helpers for loading a TensorFlow plugin (a .so file).
-Status LoadDynamicLibrary(const char* library_filename, void** result,
-                          const void** buf, size_t* len);
+absl::Status LoadDynamicLibrary(const char* library_filename, void** result,
+                                const void** buf, size_t* len);
 
 // TODO(josh11b,mrry): Change Session to be able to use a Graph*
 // directly, instead of requiring us to serialize to a GraphDef and
@@ -660,7 +660,7 @@ TF_Operation* ToOperation(Node* node) {
 }
 
 string OutputName(const TF_Output& output) {
-  return StrCat(output.oper->node.name(), ":", output.index);
+  return absl::StrCat(output.oper->node.name(), ":", output.index);
 }
 
 const tensorflow::AttrValue* GetAttrValue(TF_Operation* oper,
@@ -827,12 +827,12 @@ void TF_AddControlInput(TF_OperationDescription* desc, TF_Operation* input) {
 
 void TF_ColocateWith(TF_OperationDescription* desc, TF_Operation* op) {
   desc->colocation_constraints.emplace(
-      StrCat(tensorflow::kColocationGroupPrefix, op->node.name()));
+      absl::StrCat(tensorflow::kColocationGroupPrefix, op->node.name()));
 }
 
 void TF_SetAttrString(TF_OperationDescription* desc, const char* attr_name,
                       const void* value, size_t length) {
-  tensorflow::StringPiece s(static_cast<const char*>(value), length);
+  absl::string_view s(static_cast<const char*>(value), length);
   desc->node_builder.Attr(attr_name, s);
 }
 
@@ -846,7 +846,7 @@ void TF_SetAttrStringList(TF_OperationDescription* desc, const char* attr_name,
                                            lengths[i]);
     }
   } else {
-    std::vector<tensorflow::StringPiece> v;
+    std::vector<absl::string_view> v;
     v.reserve(num_values);
     for (int i = 0; i < num_values; ++i) {
       v.emplace_back(static_cast<const char*>(values[i]), lengths[i]);
@@ -923,8 +923,8 @@ void TF_SetAttrShape(TF_OperationDescription* desc, const char* attr_name,
                      const int64_t* dims, int num_dims) {
   PartialTensorShape shape;
   if (num_dims >= 0) {
-    shape = PartialTensorShape(
-        ArraySlice<int64_t>(reinterpret_cast<const int64_t*>(dims), num_dims));
+    shape = PartialTensorShape(absl::Span<const int64_t>(
+        reinterpret_cast<const int64_t*>(dims), num_dims));
   }
   desc->node_builder.Attr(attr_name, shape);
 }
@@ -938,7 +938,7 @@ void TF_SetAttrShapeList(TF_OperationDescription* desc, const char* attr_name,
     if (num_dims[i] < 0) {
       shapes.emplace_back();
     } else {
-      shapes.emplace_back(ArraySlice<int64_t>(
+      shapes.emplace_back(absl::Span<const int64_t>(
           reinterpret_cast<const int64_t*>(dims[i]), num_dims[i]));
     }
   }
@@ -2015,12 +2015,14 @@ TF_WhileParams TF_NewWhile(TF_Graph* g, TF_Output* inputs, int ninputs,
 
   for (int i = 0; i < ninputs; ++i) {
     // TODO(skyewm): prefix names with underscore (requires some plumbing)
-    if (!CreateInput(inputs[i], cond_graph, StrCat("cond_input", i).c_str(),
-                     &cond_inputs[i], status)) {
+    if (!CreateInput(inputs[i], cond_graph,
+                     absl::StrCat("cond_input", i).c_str(), &cond_inputs[i],
+                     status)) {
       break;
     }
-    if (!CreateInput(inputs[i], body_graph, StrCat("body_input", i).c_str(),
-                     &body_inputs[i], status)) {
+    if (!CreateInput(inputs[i], body_graph,
+                     absl::StrCat("body_input", i).c_str(), &body_inputs[i],
+                     status)) {
       break;
     }
   }

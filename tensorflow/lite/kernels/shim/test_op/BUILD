@@ -1,5 +1,7 @@
 # A simple op. for testing and demonstrating the OpKernel interface.
 
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_cc//cc:cc_test.bzl", "cc_test")
 load("//tensorflow:tensorflow.bzl", "tf_cc_test", "tf_kernel_library")
 load("//tensorflow/lite:special_rules.bzl", "tflite_portable_test_suite")
 
@@ -48,6 +50,7 @@ tf_cc_test(
         "//tensorflow/core/kernels:ops_testutil",
         "//tensorflow/core/platform:tstring",
         "@com_google_googletest//:gtest_main",
+        "@local_xla//xla/tsl/lib/core:status_test_util",
     ],
 )
 
@@ -69,8 +72,10 @@ cc_test(
     deps = [
         ":simple_tflite_op",
         "//tensorflow/core/platform:tstring",
+        "//tensorflow/lite/c:c_api_types",
         "//tensorflow/lite/core/c:common",
         "//tensorflow/lite/kernels:test_util",
+        "//tensorflow/lite/schema:schema_fbs",
         "@com_google_googletest//:gtest_main",
         "@flatbuffers",
     ],
@@ -106,6 +111,7 @@ tf_kernel_library(
         "//tensorflow/lite:mutable_op_resolver",
         "//tensorflow/lite/c:common",
         "//tensorflow/lite/core/c:common",
+        "//tensorflow/lite/kernels/shim:op_kernel",
         "//tensorflow/lite/kernels/shim:tflite_op_shim",
         "//tensorflow/lite/kernels/shim:tflite_op_wrapper",
     ],
@@ -128,6 +134,7 @@ tf_cc_test(
         "//tensorflow/core/framework:tensor_testutil",
         "//tensorflow/core/kernels:ops_testutil",
         "@com_google_googletest//:gtest_main",
+        "@local_xla//xla/tsl/lib/core:status_test_util",
     ],
 )
 
@@ -146,7 +153,9 @@ tf_cc_test(
         "//tensorflow/core:protos_all_cc",
         "//tensorflow/core:testlib",
         "//tensorflow/core/kernels:ops_testutil",
+        "//tensorflow/lite/c:c_api_types",
         "//tensorflow/lite/kernels:test_util",
+        "//tensorflow/lite/schema:schema_fbs",
         "@com_google_googletest//:gtest_main",
         "@flatbuffers",
     ],

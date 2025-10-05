@@ -17,11 +17,13 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include "xla/tests/xla_test_backend_predicates.h"
 #include "xla/client/client_library.h"
 #include "xla/client/local_client.h"
 #include "xla/hlo/ir/hlo_input_output_alias_config.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_opcode.h"
+#include "xla/hlo/testlib/verified_hlo_module.h"
 #include "xla/literal.h"
 #include "xla/service/backend.h"
 #include "xla/service/executable.h"
@@ -29,8 +31,7 @@ limitations under the License.
 #include "xla/stream_executor/stream_executor_memory_allocator.h"
 #include "xla/tests/hlo_test_base.h"
 #include "xla/tests/literal_test_util.h"
-#include "xla/tests/verified_hlo_module.h"
-#include "tsl/lib/core/status_test_util.h"
+#include "xla/tsl/lib/core/status_test_util.h"
 
 namespace xla {
 namespace {
@@ -126,8 +127,7 @@ class BufferDonationTest : public HloTestBase {
     }
 
     absl::StatusOr<ExecutionOutput> output_status =
-        executable->ExecuteAsyncOnStream(&service_run_options, std::move(args),
-                                         /*hlo_execution_profile=*/nullptr);
+        executable->ExecuteAsyncOnStream(&service_run_options, std::move(args));
     if (!expected_failure.empty()) {
       ASSERT_FALSE(output_status.ok());
       ASSERT_TRUE(
@@ -144,19 +144,19 @@ class BufferDonationTest : public HloTestBase {
               << "             size = " << result_root_buffer.size();
 
     // Check for expected aliasing between input and output buffers.
-#ifndef XLA_TEST_BACKEND_INTERPRETER
-    alias_config.ForEachAlias(
-        [&](const ShapeIndex& output_index,
-            const HloInputOutputAliasConfig::Alias& alias) {
-          int arg_num = alias.parameter_number;
-          const void* input_ptr =
-              inputs_buffers[arg_num].element(alias.parameter_index).opaque();
-          const void* output_ptr =
-              output.Result().buffer(output_index).opaque();
-          ASSERT_EQ(input_ptr == output_ptr,
-                    expected_runtime_aliasing[arg_num]);
-        });
-#endif
+    if (!test::DeviceTypeIs(test::kInterpreter)) {
+      alias_config.ForEachAlias(
+          [&](const ShapeIndex& output_index,
+              const HloInputOutputAliasConfig::Alias& alias) {
+            int arg_num = alias.parameter_number;
+            const void* input_ptr =
+                inputs_buffers[arg_num].element(alias.parameter_index).opaque();
+            const void* output_ptr =
+                output.Result().buffer(output_index).opaque();
+            ASSERT_EQ(input_ptr == output_ptr,
+                      expected_runtime_aliasing[arg_num]);
+          });
+    }
 
     TF_ASSERT_OK(run_options.stream()->BlockHostUntilDone());
     TF_ASSERT_OK_AND_ASSIGN(
@@ -308,10 +308,10 @@ ENTRY entry {
       {LiteralUtil::CreateR0<float>(0.1), LiteralUtil::CreateR0<float>(0.2)});
 
   // Alias-passthrough-params is only implemented on GPU.
-#ifdef XLA_TEST_BACKEND_GPU
-  RunAndCheck(std::move(*module), args, /*donate_arguments=*/{false, false},
-              /*expected_runtime_aliasing=*/{true, true}, expected);
-#endif
+  if (test::DeviceTypeIs(test::kGpu)) {
+    RunAndCheck(std::move(*module), args, /*donate_arguments=*/{false, false},
+                /*expected_runtime_aliasing=*/{true, true}, expected);
+  }
 }
 
 TEST_F(BufferDonationTest, TestMustAliasNotDonated) {
@@ -338,12 +338,12 @@ ENTRY entry {
   Literal expected = LiteralUtil::MakeTupleFromSlices(
       {LiteralUtil::CreateR0<float>(0.1), LiteralUtil::CreateR0<float>(0.2)});
 
-#ifndef XLA_TEST_BACKEND_INTERPRETER
-  RunAndCheck(std::move(*module), args,
-              /*donate_arguments=*/{false, false}, {true, false}, expected,
-              "An input was configured to be must-alias at "
-              "compile time but not donated at runtime:");
-#endif
+  if (!test::DeviceTypeIs(test::kInterpreter)) {
+    RunAndCheck(std::move(*module), args,
+                /*donate_arguments=*/{false, false}, {true, false}, expected,
+                "An input was configured to be must-alias at "
+                "compile time but not donated at runtime:");
+  }
 }
 
 }  // namespace

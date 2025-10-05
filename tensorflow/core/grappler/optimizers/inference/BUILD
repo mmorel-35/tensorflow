@@ -1,4 +1,5 @@
-# Placeholder: load py_proto_library
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_python//python:proto.bzl", "py_proto_library")
 load("//tensorflow:tensorflow.bzl", "tf_cc_test")
 load("//tensorflow/core/platform:build_config.bzl", "tf_proto_library")
 
@@ -19,14 +20,12 @@ package(
 tf_proto_library(
     name = "batch_op_rewriter_proto",
     srcs = ["batch_op_rewriter.proto"],
-    cc_api_version = 2,
     visibility = ["//visibility:public"],
 )
 
 # copybara:uncomment_begin(google-only)
 # py_proto_library(
 #     name = "batch_op_rewriter_proto_py_pb2",
-#     api_version = 2,
 #     visibility = ["//visibility:public"],
 #     deps = [":batch_op_rewriter_proto"],
 # )
@@ -44,6 +43,7 @@ cc_library(
         "//tensorflow/core/grappler/optimizers:custom_graph_optimizer",
         "//tensorflow/core/grappler/optimizers:custom_graph_optimizer_registry",
         "//tensorflow/tools/graph_transforms:transform_utils",
+        "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@com_google_protobuf//:protobuf",

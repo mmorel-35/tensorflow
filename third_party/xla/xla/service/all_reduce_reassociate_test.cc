@@ -17,16 +17,23 @@ limitations under the License.
 
 #include <cstddef>
 #include <memory>
+#include <utility>
 
+#include <gmock/gmock.h>
+#include <gtest/gtest.h>
 #include "absl/algorithm/container.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/hlo/ir/hlo_opcode.h"
+#include "xla/hlo/testlib/hlo_hardware_independent_test_base.h"
+#include "xla/hlo/testlib/pattern_matcher_gmock.h"
 #include "xla/hlo/utils/hlo_matchers.h"
-#include "xla/service/pattern_matcher_gmock.h"
-#include "xla/statusor.h"
-#include "xla/tests/hlo_test_base.h"
+#include "xla/service/pattern_matcher.h"
+#include "xla/util.h"
+#include "xla/xla_data.pb.h"
+#include "tsl/platform/statusor.h"
 
 namespace xla {
 namespace {
@@ -34,7 +41,7 @@ namespace {
 namespace m = xla::testing::opcode_matchers;
 using ::testing::_;
 
-class AllReduceSimplifierTest : public HloTestBase {
+class AllReduceSimplifierTest : public HloHardwareIndependentTestBase {
  public:
   absl::StatusOr<std::unique_ptr<HloModule>> RunPass(
       absl::string_view hlo_module, bool expect_change,

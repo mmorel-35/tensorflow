@@ -18,21 +18,23 @@ limitations under the License.
 #include <cstdint>
 #include <memory>
 #include <string>
-#include <utility>
 #include <vector>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "absl/log/check.h"
 #include "absl/status/status.h"
+#include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "xla/python/ifrt/array.h"
-#include "xla/python/ifrt/client.h"
-#include "xla/python/ifrt/future.h"
 #include "xla/python/ifrt/test_util.h"
+#include "xla/tsl/concurrency/future.h"
+#include "xla/tsl/framework/serving_device_selector.h"
+#include "xla/tsl/framework/test_util/mock_serving_device_selector.h"
+#include "xla/tsl/lib/core/status_test_util.h"
+#include "xla/tsl/platform/statusor.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_matcher.h"
 #include "tensorflow/core/framework/tensor_shape.h"
@@ -40,13 +42,7 @@ limitations under the License.
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/tfrt/ifrt/ifrt_restore_tensor_registry.h"
-#include "tensorflow/core/tfrt/ifrt/ifrt_serving_core_selector.h"
 #include "tensorflow/core/tfrt/ifrt/ifrt_serving_executable_test_util.h"
-#include "tsl/framework/serving_device_selector.h"
-#include "tsl/framework/test_util/mock_serving_device_selector.h"
-#include "tsl/platform/env.h"
-#include "tsl/platform/statusor.h"
-#include "tsl/platform/threadpool.h"
 #include "tsl/platform/tstring.h"
 
 namespace tensorflow {
@@ -57,7 +53,6 @@ using ::tensorflow::test::AsTensor;
 using ::tensorflow::test::TensorEq;
 using ::testing::ElementsAre;
 using ::testing::Return;
-using ::tsl::testing::StatusIs;
 
 struct VariableInputTestParam {
   std::vector<tensorflow::Tensor> in_tensors;
@@ -68,44 +63,35 @@ struct VariableInputTestParam {
 };
 using VariableInputTest = ::testing::TestWithParam<VariableInputTestParam>;
 
-const tsl::thread::ThreadPool& GetThreadPool() {
-  constexpr int kMaxParallelism = 16;
-  static auto* const thread_pool =
-      new tsl::thread::ThreadPool(tsl::Env::Default(), tsl::ThreadOptions(),
-                                  "IfrtSharding", kMaxParallelism);
-  return *thread_pool;
-}
 class IfrtServingExecutableTest : public ::testing::Test {
  protected:
   explicit IfrtServingExecutableTest() {
-    absl::StatusOr<std::shared_ptr<xla::ifrt::Client>> client =
-        xla::ifrt::test_util::GetClient();
-    CHECK_OK(client);
-    client_ = *std::move(client);
-    core_selector_ = std::make_unique<IfrtServingCoreSelector>(&selector_);
+    helper_ = std::make_unique<test_utils::IfrtServingExecutableTestHelper>(
+        &selector_);
   }
 
   tsl::test_util::MockServingDeviceSelector selector_;
-  std::unique_ptr<IfrtServingCoreSelector> core_selector_;
-  std::shared_ptr<xla::ifrt::Client> client_;
+  std::unique_ptr<test_utils::IfrtServingExecutableTestHelper> helper_;
 };
 
 TEST_F(IfrtServingExecutableTest, Basic) {
-  test_utils::IfrtServingExecutableTestHelper helper(&selector_);
   int64_t program_id = 123456;
   EXPECT_CALL(selector_, ReserveDevice(absl::StrCat(program_id)))
       .Times(1)
       .WillOnce(Return(tsl::DeviceReservation(0, /*selector=*/nullptr)));
   auto executable =
-      helper.MakeExecutable(program_id, GetMlirModulePath("executable.mlir"));
+      helper_->MakeExecutable(program_id, GetMlirModulePath("executable.mlir"));
 
   auto x = AsTensor<int32_t>({1, 2, 3}, tensorflow::TensorShape({1, 3}));
   auto y = AsTensor<int32_t>({1, 2, 3}, tensorflow::TensorShape({3, 1}));
   std::vector<tensorflow::Tensor> inputs{x, y};
 
+  // Iterate over all cores first for warmup execution.
+  for (int i = 0; i < helper_->num_cores(); i++) {
+    TF_ASSERT_OK(executable->Execute(absl::MakeSpan(inputs), {}).status());
+  }
   TF_ASSERT_OK_AND_ASSIGN(auto result,
                           executable->Execute(absl::MakeSpan(inputs), {}));
-
   const auto expected_out =
       AsTensor<int32_t>({14}, tensorflow::TensorShape({1, 1}));
 
@@ -113,14 +99,13 @@ TEST_F(IfrtServingExecutableTest, Basic) {
 }
 
 TEST_F(IfrtServingExecutableTest, MultipleShapes) {
-  test_utils::IfrtServingExecutableTestHelper helper(&selector_);
   int64_t program_id = 123456;
   EXPECT_CALL(selector_, ReserveDevice(absl::StrCat(program_id)))
       .Times(6)
       .WillRepeatedly(
           [](::testing::Unused) { return tsl::DeviceReservation(0, nullptr); });
   auto executable =
-      helper.MakeExecutable(program_id, GetMlirModulePath("executable.mlir"));
+      helper_->MakeExecutable(program_id, GetMlirModulePath("executable.mlir"));
 
   auto x1 = AsTensor<int32_t>({1, 2, 3}, tensorflow::TensorShape({1, 3}));
   auto y1 = AsTensor<int32_t>({1, 2, 3}, tensorflow::TensorShape({3, 1}));
@@ -136,6 +121,10 @@ TEST_F(IfrtServingExecutableTest, MultipleShapes) {
   std::vector<tensorflow::Tensor> inputs2{x2, y2};
 
   std::vector<tensorflow::Tensor> outputs1, outputs2;
+  // Iterate over all cores first for warmup execution.
+  for (int i = 0; i < helper_->num_cores(); i++) {
+    TF_ASSERT_OK(executable->Execute(absl::MakeSpan(inputs1), {}).status());
+  }
   for (int i = 0; i < 3; i++) {
     TF_ASSERT_OK_AND_ASSIGN(outputs1,
                             executable->Execute(absl::MakeSpan(inputs1), {}));
@@ -151,14 +140,13 @@ TEST_F(IfrtServingExecutableTest, MultipleShapes) {
 }
 
 TEST_F(IfrtServingExecutableTest, ReturnFailOnUncompiledShapeAfterFrozen) {
-  test_utils::IfrtServingExecutableTestHelper helper(&selector_);
   int64_t program_id = 123456;
   EXPECT_CALL(selector_, ReserveDevice(absl::StrCat(program_id)))
       .Times(3)
       .WillRepeatedly(
           [](::testing::Unused) { return tsl::DeviceReservation(0, nullptr); });
   auto executable =
-      helper.MakeExecutable(program_id, GetMlirModulePath("executable.mlir"));
+      helper_->MakeExecutable(program_id, GetMlirModulePath("executable.mlir"));
 
   auto x1 = AsTensor<int32_t>({1, 2, 3}, tensorflow::TensorShape({1, 3}));
   auto y1 = AsTensor<int32_t>({1, 2, 3}, tensorflow::TensorShape({3, 1}));
@@ -166,6 +154,9 @@ TEST_F(IfrtServingExecutableTest, ReturnFailOnUncompiledShapeAfterFrozen) {
       AsTensor<int32_t>({14}, tensorflow::TensorShape({1, 1}));
   std::vector<tensorflow::Tensor> inputs1{x1, y1};
   std::vector<tensorflow::Tensor> outputs1;
+  for (int i = 0; i < helper_->num_cores(); i++) {
+    TF_ASSERT_OK(executable->Execute(absl::MakeSpan(inputs1), {}).status());
+  }
   TF_ASSERT_OK_AND_ASSIGN(outputs1,
                           executable->Execute(absl::MakeSpan(inputs1), {}));
 
@@ -186,14 +177,14 @@ TEST_F(IfrtServingExecutableTest, ReturnFailOnUncompiledShapeAfterFrozen) {
   std::vector<tensorflow::Tensor> outputs2;
   auto status = executable->Execute(absl::MakeSpan(inputs2), {});
 
-  EXPECT_THAT(status, StatusIs(absl::StatusCode::kFailedPrecondition));
+  EXPECT_THAT(status,
+              absl_testing::StatusIs(absl::StatusCode::kFailedPrecondition));
 }
 
 TEST_F(IfrtServingExecutableTest, Spmd) {
-  test_utils::IfrtServingExecutableTestHelper helper(&selector_);
   int64_t program_id = 111111;
   EXPECT_CALL(selector_, ReserveDevice(absl::StrCat(program_id))).Times(0);
-  auto executable = helper.MakeExecutable(
+  auto executable = helper_->MakeExecutable(
       program_id, GetMlirModulePath("spmd_executable.mlir"));
 
   auto x = AsTensor<int32_t>({1, 2, 3, 4, 5, 6, 7, 8},
@@ -215,10 +206,9 @@ TEST_F(IfrtServingExecutableTest, Spmd) {
 }
 
 TEST_F(IfrtServingExecutableTest, SpmdTwoReturns) {
-  test_utils::IfrtServingExecutableTestHelper helper(&selector_);
   int64_t program_id = 111111;
   EXPECT_CALL(selector_, ReserveDevice(absl::StrCat(program_id))).Times(0);
-  auto executable = helper.MakeExecutable(
+  auto executable = helper_->MakeExecutable(
       program_id, GetMlirModulePath("spmd_executable_two_returns.mlir"));
 
   auto x = AsTensor<int32_t>({1, 2, 3, 4, 5, 6, 7, 8},
@@ -243,19 +233,48 @@ TEST_F(IfrtServingExecutableTest, SpmdTwoReturns) {
               ElementsAre(TensorEq(expected_out0), TensorEq(expected_out1)));
 }
 
+TEST_F(IfrtServingExecutableTest, SpmdXlaCallModuleShardy) {
+  int64_t program_id = 111111;
+  EXPECT_CALL(selector_, ReserveDevice(absl::StrCat(program_id))).Times(0);
+  auto executable = helper_->MakeExecutable(
+      program_id,
+      GetMlirModulePath("spmd_executable_xla_call_module_shardy.mlir"));
+
+  auto x = AsTensor<int32_t>({11, 12, 13, 14, 15, 16, 17, 18},
+                             tensorflow::TensorShape({4, 2}));
+  auto y = AsTensor<int32_t>({8, 7, 6, 5, 4, 3, 2, 1},
+                             tensorflow::TensorShape({4, 2}));
+
+  const auto expected_out0 = AsTensor<int32_t>({3, 5, 7, 9, 11, 13, 15, 17},
+                                               tensorflow::TensorShape({4, 2}));
+  const auto expected_out1 = AsTensor<int32_t>({19, 19, 19, 19, 19, 19, 19, 19},
+                                               tensorflow::TensorShape({4, 2}));
+
+  std::vector<tensorflow::Tensor> inputs{x, y};
+
+  TF_ASSERT_OK_AND_ASSIGN(auto result,
+                          executable->Execute(absl::MakeSpan(inputs), {}));
+
+  EXPECT_THAT(result,
+              ElementsAre(TensorEq(expected_out0), TensorEq(expected_out1)));
+}
+
 TEST_F(IfrtServingExecutableTest, NoReturn) {
-  test_utils::IfrtServingExecutableTestHelper helper(&selector_);
   int64_t program_id = 111111;
   EXPECT_CALL(selector_, ReserveDevice(absl::StrCat(program_id)))
       .Times(1)
       .WillRepeatedly(
           [](::testing::Unused) { return tsl::DeviceReservation(0, nullptr); });
-  auto executable = helper.MakeExecutable(
+  auto executable = helper_->MakeExecutable(
       program_id, GetMlirModulePath("executable_no_return.mlir"));
 
   auto x = AsTensor<int32_t>({1, 2, 3}, tensorflow::TensorShape({1, 3}));
   auto y = AsTensor<int32_t>({1, 2, 3}, tensorflow::TensorShape({3, 1}));
   std::vector<tensorflow::Tensor> inputs{x, y};
+  // Iterate over all cores first for warmup execution.
+  for (int i = 0; i < helper_->num_cores(); i++) {
+    TF_ASSERT_OK(executable->Execute(absl::MakeSpan(inputs), {}).status());
+  }
 
   TF_ASSERT_OK_AND_ASSIGN(auto result,
                           executable->Execute(absl::MakeSpan(inputs), {}));
@@ -280,10 +299,8 @@ TEST_P(VariableInputTest, InterleaveVariable) {
   std::vector<int> loaded_variable_indices;
   for (int i = 0; i < GetParam().in_tensors.size(); i++) {
     if (GetParam().is_variable[i]) {
-      auto input_tensor_promise =
-          xla::ifrt::Future<tensorflow::Tensor>::CreatePromise();
-      auto input_tensor_future =
-          xla::ifrt::Future<tensorflow::Tensor>(input_tensor_promise);
+      auto [input_tensor_promise, input_tensor_future] =
+          tsl::Future<tensorflow::Tensor>::MakePromise();
       IfrtRestoreTensorRegistry::RestoredTensorInfo restore_tensor_info = {
           .dtype_and_shape{.dtype = GetParam().in_tensors[i].dtype(),
                            .shape = GetParam().in_tensors[i].shape()},
@@ -304,6 +321,13 @@ TEST_P(VariableInputTest, InterleaveVariable) {
   }
 
   ASSERT_EQ(inputs.size(), GetParam().is_variable.size());
+  // Iterate over all cores first for warmup execution.
+  for (int i = 0; i < helper.num_cores(); i++) {
+    TF_ASSERT_OK(executable
+                     ->Execute(absl::MakeSpan(inputs),
+                               absl::MakeSpan(loaded_variable_indices))
+                     .status());
+  }
 
   TF_ASSERT_OK_AND_ASSIGN(
       auto result,

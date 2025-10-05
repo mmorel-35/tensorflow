@@ -16,6 +16,7 @@ limitations under the License.
 #include "xla/shape_util.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <numeric>
 #include <optional>
@@ -23,20 +24,23 @@ limitations under the License.
 #include <variant>
 #include <vector>
 
+#include <gtest/gtest.h>
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
 #include "absl/types/span.h"
+#include "xla/hlo/testlib/test.h"
 #include "xla/layout.h"
 #include "xla/layout_util.h"
 #include "xla/shape.h"
-#include "xla/test.h"
+#include "xla/tsl/platform/env.h"
+#include "xla/tsl/platform/statusor.h"
+#include "xla/tsl/platform/test_benchmark.h"
+#include "xla/tsl/platform/threadpool.h"
 #include "xla/util.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/platform/env.h"
 #include "tsl/platform/protobuf.h"
-#include "tsl/platform/test_benchmark.h"
-#include "tsl/platform/threadpool.h"
 
 namespace xla {
 namespace {
@@ -240,8 +244,9 @@ TEST(ShapeUtilTest, CompatibleTuples) {
 }
 
 TEST(ShapeUtilTest, MakeMaybeTupleShape) {
-  Shape s1 =
-      ShapeUtil::MakeMaybeTupleShape({ShapeUtil::MakeShape(F32, {3, 2})});
+  Shape s1 = ShapeUtil::MakeValidatedMaybeTupleShape(
+                 {ShapeUtil::MakeValidatedShape(F32, {3, 2}).value()})
+                 .value();
   EXPECT_TRUE(ShapeUtil::Compatible(s1, ShapeUtil::MakeShape(F32, {3, 2})));
 }
 
@@ -590,6 +595,29 @@ TEST(ShapeUtilTest, ForEachMutableSubshapeNestedTuple) {
   EXPECT_EQ(5, calls);
 }
 
+TEST(ShapeUtilTest, ForEachMutableLeafShapeTest) {
+  Shape shape = ShapeUtil::MakeTupleShape(
+      {ShapeUtil::MakeShape(F32, {42}),
+       ShapeUtil::MakeTupleShape({ShapeUtil::MakeShape(F32, {101}),
+                                  ShapeUtil::MakeShape(PRED, {33})})});
+  int calls = 0;
+  ShapeUtil::ForEachMutableLeafShape(
+      &shape, [&calls, &shape](const Shape* subshape, const ShapeIndex& index) {
+        // Pointer values should be equal.
+        EXPECT_EQ(subshape, ShapeUtil::GetMutableSubshape(&shape, index));
+        // Visitation should go from outside in.
+        if (calls == 0) {
+          EXPECT_EQ(42, ShapeUtil::ElementsIn(*subshape));
+        } else if (calls == 1) {
+          EXPECT_EQ(101, ShapeUtil::ElementsIn(*subshape));
+        } else if (calls == 2) {
+          EXPECT_EQ(33, ShapeUtil::ElementsIn(*subshape));
+        }
+        ++calls;
+      });
+  EXPECT_EQ(3, calls);
+}
+
 TEST(ShapeUtilTest, InsertedOrDeleted1SizedDimensions) {
   Shape shape0 = ShapeUtil::MakeShape(S32, {9, 1, 4});
   Shape shape1 = ShapeUtil::MakeShape(S32, {1, 9, 4, 1});
@@ -766,6 +794,44 @@ TEST(ShapeUtilTest, ForEachIndexParallel_WithSkips) {
       }
     }
   }
+}
+
+TEST(ShapeUtilTest, ForEachIndexParallel_WithOddIncr) {
+  Shape shape = ShapeUtil::MakeShape(F32, {10, 10});
+  int64_t output[10][10] = {};
+  int init = 5;
+  auto set_func = [&](absl::Span<const int64_t> indexes,
+                      int /*thread_id*/) -> absl::StatusOr<bool> {
+    output[indexes[0]][indexes[1]] = init + indexes[0] + indexes[1];
+    return true;
+  };
+
+  ShapeUtil::ForEachIndexParallel(shape, /*base=*/{0, 0}, /*count=*/{10, 10},
+                                  /*incr=*/{3, 3}, set_func);
+
+  for (int i = 0; i < 10; ++i) {
+    for (int j = 0; j < 10; ++j) {
+      if (i % 3 == 0 && j % 3 == 0) {
+        EXPECT_EQ(output[i][j], init + i + j);
+      } else {
+        EXPECT_EQ(output[i][j], 0);
+      }
+    }
+  }
+}
+
+TEST(ShapeUtilTest, ForEachIndexParallel_Scalar) {
+  Shape shape = ShapeUtil::MakeShape(F32, {});
+  int64_t output = 0;
+  auto set_func = [&](absl::Span<const int64_t> indexes,
+                      int /*thread_id*/) -> absl::StatusOr<bool> {
+    output = 5;
+    return true;
+  };
+
+  ShapeUtil::ForEachIndexParallel(shape, /*base=*/{}, /*count=*/{},
+                                  /*incr=*/{}, set_func);
+  EXPECT_EQ(output, 5);
 }
 
 TEST(ShapeUtilTest, ForEachIndexParallel_CalledTwice) {
@@ -979,8 +1045,7 @@ TEST(ShapeUtilTest, InvalidDynamicDimension) {
 
   EXPECT_FALSE(error_status.ok());
   EXPECT_THAT(error_status.status().message(),
-              ::testing::HasSubstr(
-                  "Cannot mark a dynamic dimension at dim=1 as static"));
+              ::testing::HasSubstr("Invalid dimension size"));
 }
 
 TEST(ShapeUtilTest, PermuteDynamicDimensions) {
@@ -995,7 +1060,7 @@ TEST(ShapeUtilTest, PermuteDynamicDimensions) {
     SCOPED_TRACE(absl::StrCat("permutation=", absl::StrJoin(permutation, ",")));
 
     auto permuted = ShapeUtil::PermuteDimensions(permutation, shape);
-    for (int i = 0; i < shape.rank(); i++) {
+    for (int i = 0; i < shape.dimensions().size(); i++) {
       EXPECT_EQ(permuted.dimensions(i), shape.dimensions(permutation[i]));
       EXPECT_EQ(permuted.is_dynamic_dimension(i),
                 shape.is_dynamic_dimension(permutation[i]));
@@ -1033,6 +1098,58 @@ TEST(ShapeUtilTest, AppendMinorDimension) {
   ShapeUtil::AppendMinorDimension(40, &shape);
   EXPECT_EQ(shape, ShapeUtil::MakeShapeWithDenseLayout(F32, {10, 20, 30, 40},
                                                        {3, 0, 2, 1}));
+}
+
+TEST(ShapeUtilTest, InsertDimensionAtIndex) {
+  Shape shape = ShapeUtil::MakeShape(F32, {});
+  EXPECT_EQ(ShapeUtil::InsertDimensionAtIndex(shape, 0, 10),
+            ShapeUtil::MakeShape(F32, {10}));
+
+  shape = ShapeUtil::MakeShapeWithDenseLayout(F32, {10, 20, 30}, {2, 1, 0});
+  EXPECT_EQ(
+      ShapeUtil::InsertDimensionAtIndex(shape, 3, 40),
+      ShapeUtil::MakeShapeWithDenseLayout(F32, {10, 20, 30, 40}, {3, 2, 1, 0}));
+
+  shape = ShapeUtil::MakeShapeWithDenseLayout(F32, {10, 20, 30}, {2, 1, 0});
+  EXPECT_EQ(
+      ShapeUtil::InsertDimensionAtIndex(shape, 1, 40),
+      ShapeUtil::MakeShapeWithDenseLayout(F32, {10, 40, 20, 30}, {3, 2, 1, 0}));
+
+  shape = ShapeUtil::MakeShapeWithDenseLayout(F32, {10, 20, 30}, {0, 2, 1});
+  EXPECT_EQ(
+      ShapeUtil::InsertDimensionAtIndex(shape, 1, 40),
+      ShapeUtil::MakeShapeWithDenseLayout(F32, {10, 40, 20, 30}, {0, 3, 2, 1}));
+
+  shape = ShapeUtil::MakeShapeWithDenseLayout(F32, {10, 20, 30}, {2, 1, 0});
+  EXPECT_EQ(
+      ShapeUtil::InsertDimensionAtIndex(shape, 0, 40),
+      ShapeUtil::MakeShapeWithDenseLayout(F32, {40, 10, 20, 30}, {3, 2, 1, 0}));
+}
+
+TEST(ShapeUtilTest, InsertDimensionsAtIndex) {
+  Shape shape = ShapeUtil::MakeShape(F32, {});
+  EXPECT_EQ(ShapeUtil::InsertDimensionsAtIndex(shape, 0, {10, 20}),
+            ShapeUtil::MakeShape(F32, {10, 20}));
+
+  shape = ShapeUtil::MakeShapeWithDenseLayout(F32, {10, 20, 30}, {2, 1, 0});
+  EXPECT_EQ(ShapeUtil::InsertDimensionsAtIndex(shape, 3, {40, 50}),
+            ShapeUtil::MakeShapeWithDenseLayout(F32, {10, 20, 30, 40, 50},
+                                                {4, 3, 2, 1, 0}));
+
+  shape = ShapeUtil::MakeShapeWithDenseLayout(F32, {10, 20, 30}, {2, 1, 0});
+  EXPECT_EQ(ShapeUtil::InsertDimensionsAtIndex(shape, 1, {40, 50}),
+            ShapeUtil::MakeShapeWithDenseLayout(F32, {10, 40, 50, 20, 30},
+                                                {4, 3, 2, 1, 0}));
+
+  shape = ShapeUtil::MakeShapeWithDenseLayout(F32, {10, 20, 30}, {0, 2, 1});
+  EXPECT_EQ(ShapeUtil::InsertDimensionsAtIndex(shape, 1, {40, 50}),
+            ShapeUtil::MakeShapeWithDenseLayout(F32, {10, 40, 50, 20, 30},
+                                                {0, 4, 3, 2, 1}));
+
+  shape = ShapeUtil::MakeShapeWithDenseLayout(F32, {10, 20, 30}, {2, 1, 0});
+  EXPECT_EQ(ShapeUtil::InsertDimensionsAtIndex(shape, 0, {40, 50}),
+            ShapeUtil::MakeShapeWithDenseLayout(F32, {40, 50, 10, 20, 30},
+                                                {4, 3, 2, 1, 0}));
 }
 
 TEST(ShapeUtilTest, MoveDimToMajor) {
@@ -1073,6 +1190,21 @@ TEST(ShapeUtilTest, MakeShapeWithDescendingLayoutAndSamePhysicalLayout) {
       ShapeUtil::MakeShapeWithDescendingLayoutAndSamePhysicalLayout(shape);
   EXPECT_EQ(new_shape, ShapeUtil::MakeShapeWithDenseLayout(
                            F32, {128, 24, 48, 48, 4}, {4, 3, 2, 1, 0}));
+}
+
+TEST(ShapeUtilTest,
+     MakeShapeWithDescendingLayoutAndSamePhysicalLayoutWithDynamicDims) {
+  Shape shape =
+      ShapeUtil::MakeShape(F32, {128, 24, Shape::kUnboundedSize, 48, 48},
+                           {false, false, true, false, false});
+  *shape.mutable_layout() = LayoutUtil::MakeLayout({2, 4, 3, 1, 0});
+  Shape new_shape =
+      ShapeUtil::MakeShapeWithDescendingLayoutAndSamePhysicalLayout(shape);
+  Shape expected_shape =
+      ShapeUtil::MakeShape(F32, {128, 24, 48, 48, Shape::kUnboundedSize},
+                           {false, false, false, false, true});
+  *expected_shape.mutable_layout() = LayoutUtil::MakeLayout({4, 3, 2, 1, 0});
+  EXPECT_EQ(new_shape, expected_shape);
 }
 
 TEST(ShapeUtilTest, DeduceTransposeDimensionsForBitcast) {
@@ -1136,7 +1268,6 @@ TEST(ShapeUtilTest, B_250640044) {
              dimensions: 137438953472
              layout {
                minor_to_major: 0
-               dim_level_types: DIM_COMPRESSED
                physical_shape {
                  element_type: TUPLE
                  tuple_shapes {}
@@ -1145,7 +1276,7 @@ TEST(ShapeUtilTest, B_250640044) {
              is_dynamic_dimension: false
            })pb",
       &proto));
-  Shape shape(proto);
+  TF_ASSERT_OK_AND_ASSIGN(Shape shape, Shape::FromProto(proto));
   EXPECT_FALSE(ShapeUtil::ValidateShape(shape).ok());
 }
 
@@ -1179,8 +1310,27 @@ TEST(ShapeUtilTest, B_251055887) {
           physical_shape { element_type: -562 }
         })pb",
       &proto));
-  Shape shape(proto);
+  TF_ASSERT_OK_AND_ASSIGN(Shape shape, Shape::FromProto(proto));
   EXPECT_FALSE(ShapeUtil::ValidateShape(shape).ok());
+}
+
+TEST(ShapeUtilTest, B_385192799) {
+  // This case failed the fuzzer; see b/385192799.
+  ShapeProto proto;
+
+  {
+    EXPECT_TRUE(tsl::protobuf::TextFormat::ParseFromString(
+        R"pb(element_type: 2000)pb", &proto));
+    TF_ASSERT_OK_AND_ASSIGN(Shape shape, Shape::FromProto(proto));
+    EXPECT_FALSE(ShapeUtil::ValidateShape(shape).ok());
+  }
+
+  {
+    EXPECT_TRUE(tsl::protobuf::TextFormat::ParseFromString(
+        R"pb(element_type: -1)pb", &proto));
+    TF_ASSERT_OK_AND_ASSIGN(Shape shape, Shape::FromProto(proto));
+    EXPECT_FALSE(ShapeUtil::ValidateShape(shape).ok());
+  }
 }
 
 TEST(ShapeUtilTest, Int4ShapeSize) {
@@ -1200,6 +1350,25 @@ TEST(ShapeUtilTest, Int4ShapeSize) {
   layout->set_element_size_in_bits(4);
   EXPECT_EQ(ShapeUtil::ArrayDataSize(int4_shape2), 9216 * 6144 / 2);
   EXPECT_EQ(ShapeUtil::ArraySize(int4_shape2), 9216 * 6144 / 2);
+
+  // Changing the type should clear element_size_in_bits.
+  Shape pred_shape = ShapeUtil::ChangeElementType(int4_shape, PRED);
+  EXPECT_EQ(pred_shape.layout().element_size_in_bits(), 0);
+  Shape u8_shape = ShapeUtil::ChangeElementType(int4_shape, U8);
+  EXPECT_EQ(u8_shape.layout().element_size_in_bits(), 0);
+  Shape u4_shape = ShapeUtil::ChangeElementType(int4_shape, U4);
+  EXPECT_EQ(u4_shape.layout().element_size_in_bits(), 4);
+}
+
+TEST(ShapeUtilTest, Int4ShapeToHostShape) {
+  Shape int4_shape = ShapeUtil::MakeShape(S4, {64, 128});
+  int4_shape.mutable_layout()->set_element_size_in_bits(4);
+
+  EXPECT_FALSE(ShapeUtil::DeviceShapeIsHostShape(int4_shape));
+  Shape host_shape = ShapeUtil::DeviceShapeToHostShape(int4_shape);
+
+  EXPECT_TRUE(ShapeUtil::DeviceShapeIsHostShape(host_shape));
+  EXPECT_EQ(host_shape.layout().element_size_in_bits(), 0);
 }
 
 TEST(XlaShapeUtilTest, ZeroSize) {
@@ -1226,7 +1395,7 @@ TEST(ShapeUtilTest, DecomposeBitcastToReshape) {
       ShapeUtil::DecomposeBitcast(kInputShape, kOutputShape);
 
   EXPECT_TRUE(std::holds_alternative<ShapeUtil::BitcastDecompositionReshape>(
-      decomposition));
+      *decomposition));
 }
 
 TEST(ShapeUtilTest, DecomposeBitcastToReshape2) {
@@ -1239,7 +1408,7 @@ TEST(ShapeUtilTest, DecomposeBitcastToReshape2) {
       ShapeUtil::DecomposeBitcast(kInputShape, kOutputShape);
 
   EXPECT_TRUE(std::holds_alternative<ShapeUtil::BitcastDecompositionReshape>(
-      decomposition));
+      *decomposition));
 }
 
 TEST(ShapeUtilTest, DecomposeBitcastToTranspose) {
@@ -1253,9 +1422,9 @@ TEST(ShapeUtilTest, DecomposeBitcastToTranspose) {
       ShapeUtil::DecomposeBitcast(kInputShape, kOutputShape);
 
   ASSERT_TRUE(std::holds_alternative<ShapeUtil::BitcastDecompositionTranspose>(
-      decomposition));
+      *decomposition));
   ShapeUtil::BitcastDecompositionTranspose decomposition_transpose =
-      std::get<ShapeUtil::BitcastDecompositionTranspose>(decomposition);
+      std::get<ShapeUtil::BitcastDecompositionTranspose>(*decomposition);
   EXPECT_EQ(decomposition_transpose.transpose_dims, kExpectedTransposeDims);
 }
 
@@ -1275,9 +1444,9 @@ TEST(ShapeUtilTest, DecomposeBitcastToReshapeAndTranspose) {
       ShapeUtil::DecomposeBitcast(kInputShape, kOutputShape);
 
   ASSERT_TRUE(std::holds_alternative<ShapeUtil::BitcastDecompositionTrt>(
-      decomposition));
+      *decomposition));
   ShapeUtil::BitcastDecompositionTrt decomposition_trt =
-      std::get<ShapeUtil::BitcastDecompositionTrt>(decomposition);
+      std::get<ShapeUtil::BitcastDecompositionTrt>(*decomposition);
   EXPECT_EQ(decomposition_trt.transpose1_dims, kExpectedTranspose1Dims);
   EXPECT_TRUE(decomposition_trt.IsTranspose1Identity());
   EXPECT_EQ(decomposition_trt.transpose1_shape, kExpectedTranspose1Shape);
@@ -1302,9 +1471,9 @@ TEST(ShapeUtilTest, DecomposeBitcastToReshapeAndTranspose2) {
       ShapeUtil::DecomposeBitcast(kInputShape, kOutputShape);
 
   ASSERT_TRUE(std::holds_alternative<ShapeUtil::BitcastDecompositionTrt>(
-      decomposition));
+      *decomposition));
   ShapeUtil::BitcastDecompositionTrt decomposition_trt =
-      std::get<ShapeUtil::BitcastDecompositionTrt>(decomposition);
+      std::get<ShapeUtil::BitcastDecompositionTrt>(*decomposition);
   EXPECT_EQ(decomposition_trt.transpose1_dims, kExpectedTranspose1Dims);
   EXPECT_TRUE(decomposition_trt.IsTranspose1Identity());
   EXPECT_EQ(decomposition_trt.transpose1_shape, kExpectedTranspose1Shape);
@@ -1329,9 +1498,9 @@ TEST(ShapeUtilTest, DecomposeBitcastToTransposeAndReshape) {
       ShapeUtil::DecomposeBitcast(kInputShape, kOutputShape);
 
   ASSERT_TRUE(std::holds_alternative<ShapeUtil::BitcastDecompositionTrt>(
-      decomposition));
+      *decomposition));
   ShapeUtil::BitcastDecompositionTrt decomposition_trt =
-      std::get<ShapeUtil::BitcastDecompositionTrt>(decomposition);
+      std::get<ShapeUtil::BitcastDecompositionTrt>(*decomposition);
   EXPECT_EQ(decomposition_trt.transpose1_dims, kExpectedTranspose1Dims);
   EXPECT_FALSE(decomposition_trt.IsTranspose1Identity());
   EXPECT_EQ(decomposition_trt.transpose1_shape, kExpectedTranspose1Shape);
@@ -1357,9 +1526,9 @@ TEST(ShapeUtilTest, DecomposeBitcastToTrt) {
       ShapeUtil::DecomposeBitcast(kInputShape, kOutputShape);
 
   ASSERT_TRUE(std::holds_alternative<ShapeUtil::BitcastDecompositionTrt>(
-      decomposition));
+      *decomposition));
   ShapeUtil::BitcastDecompositionTrt decomposition_trt =
-      std::get<ShapeUtil::BitcastDecompositionTrt>(decomposition);
+      std::get<ShapeUtil::BitcastDecompositionTrt>(*decomposition);
   EXPECT_EQ(decomposition_trt.transpose1_dims, kExpectedTranspose1Dims);
   EXPECT_FALSE(decomposition_trt.IsTranspose1Identity());
   EXPECT_EQ(decomposition_trt.transpose1_shape, kExpectedTranspose1Shape);
@@ -1368,167 +1537,25 @@ TEST(ShapeUtilTest, DecomposeBitcastToTrt) {
   EXPECT_FALSE(decomposition_trt.IsTranspose2Identity());
 }
 
-TEST(Transpose021Test, NoTranspose) {
-  Shape shape = ShapeUtil::MakeShapeWithDenseLayout(F32, {128, 64}, {1, 0});
-  Shape transposed =
-      ShapeUtil::MakeShapeWithDenseLayout(F32, {64, 128}, {0, 1});
-  EXPECT_EQ(std::nullopt, ShapeUtil::GetNormalizedTransposeShape(
-                              shape, transposed, Vector3{0, 2, 1}));
+TEST(ShapeUtilTest, FailOnNonDecomposableBitcast) {
+  const Shape kInputShape =
+      ShapeUtil::MakeShapeWithDenseLayout(S4, {3, 2}, {1, 0});
+  const Shape kOutputShape = ShapeUtil::MakeShapeWithDenseLayout(S8, {3}, {0});
+  EXPECT_FALSE(ShapeUtil::IsDecomposableBitcast(kInputShape, kOutputShape));
+  EXPECT_FALSE(
+      ShapeUtil::DecomposeBitcast(kInputShape, kOutputShape).has_value());
+
+  EXPECT_TRUE(ShapeUtil::IsDecomposableBitcast(
+      kInputShape, ShapeUtil::ChangeElementType(kInputShape, S8)));
 }
 
-TEST(Transpose021Test, NoTranspose2) {
-  Shape shape =
-      ShapeUtil::MakeShapeWithDenseLayout(F32, {128, 64, 32}, {2, 1, 0});
-  Shape transposed =
-      ShapeUtil::MakeShapeWithDenseLayout(F32, {32, 64, 128}, {0, 1, 2});
-  EXPECT_EQ(std::nullopt, ShapeUtil::GetNormalizedTransposeShape(
-                              shape, transposed, Vector3{0, 1, 2}));
-}
-
-TEST(Transpose021Test, WrongTranspose) {
-  Shape input_shape =
-      ShapeUtil::MakeShapeWithDenseLayout(F32, {8, 32768, 16}, {2, 1, 0});
-  Shape output_shape =
-      ShapeUtil::MakeShapeWithDenseLayout(F32, {8, 32768, 16}, {0, 1, 2});
-  EXPECT_EQ(std::nullopt, ShapeUtil::GetNormalizedTransposeShape(
-                              input_shape, output_shape, Vector3{0, 2, 1}));
-}
-
-TEST(Transpose021Test, WrongTranspose2) {
-  Shape input_shape = ShapeUtil::MakeShapeWithDenseLayout(F32, {8, 16}, {1, 0});
-  Shape output_shape =
-      ShapeUtil::MakeShapeWithDenseLayout(F32, {8, 16}, {0, 1});
-  EXPECT_EQ(std::nullopt, ShapeUtil::GetNormalizedTransposeShape(
-                              input_shape, output_shape, Vector3{0, 1, 2}));
-}
-
-TEST(Transpose021Test, WrongTranspose3) {
-  Shape input_shape = ShapeUtil::MakeShapeWithDenseLayout(F32, {8, 16}, {1, 0});
-  Shape output_shape =
-      ShapeUtil::MakeShapeWithDenseLayout(F32, {8, 16}, {0, 1});
-  EXPECT_EQ(std::nullopt, ShapeUtil::GetNormalizedTransposeShape(
-                              input_shape, output_shape, Vector3{1, 2, 0}));
-}
-
-TEST(Transpose021Test, Simple) {
-  Shape shape = ShapeUtil::MakeShapeWithDenseLayout(F32, {128, 64}, {1, 0});
-  Shape transposed =
-      ShapeUtil::MakeShapeWithDenseLayout(F32, {128, 64}, {0, 1});
-  EXPECT_EQ(std::make_optional(Vector3{1, 64, 128}),
-            ShapeUtil::GetNormalizedTransposeShape(shape, transposed,
-                                                   Vector3{0, 2, 1}));
-}
-
-TEST(Transpose021Test, Simple2) {
-  Shape input_shape =
-      ShapeUtil::MakeShapeWithDenseLayout(F32, {8, 32768, 16}, {2, 1, 0});
-  Shape output_shape =
-      ShapeUtil::MakeShapeWithDenseLayout(F32, {8, 32768, 16}, {1, 2, 0});
-  EXPECT_EQ(std::make_optional(Vector3{8, 16, 32768}),
-            ShapeUtil::GetNormalizedTransposeShape(input_shape, output_shape,
-                                                   Vector3{0, 2, 1}));
-}
-
-TEST(Transpose021Test, Simple3) {
-  Shape input_shape =
-      ShapeUtil::MakeShapeWithDenseLayout(F32, {8, 32768, 16}, {2, 1, 0});
-  Shape output_shape =
-      ShapeUtil::MakeShapeWithDenseLayout(F32, {8, 32768, 16}, {0, 1, 2});
-  EXPECT_EQ(std::make_optional(Vector3{16, 32768, 8}),
-            ShapeUtil::GetNormalizedTransposeShape(input_shape, output_shape,
-                                                   Vector3{2, 1, 0}));
-}
-
-TEST(Transpose021Test, Simple4) {
-  Shape input_shape = ShapeUtil::MakeShapeWithDenseLayout(F32, {8, 16}, {1, 0});
-  Shape output_shape =
-      ShapeUtil::MakeShapeWithDenseLayout(F32, {8, 16}, {0, 1});
-  EXPECT_EQ(std::make_optional(Vector3{16, 1, 8}),
-            ShapeUtil::GetNormalizedTransposeShape(input_shape, output_shape,
-                                                   Vector3{2, 1, 0}));
-}
-
-TEST(Transpose021Test, LargeView) {
-  Shape input_shape = ShapeUtil::MakeShapeWithDenseLayout(
-      F32, {8, 32, 32, 32, 16}, {4, 3, 2, 1, 0});
-  Shape output_shape = ShapeUtil::MakeShapeWithDenseLayout(
-      F32, {8, 32, 32, 32, 16}, {3, 2, 1, 4, 0});
-  EXPECT_EQ(std::make_optional(Vector3{8, 16, 32768}),
-            ShapeUtil::GetNormalizedTransposeShape(input_shape, output_shape,
-                                                   Vector3{0, 2, 1}));
-}
-
-TEST(Transpose021Test, LargeSizeOverflowTest) {
-  Shape input_shape =
-      ShapeUtil::MakeShapeWithDenseLayout(BF16, {4096, 4096, 128}, {2, 1, 0});
-  Shape output_shape =
-      ShapeUtil::MakeShapeWithDenseLayout(BF16, {4096, 4096, 128}, {2, 1, 0});
-  EXPECT_EQ(std::nullopt, ShapeUtil::GetNormalizedTransposeShape(
-                              input_shape, output_shape, Vector3{0, 2, 1}));
-}
-
-TEST(Transpose021Test, Batched) {
-  Shape shape =
-      ShapeUtil::MakeShapeWithDenseLayout(F32, {32, 3, 64}, {2, 1, 0});
-  Shape transposed =
-      ShapeUtil::MakeShapeWithDenseLayout(F32, {32, 3, 64}, {1, 0, 2});
-  EXPECT_EQ(std::make_optional(Vector3{1, 64, 96}),
-            ShapeUtil::GetNormalizedTransposeShape(shape, transposed,
-                                                   Vector3{0, 2, 1}));
-}
-
-TEST(Transpose021Test, BatchedLogical) {
-  Shape shape =
-      ShapeUtil::MakeShapeWithDenseLayout(F32, {32, 3, 64}, {2, 1, 0});
-  Shape transposed =
-      ShapeUtil::MakeShapeWithDenseLayout(F32, {64, 32, 3}, {2, 1, 0});
-  std::vector<int64_t> dimensions = {2, 0, 1};
-  EXPECT_EQ(std::make_optional(Vector3{1, 64, 96}),
-            ShapeUtil::GetNormalizedLogicalTransposeShape(
-                shape, transposed, dimensions, Vector3{0, 2, 1}));
-}
-
-TEST(Transpose021Test, LogicalWithDegenerateDims) {
-  Shape shape = ShapeUtil::MakeShapeWithDenseLayout(
-      F32, {1, 32, 1, 3, 1, 64, 1}, {6, 5, 4, 3, 2, 1, 0});
-  Shape transposed = ShapeUtil::MakeShapeWithDenseLayout(
-      F32, {1, 32, 1, 64, 1, 3, 1}, {6, 5, 4, 3, 2, 1, 0});
-  std::vector<int64_t> dimensions = {6, 1, 4, 5, 2, 3, 0};
-  EXPECT_EQ(std::make_optional(Vector3{32, 64, 3}),
-            ShapeUtil::GetNormalizedLogicalTransposeShape(
-                shape, transposed, dimensions, Vector3{0, 2, 1}));
-}
-
-TEST(Transpose021Test, LogicalWithDegenerateLastDim) {
-  Shape shape =
-      ShapeUtil::MakeShapeWithDenseLayout(F32, {1, 64, 32}, {2, 1, 0});
-  Shape transposed =
-      ShapeUtil::MakeShapeWithDenseLayout(F32, {32, 64, 1}, {2, 1, 0});
-  std::vector<int64_t> dimensions = {2, 1, 0};
-  EXPECT_EQ(std::make_optional(Vector3{1, 32, 64}),
-            ShapeUtil::GetNormalizedLogicalTransposeShape(
-                shape, transposed, dimensions, Vector3{0, 2, 1}));
-}
-
-TEST(Transpose021Test, Large) {
-  Shape shape =
-      ShapeUtil::MakeShapeWithDenseLayout(F32, {8, 31, 31, 65}, {3, 2, 1, 0});
-  Shape transposed =
-      ShapeUtil::MakeShapeWithDenseLayout(F32, {8, 31, 31, 65}, {2, 1, 3, 0});
-  EXPECT_EQ(std::make_optional(Vector3{8, 65, 961}),
-            ShapeUtil::GetNormalizedTransposeShape(shape, transposed,
-                                                   Vector3{0, 2, 1}));
-}
-
-TEST(Transpose210Test, LogicalTranspose) {
-  Shape shape =
-      ShapeUtil::MakeShapeWithDenseLayout(F32, {10, 11, 12, 13}, {3, 2, 1, 0});
-  Shape transposed =
-      ShapeUtil::MakeShapeWithDenseLayout(F32, {13, 12, 10, 11}, {3, 2, 1, 0});
-  std::vector<int64_t> dimensions = {3, 2, 0, 1};
-  EXPECT_EQ(std::make_optional(Vector3{13, 12, 110}),
-            ShapeUtil::GetNormalizedLogicalTransposeShape(
-                shape, transposed, dimensions, Vector3{2, 1, 0}));
+TEST(ShapeUtilTest, ReorderDimensionsTest) {
+  EXPECT_EQ(ShapeUtil::ReorderLogicalDimensions(
+                ShapeUtil::MakeShapeWithDenseLayout(F32, {16, 3, 12, 17},
+                                                    {1, 2, 0, 3}),
+                {0, 2, 1, 3})
+                .ToString(true),
+            "f32[16,12,3,17]{2,1,0,3}");
 }
 
 TEST(AlgebraicSimplifierTest, ReshapeIsBitcast_3x2x2_6x2_Dim0IsMostMinor) {
@@ -1597,11 +1624,73 @@ TEST(AlignmentTest,
   EXPECT_FALSE(aligned_shape);
 }
 
+TEST(ShapeUtilTest, FlattenTupleShape) {
+  Shape shape = ShapeUtil::MakeTupleShape(
+      {ShapeUtil::MakeShape(F32, {2, 3}),
+       ShapeUtil::MakeTupleShape({ShapeUtil::MakeShape(F32, {4, 5}),
+                                  ShapeUtil::MakeTupleShape({}),
+                                  ShapeUtil::MakeShape(F32, {6, 7})}),
+       ShapeUtil::MakeShape(F32, {8, 9})});
+  std::vector<const Shape*> flattened_shapes =
+      ShapeUtil::FlattenTupleShape(shape);
+  EXPECT_EQ(flattened_shapes.size(), 4);
+  EXPECT_EQ(flattened_shapes[0]->ToString(), "f32[2,3]");
+  EXPECT_EQ(flattened_shapes[1]->ToString(), "f32[4,5]");
+  EXPECT_EQ(flattened_shapes[2]->ToString(), "f32[6,7]");
+  EXPECT_EQ(flattened_shapes[3]->ToString(), "f32[8,9]");
+}
+
+TEST(ShapeUtilTest, LastDimIsMinorMost) {
+  EXPECT_TRUE(ShapeUtil::LastDimIsMinorMost(ShapeUtil::MakeShape(S8, {1, 2})));
+  EXPECT_TRUE(ShapeUtil::LastDimIsMinorMost(
+      ShapeUtil::MakeShapeWithDescendingLayout(S8, {3, 4})));
+  EXPECT_FALSE(ShapeUtil::LastDimIsMinorMost(
+      ShapeUtil::MakeShapeWithDenseLayout(S8, {5, 6}, {0, 1})));
+}
+
+TEST(ShapeUtilTest, ShapeIndexProtoSerialization) {
+  ShapeIndex empty{};
+  EXPECT_EQ(empty, ShapeIndex::FromProto(empty.ToProto()));
+
+  ShapeIndex single_index{1};
+  EXPECT_EQ(single_index, ShapeIndex::FromProto(single_index.ToProto()));
+
+  ShapeIndex multi_index{1, 2, 42};
+  EXPECT_EQ(multi_index, ShapeIndex::FromProto(multi_index.ToProto()));
+}
+
+//===----------------------------------------------------------------------===//
+// Performance benchmarks below.
+//===----------------------------------------------------------------------===//
+
+void BM_ShapeCount(::testing::benchmark::State& state) {
+  const int depth = state.range(0);
+  const int fan_out = state.range(1);
+
+  Shape shape = ShapeUtil::MakeShape(F32, {32, 64, 128});
+  for (int i = 0; i < depth; ++i) {
+    std::vector<xla::Shape> shapes(fan_out, shape);
+    shape = ShapeUtil::MakeTupleShape(shapes);
+  }
+
+  for (auto s : state) {
+    size_t count = ShapeUtil::SubshapeCount(shape);
+    benchmark::DoNotOptimize(count);
+  }
+}
+
+BENCHMARK(BM_ShapeCount)
+    ->ArgPair(0, 0)
+    ->ArgPair(2, 8)
+    ->ArgPair(4, 8)
+    ->ArgPair(1, 1000);
+
 void BM_MakeShape(::testing::benchmark::State& state) {
   for (auto s : state) {
     ShapeUtil::MakeShape(F32, {2});
   }
 }
+
 BENCHMARK(BM_MakeShape);
 
 void BM_MakeValidatedShape(::testing::benchmark::State& state) {
@@ -1609,6 +1698,7 @@ void BM_MakeValidatedShape(::testing::benchmark::State& state) {
     ShapeUtil::MakeValidatedShape(F32, {2}).value();
   }
 }
+
 BENCHMARK(BM_MakeValidatedShape);
 
 Shape ShapeForBenchmark(::testing::benchmark::State& state) {
@@ -1643,6 +1733,7 @@ void BM_ForEachIndex(::testing::benchmark::State& state) {
     ShapeUtil::ForEachIndex(shape, increment_func);
   }
 }
+
 BENCHMARK(BM_ForEachIndex)->Arg(0)->Arg(1)->Arg(2);
 
 void BM_ForEachIndexNoStatus(::testing::benchmark::State& state) {
@@ -1656,6 +1747,7 @@ void BM_ForEachIndexNoStatus(::testing::benchmark::State& state) {
     ShapeUtil::ForEachIndexNoStatus(shape, increment_func);
   }
 }
+
 BENCHMARK(BM_ForEachIndexNoStatus)->Arg(0)->Arg(1)->Arg(2);
 
 }  // namespace

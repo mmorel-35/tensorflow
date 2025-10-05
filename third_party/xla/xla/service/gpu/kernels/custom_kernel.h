@@ -19,8 +19,8 @@ limitations under the License.
 #include <cstddef>
 #include <optional>
 #include <string>
-#include <string_view>
 
+#include "absl/strings/string_view.h"
 #include "xla/stream_executor/kernel_spec.h"
 #include "xla/stream_executor/launch_dim.h"
 
@@ -45,17 +45,17 @@ namespace se = ::stream_executor;  // NOLINT
 // define if it has to be zeroed first.
 class CustomKernel {
  public:
-  CustomKernel(std::string name, se::MultiKernelLoaderSpec kernel_spec,
+  CustomKernel(std::string name, se::KernelLoaderSpec kernel_spec,
                se::BlockDim block_dims, se::ThreadDim thread_dims,
                size_t shared_memory_bytes);
 
-  CustomKernel(std::string name, se::MultiKernelLoaderSpec kernel_spec,
+  CustomKernel(std::string name, se::KernelLoaderSpec kernel_spec,
                se::BlockDim block_dims, se::ThreadDim thread_dims,
                se::ClusterDim cluster_dims, size_t shared_memory_bytes);
 
-  std::string_view name() const;
+  absl::string_view name() const;
 
-  const se::MultiKernelLoaderSpec& kernel_spec() const;
+  const se::KernelLoaderSpec& kernel_spec() const;
 
   se::BlockDim block_dims() const;
 
@@ -69,7 +69,7 @@ class CustomKernel {
 
  private:
   std::string name_;
-  se::MultiKernelLoaderSpec kernel_spec_;
+  se::KernelLoaderSpec kernel_spec_;
   se::BlockDim block_dims_;
   se::ThreadDim thread_dims_;
   std::optional<se::ClusterDim> cluster_dims_;

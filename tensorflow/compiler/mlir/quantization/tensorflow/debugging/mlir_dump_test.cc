@@ -18,8 +18,9 @@ limitations under the License.
 #include <string>
 #include <vector>
 
-#include "absl/cleanup/cleanup.h"
+#include "absl/strings/string_view.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/LogicalResult.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/IR/Builders.h"  // from @llvm-project
 #include "mlir/IR/BuiltinDialect.h"  // from @llvm-project
@@ -32,10 +33,10 @@ limitations under the License.
 #include "mlir/Support/TypeID.h"  // from @llvm-project
 #include "mlir/Transforms/Passes.h"  // from @llvm-project
 #include "stablehlo/dialect/StablehloOps.h"  // from @stablehlo
-#include "tsl/lib/core/status_test_util.h"
-#include "tsl/platform/env.h"
+#include "xla/tsl/lib/core/status_test_util.h"
+#include "xla/tsl/platform/env.h"
+#include "xla/tsl/platform/test.h"
 #include "tsl/platform/path.h"
-#include "tsl/platform/test.h"
 
 namespace tensorflow {
 namespace quantization {
@@ -172,12 +173,10 @@ TEST_F(EnableIrPrintingTest, NestedPassSuccessfullyRuns) {
   EnableIrPrinting(pm, "dump");
 
   mlir::OpBuilder builder(&ctx);
-  auto module_op = builder.create<mlir::ModuleOp>(builder.getUnknownLoc());
-  // Destroy by calling destroy() to avoid memory leak since it is allocated
-  // with malloc().
-  const absl::Cleanup module_op_cleanup = [module_op] { module_op->destroy(); };
+  mlir::OwningOpRef<mlir::ModuleOp> module_op = mlir::ModuleOp::create(
+      builder, builder.getUnknownLoc()); /*ALLOW_MLIR_MODULE_OP_CREATE*/
 
-  const mlir::LogicalResult result = pm.run(module_op);
+  const mlir::LogicalResult result = pm.run(*module_op);
   EXPECT_FALSE(failed(result));
 
   TF_EXPECT_OK(tsl::Env::Default()->FileExists(

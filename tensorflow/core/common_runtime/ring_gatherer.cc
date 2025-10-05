@@ -20,6 +20,7 @@ limitations under the License.
 #include <functional>
 #include <utility>
 
+#include "absl/synchronization/notification.h"
 #include "tensorflow/core/common_runtime/collective_rma_local.h"
 #include "tensorflow/core/common_runtime/collective_util.h"
 #include "tensorflow/core/common_runtime/copy_tensor.h"
@@ -33,7 +34,6 @@ limitations under the License.
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/lib/core/errors.h"
-#include "tensorflow/core/lib/core/notification.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/strings/str_util.h"
 #include "tensorflow/core/lib/strings/strcat.h"
@@ -42,7 +42,8 @@ limitations under the License.
 #include "tensorflow/core/profiler/lib/traceme.h"
 
 namespace tensorflow {
-Status RingGatherer::InitializeCollectiveParams(CollectiveParams* col_params) {
+absl::Status RingGatherer::InitializeCollectiveParams(
+    CollectiveParams* col_params) {
   DCHECK_EQ(col_params->instance.type, GATHER_COLLECTIVE);
   DCHECK_EQ(col_params->instance.impl_details.collective_name, "RingGather");
   // TODO(tucker): Maybe add subdiv support.  It's only useful with
@@ -101,15 +102,15 @@ void RingGatherer::Run(StatusCallback done) {
   {
     tsl::profiler::TraceMe activity("MemCpyAsync",
                                     tsl::profiler::TraceMeLevel::kInfo);
-    Notification note;
-    Status status;
+    absl::Notification note;
+    absl::Status status;
     Tensor alias_chunk(ca_->ChunkAlias(col_params_->subdiv_rank[0]));
     CollectiveRemoteAccessLocal::MemCpyAsync(
         col_ctx_->op_ctx->op_device_context(),
         col_ctx_->op_ctx->op_device_context(), col_ctx_->device,
         col_ctx_->device, col_ctx_->op_ctx->input_alloc_attr(0),
         col_ctx_->op_ctx->output_alloc_attr(0), col_ctx_->input, &alias_chunk,
-        0 /*dev_to_dev_stream_index*/, [&note, &status](const Status& s) {
+        0 /*dev_to_dev_stream_index*/, [&note, &status](const absl::Status& s) {
           status.Update(s);
           note.Notify();
         });
@@ -147,8 +148,8 @@ bool RingGatherer::RunAsyncParts() {
     // write) unless we do.
     tsl::profiler::TraceMe activity("WaitForQueuedEvents",
                                     tsl::profiler::TraceMeLevel::kInfo);
-    Notification note;
-    Status s = gpu_info->default_context->ThenExecute(
+    absl::Notification note;
+    absl::Status s = gpu_info->default_context->ThenExecute(
         col_ctx_->device, gpu_info->stream, [&note]() { note.Notify(); });
     if (s.ok()) {
       note.WaitForNotification();
@@ -186,7 +187,8 @@ bool RingGatherer::RunAsyncParts() {
           case RF_INIT:
             if (rf->do_recv) {
               rf->action = RF_RECV;
-              auto requeue = [this, rf, &ready_queue, &aborted](Status s) {
+              auto requeue = [this, rf, &ready_queue,
+                              &aborted](absl::Status s) {
                 if (!s.ok()) {
                   aborted = true;
                   StartAbort(s);
@@ -215,7 +217,7 @@ bool RingGatherer::RunAsyncParts() {
             if (rf->do_send) {
               rf->action = RF_SEND;
               auto send_complete = [this, rf, &ready_queue,
-                                    &aborted](Status s) {
+                                    &aborted](absl::Status s) {
                 if (!s.ok()) {
                   aborted = true;
                   StartAbort(s);

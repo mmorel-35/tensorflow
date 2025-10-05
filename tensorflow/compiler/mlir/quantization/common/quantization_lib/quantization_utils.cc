@@ -33,7 +33,7 @@ limitations under the License.
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"  // from @llvm-project
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
-#include "mlir/Dialect/Quant/QuantTypes.h"  // from @llvm-project
+#include "mlir/Dialect/Quant/IR/QuantTypes.h"  // from @llvm-project
 #include "mlir/IR/Attributes.h"  // from @llvm-project
 #include "mlir/IR/Builders.h"  // from @llvm-project
 #include "mlir/IR/BuiltinAttributeInterfaces.h"  // from @llvm-project
@@ -45,13 +45,13 @@ limitations under the License.
 #include "mlir/IR/OpDefinition.h"  // from @llvm-project
 #include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "mlir/Support/LogicalResult.h"  // from @llvm-project
-#include "tensorflow/compiler/mlir/lite/quantization/ir/QuantOps.h"
-#include "tensorflow/compiler/mlir/lite/quantization/ir/QuantizeUtils.h"
 #include "tensorflow/compiler/mlir/quantization/common/ir/FakeQuantSupport.h"
+#include "tensorflow/compiler/mlir/quantization/common/ir/QuantOps.h"
+#include "tensorflow/compiler/mlir/quantization/common/ir/QuantizeUtils.h"
 #include "tensorflow/compiler/mlir/quantization/common/ir/UniformSupport.h"
+#include "tensorflow/compiler/mlir/quantization/common/quantization_lib/portable_tensor_utils.h"
 #include "tensorflow/compiler/mlir/quantization/common/quantization_lib/quantization_traits.h"
-#include "tensorflow/lite/kernels/internal/portable_tensor_utils.h"
-#include "tensorflow/lite/tools/optimize/quantization_utils.h"
+#include "tensorflow/compiler/mlir/tools/optimize/quantization_utils.h"
 
 namespace mlir {
 
@@ -194,12 +194,14 @@ quant::UniformQuantizedPerAxisType ResetAxisAndBroadcast(
 }  // namespace
 
 bool IsOpQuantizable(Operation* op) {
-  if (isa<func::ConstantOp, arith::ConstantOp, quantfork::StatisticsOp>(op)) {
+  if (isa<func::ConstantOp, arith::ConstantOp, mlir::quant::ir::StatisticsOp>(
+          op)) {
     // Constant ops do not have QuantizableResult attribute but they can deal
     // with quantized tensors.
     return true;
   } else if (op->hasTrait<OpTrait::IsTerminator>() ||
-             isa<quantfork::QuantizeCastOp, quantfork::DequantizeCastOp>(op)) {
+             isa<mlir::quant::ir::QuantizeCastOp,
+                 mlir::quant::ir::DequantizeCastOp>(op)) {
     // Terminators, qcast and decast are not quantizable.
     return false;
   }
@@ -209,10 +211,63 @@ bool IsOpQuantizable(Operation* op) {
       op->getAttrOfType<StringAttr>(kQuantTraitAttrName).getValue().str() ==
           QuantTraitValues[QuantizationTrait::FullyQuantizable];
 
+  const bool attr_output_quantized = QuantizableOpSupportsFloatOutputType(op);
+
   const bool trait_enforced_quantizable =
       op->hasTrait<OpTrait::quant::QuantizableResult>();
 
-  return attr_enforced_quantizable || trait_enforced_quantizable;
+  return attr_enforced_quantizable || trait_enforced_quantizable ||
+         attr_output_quantized;
+}
+
+// Checks if an op has specific attributes that enable quantized inputs with
+// float outputs.
+bool QuantizableOpSupportsFloatOutputType(Operation* op) {
+  static constexpr char kOutputTypes[] = "_output_types";
+  static constexpr char kSupportOutputTypeFloat[] =
+      "_support_output_type_float_in_quantized_op";
+
+  if (!(op->hasAttrOfType<mlir::BoolAttr>(kOutputQuantized) &&
+        op->getAttrOfType<mlir::BoolAttr>(kOutputQuantized).getValue())) {
+    return false;
+  }
+
+  if (!(op->hasAttrOfType<mlir::BoolAttr>(kSupportOutputTypeFloat) &&
+        op->getAttrOfType<mlir::BoolAttr>(kSupportOutputTypeFloat)
+            .getValue())) {
+    return false;
+  }
+
+  if (!op->hasAttrOfType<mlir::ArrayAttr>(kOutputTypes)) {
+    return false;
+  }
+
+  auto output_types_attr = op->getAttrOfType<mlir::ArrayAttr>(kOutputTypes);
+
+  if (output_types_attr.size() != op->getResultTypes().size()) {
+    return false;
+  }
+
+  for (const auto [attr_element, result_type] :
+       llvm::zip_equal(output_types_attr, op->getResultTypes())) {
+    auto type_attr = mlir::dyn_cast_or_null<TypeAttr>(attr_element);
+
+    if (!type_attr) {
+      return false;
+    }
+
+    auto tensor_type = mlir::dyn_cast_or_null<TensorType>(result_type);
+
+    if (!tensor_type) {
+      return false;
+    }
+
+    if (type_attr.getValue() != tensor_type.getElementType()) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 // Returns the quantized type for the
@@ -226,7 +281,7 @@ Type GetQuantizedType(Builder builder, const Type input_type,
                       const bool legacy_float_scale,
                       const bool use_fake_quant_num_bits) {
   auto converter =
-      quantfork::ExpressedToQuantizedConverter::forInputType(input_type);
+      mlir::quant::ir::ExpressedToQuantizedConverter::forInputType(input_type);
 
   // Expand the range to prevent extremely small scales and large quantized
   // integers which can cause overflow. This leads to scale
@@ -580,7 +635,7 @@ ElementsAttr QuantizeLegacy(const Attribute real_value,
     std::vector<int8_t> quantized_values(real_values_attr.getNumElements());
     if (auto uniform_type = dyn_cast<UniformQuantizedType>(q_type)) {
       float min, max, scale;
-      tflite::tensor_utils::SymmetricQuantizeFloats(
+      mlir::quant::PortableSymmetricQuantizeFloats(
           real_values.data(), real_values.size(), quantized_values.data(), &min,
           &max, &scale);
       // The scale has been adjusted, so the adjusted scale should be respected.
@@ -598,7 +653,7 @@ ElementsAttr QuantizeLegacy(const Attribute real_value,
                      std::back_inserter(scales_inv),
                      [](float scale) { return 1.0 / scale; });
 
-      tflite::optimize::utils::SymmetricPerChannelQuantizeValues(
+      tflite_migration::optimize::utils::SymmetricPerChannelQuantizeValues(
           real_values.data(), scales_inv, dimension,
           uniform_type.getQuantizedDimension(), &quantized_values);
     } else {
@@ -619,7 +674,7 @@ ElementsAttr QuantizeLegacy(const Attribute real_value,
   } else if (width == 16) {
     if (const auto uniform_type = dyn_cast<UniformQuantizedType>(q_type)) {
       const auto quantized_values =
-          tflite::optimize::utils::SymmetricQuantizeFloatsToInt16(
+          tflite_migration::optimize::utils::SymmetricQuantizeFloatsToInt16(
               real_values.data(), real_values.size(), uniform_type.getScale());
       std::transform(quantized_values.begin(), quantized_values.end(),
                      std::back_inserter(quantized_attr),
@@ -640,7 +695,7 @@ ElementsAttr QuantizeLegacy(const Attribute real_value,
       return {};
     }
     const auto quantized_bias =
-        tflite::optimize::utils::SymmetricBiasQuantize<std::int32_t>(
+        tflite_migration::optimize::utils::SymmetricBiasQuantize<std::int32_t>(
             real_values.data(), real_values.size(), scales);
     std::transform(quantized_bias.begin(), quantized_bias.end(),
                    std::back_inserter(quantized_attr),
@@ -657,7 +712,7 @@ ElementsAttr Quantize(const Attribute real_value, const Type tensor_type) {
           quant::QuantizedType::getQuantizedElementType(tensor_type)) {
     Type converted_type;
     return dyn_cast_or_null<ElementsAttr>(
-        quantfork::quantizeAttr(real_value, q_type, converted_type));
+        mlir::quant::ir::quantizeAttr(real_value, q_type, converted_type));
   }
   return {};
 }
@@ -772,15 +827,16 @@ static bool IsSameScaleOp(
 bool RemoveRedundantStatsOps(
     func::FuncOp func, const OpQuantSpecGetter op_quant_spec_getter,
     const OpQuantScaleSpecGetter op_quant_scale_spec_getter) {
-  SmallVector<quantfork::StatisticsOp, 16> all_stats_ops;
+  SmallVector<mlir::quant::ir::StatisticsOp, 16> all_stats_ops;
   llvm::DenseSet<Operation*> redundant_stats_ops;
 
-  // Step 0: remove the quantfork::StatisticsOp which are used by the
+  // Step 0: remove the mlir::quant::ir::StatisticsOp which are used by the
   // quant.qcast op in case it overrides the information from training FakeQuant
   // ops.
-  func.walk([&](quantfork::QuantizeCastOp q) {
+  func.walk([&](mlir::quant::ir::QuantizeCastOp q) {
     auto input_op = q.getArg().getDefiningOp();
-    if (auto stats = dyn_cast_or_null<quantfork::StatisticsOp>(input_op)) {
+    if (auto stats =
+            dyn_cast_or_null<mlir::quant::ir::StatisticsOp>(input_op)) {
       q.setOperand(stats.getArg());
       if (stats.use_empty()) stats.erase();
     }
@@ -791,12 +847,12 @@ bool RemoveRedundantStatsOps(
   // which are produced by the ops with the `FixedOutputRangeInterface`.
   // Note that we don't propagate across the multiple-operands
   // `SameOperandsAndResultsScale` ops like `concatenation`.
-  func.walk([&](quantfork::StatisticsOp stats_op) {
+  func.walk([&](mlir::quant::ir::StatisticsOp stats_op) {
     all_stats_ops.push_back(stats_op);
   });
 
   while (!all_stats_ops.empty()) {
-    quantfork::StatisticsOp stats_op = all_stats_ops.back();
+    mlir::quant::ir::StatisticsOp stats_op = all_stats_ops.back();
     all_stats_ops.pop_back();
 
     if (auto def = stats_op.getArg().getDefiningOp()) {
@@ -817,8 +873,8 @@ bool RemoveRedundantStatsOps(
         if (!res.hasOneUse()) {
           continue;
         }
-        if (auto next_stats =
-                dyn_cast<quantfork::StatisticsOp>(*res.getUsers().begin())) {
+        if (auto next_stats = dyn_cast<mlir::quant::ir::StatisticsOp>(
+                *res.getUsers().begin())) {
           // quantization parameters can be propagated to next_stats
           redundant_stats_ops.insert(next_stats);
           // add next_stats to the work list so propagation can continue.
@@ -830,14 +886,14 @@ bool RemoveRedundantStatsOps(
 
   // Step 2: backward pass: For the ops skipped in the forward pass, propagate
   // its results scale backwards as far as possible.
-  func.walk([&](quantfork::StatisticsOp stats_op) {
+  func.walk([&](mlir::quant::ir::StatisticsOp stats_op) {
     if (redundant_stats_ops.find(stats_op) == redundant_stats_ops.end()) {
       all_stats_ops.push_back(stats_op);
     }
   });
 
   while (!all_stats_ops.empty()) {
-    quantfork::StatisticsOp stats_op = all_stats_ops.back();
+    mlir::quant::ir::StatisticsOp stats_op = all_stats_ops.back();
     all_stats_ops.pop_back();
 
     if (Operation* def = stats_op.getArg().getDefiningOp()) {
@@ -845,7 +901,7 @@ bool RemoveRedundantStatsOps(
         continue;
       }
       for (Value input : def->getOperands()) {
-        if (auto next_stats = dyn_cast_or_null<quantfork::StatisticsOp>(
+        if (auto next_stats = dyn_cast_or_null<mlir::quant::ir::StatisticsOp>(
                 input.getDefiningOp())) {
           redundant_stats_ops.insert(next_stats);
           all_stats_ops.push_back(next_stats);
@@ -856,8 +912,8 @@ bool RemoveRedundantStatsOps(
 
   // Step3: Remove all the redundant stats ops
   for (Operation* it : redundant_stats_ops) {
-    if (!isa<quantfork::StatisticsOp>(it)) return true;
-    auto stats_op = cast<quantfork::StatisticsOp>(it);
+    if (!isa<mlir::quant::ir::StatisticsOp>(it)) return true;
+    auto stats_op = cast<mlir::quant::ir::StatisticsOp>(it);
     stats_op.getResult().replaceAllUsesWith(stats_op.getArg());
     stats_op.erase();
   }

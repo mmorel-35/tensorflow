@@ -24,7 +24,7 @@ namespace {
 
 // Verifies that `shapes_and_types` is a valid list handle and has the right
 // dtype.
-Status VerifyHandleData(
+absl::Status VerifyHandleData(
     shape_inference::InferenceContext* c,
     const std::vector<shape_inference::ShapeAndType>& shapes_and_types,
     DataType element_dtype) {
@@ -262,7 +262,7 @@ REGISTER_OP("TensorListStack")
       return absl::OkStatus();
     });
 
-Status TensorListConcatShapeInference(
+absl::Status TensorListConcatShapeInference(
     shape_inference::InferenceContext* c,
     shape_inference::ShapeHandle element_shape) {
   DataType element_dtype;
@@ -441,9 +441,10 @@ REGISTER_OP("TensorListReserve")
 REGISTER_OP("TensorListGetItem")
     .Input("input_handle: variant")
     .Input("index: int32")
-    .Input("element_shape: int32")
+    .Input("element_shape: Tshape")
     .Output("item: element_dtype")
     .Attr("element_dtype: type")
+    .Attr("Tshape: {int32, int64} = DT_INT32")
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       DataType element_dtype;
       TF_RETURN_IF_ERROR(c->GetAttr("element_dtype", &element_dtype));

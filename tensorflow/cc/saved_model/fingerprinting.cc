@@ -26,6 +26,7 @@ limitations under the License.
 #include "absl/strings/string_view.h"
 #include "absl/strings/strip.h"
 #include "tensorflow/cc/saved_model/constants.h"
+#include "tensorflow/cc/saved_model/fingerprinting_x_platform_utils.h"
 #include "tensorflow/core/framework/versions.pb.h"
 #include "tensorflow/core/graph/regularization/simple_delete.h"
 #include "tensorflow/core/graph/regularization/util.h"
@@ -181,6 +182,8 @@ absl::StatusOr<FingerprintDef> CreateFingerprintDefPb(
   fingerprint_def.set_saved_object_graph_hash(object_graph_hash);
   // Set fingerprint field #5.
   fingerprint_def.set_checkpoint_hash(HashCheckpointIndexFile(export_dir));
+  // Assign a random UUID to the fingerprint.
+  fingerprint_def.set_uuid(CreateRandomUUID());
   // Set version of the fingerprint.
   VersionDef* version = fingerprint_def.mutable_version();
   version->set_producer(kFingerprintProducer);

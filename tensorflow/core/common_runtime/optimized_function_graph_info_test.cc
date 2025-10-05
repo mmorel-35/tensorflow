@@ -23,15 +23,15 @@ limitations under the License.
 #include "absl/status/statusor.h"
 #include "absl/strings/substitute.h"
 #include "third_party/protobuf/text_format.h"
+#include "xla/tsl/lib/core/status_test_util.h"
+#include "xla/tsl/platform/errors.h"
+#include "xla/tsl/platform/status.h"
+#include "xla/tsl/platform/status_matchers.h"
+#include "xla/tsl/platform/test.h"
 #include "tensorflow/core/framework/function.h"
 #include "tensorflow/core/framework/function_testlib.h"
 #include "tensorflow/core/framework/optimized_function_graph.pb.h"
 #include "tensorflow/core/graph/node_builder.h"
-#include "tsl/lib/core/status_test_util.h"
-#include "tsl/platform/errors.h"
-#include "tsl/platform/status.h"
-#include "tsl/platform/status_matchers.h"
-#include "tsl/platform/test.h"
 
 namespace tensorflow {
 namespace {
@@ -92,7 +92,7 @@ CreateSimpleOptimizedFunctionGraphInfo() {
   NodeDef node_def;
   TF_RETURN_IF_ERROR(NodeDefBuilder("A", "OneOutput").Finalize(&node_def));
   auto graph = std::make_unique<Graph>(OpRegistry::Global());
-  Status status;
+  absl::Status status;
   graph->AddNode(node_def, &status);
   TF_RETURN_IF_ERROR(status);
 
@@ -131,21 +131,22 @@ TEST(OptimizedFunctionGraphUtilsTest,
      FromProtoProducesReturnsErrorIfGraphInvalid) {
   OptimizedFunctionGraph proto;
   // Invalid proto because no device specified for node B.
-  proto2::TextFormat::ParseFromString(
+  google::protobuf::TextFormat::ParseFromString(
       R"pb(
         name: "test_func",
         function_graph { node { name: 'B' op: 'OneOutput' } $0 }
       )pb",
       &proto);
 
-  EXPECT_THAT(OptimizedFunctionGraphInfo::FromProto(std::move(proto)),
-              StatusIs(tsl::error::INVALID_ARGUMENT,
-                       "Node 'B' is missing a device specification"));
+  EXPECT_THAT(
+      OptimizedFunctionGraphInfo::FromProto(std::move(proto)),
+      absl_testing::StatusIs(tsl::error::INVALID_ARGUMENT,
+                             "Node 'B' is missing a device specification"));
 }
 
 TEST(OptimizedFunctionGraphUtilsTest, FromProtoProducesCorrectResult) {
   OptimizedFunctionGraph proto;
-  proto2::TextFormat::ParseFromString(
+  google::protobuf::TextFormat::ParseFromString(
       absl::Substitute(
           R"pb(
             name: "test_func",
@@ -191,7 +192,7 @@ TEST(OptimizedFunctionGraphUtilsTest, FromProtoProducesCorrectResult) {
 TEST(OptimizedFunctionGraphUtilsTest,
      FromProtoProducesCorrectResultWithFunctionCall) {
   OptimizedFunctionGraph proto;
-  proto2::TextFormat::ParseFromString(
+  google::protobuf::TextFormat::ParseFromString(
       absl::Substitute(
           R"pb(
             name: "test_func",

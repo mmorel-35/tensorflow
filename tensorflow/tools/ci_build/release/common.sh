@@ -17,10 +17,10 @@
 
 # Keeps Bazel versions of the build scripts.
 # LINT.IfChange
-LATEST_BAZEL_VERSION=6.5.0
+LATEST_BAZEL_VERSION=7.4.1
 # LINT.ThenChange(
+#   //tf_keras/google/kokoro/pip/build_and_upload_pip_package.sh,
 #   //tensorflow/opensource_only/.bazelversion,
-#   //tensorflow/opensource_only/ci/official/requirements_updater/.bazelversion
 #   //tensorflow/tools/ci_build/install/install_bazel.sh,
 #   //tensorflow/tools/ci_build/install/install_bazel_from_source.sh,
 #   //tensorflow/tools/toolchains/cross_compile/cc/cc_toolchain_config.bzl)

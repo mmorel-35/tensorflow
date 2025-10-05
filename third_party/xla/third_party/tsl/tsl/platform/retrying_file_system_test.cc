@@ -17,9 +17,9 @@ limitations under the License.
 
 #include <fstream>
 
-#include "tsl/lib/core/status_test_util.h"
+#include "xla/tsl/lib/core/status_test_util.h"
+#include "xla/tsl/platform/test.h"
 #include "tsl/platform/str_util.h"
-#include "tsl/platform/test.h"
 
 namespace tsl {
 namespace {
@@ -31,7 +31,7 @@ ExpectedCalls CreateRetriableErrors(const string& method, int n) {
   expected_calls.reserve(n);
   for (int i = 0; i < n; i++) {
     expected_calls.emplace_back(std::make_tuple(
-        method, errors::Unavailable(strings::StrCat("Retriable error #", i))));
+        method, errors::Unavailable(absl::StrCat("Retriable error #", i))));
   }
   return expected_calls;
 }
@@ -62,10 +62,10 @@ class MockCallSequence {
 class MockRandomAccessFile : public RandomAccessFile {
  public:
   explicit MockRandomAccessFile(const ExpectedCalls& calls) : calls_(calls) {}
-  absl::Status Name(StringPiece* result) const override {
+  absl::Status Name(absl::string_view* result) const override {
     return calls_.ConsumeNextCall("Name");
   }
-  absl::Status Read(uint64 offset, size_t n, StringPiece* result,
+  absl::Status Read(uint64 offset, size_t n, absl::string_view* result,
                     char* scratch) const override {
     return calls_.ConsumeNextCall("Read");
   }
@@ -77,12 +77,12 @@ class MockRandomAccessFile : public RandomAccessFile {
 class MockWritableFile : public WritableFile {
  public:
   explicit MockWritableFile(const ExpectedCalls& calls) : calls_(calls) {}
-  absl::Status Append(StringPiece data) override {
+  absl::Status Append(absl::string_view data) override {
     return calls_.ConsumeNextCall("Append");
   }
   absl::Status Close() override { return calls_.ConsumeNextCall("Close"); }
   absl::Status Flush() override { return calls_.ConsumeNextCall("Flush"); }
-  absl::Status Name(StringPiece* result) const override {
+  absl::Status Name(absl::string_view* result) const override {
     return calls_.ConsumeNextCall("Name");
   }
   absl::Status Sync() override { return calls_.ConsumeNextCall("Sync"); }
@@ -220,12 +220,13 @@ TEST(RetryingFileSystemTest, NewRandomAccessFile_ImmediateSuccess) {
       fs.NewRandomAccessFile("filename.txt", nullptr, &random_access_file));
 
   // Use it and check the results.
-  StringPiece result;
+  absl::string_view result;
   TF_EXPECT_OK(random_access_file->Name(&result));
   EXPECT_EQ(result, "");
 
   char scratch[10];
-  TF_EXPECT_OK(random_access_file->Read(0, 10, &result, scratch));
+  TF_EXPECT_OK(
+      random_access_file->Read(0, result, absl::MakeSpan(scratch, 10)));
 }
 
 TEST(RetryingFileSystemTest, NewRandomAccessFile_SuccessWith3rdTry) {
@@ -252,9 +253,10 @@ TEST(RetryingFileSystemTest, NewRandomAccessFile_SuccessWith3rdTry) {
       fs.NewRandomAccessFile("filename.txt", nullptr, &random_access_file));
 
   // Use it and check the results.
-  StringPiece result;
+  absl::string_view result;
   char scratch[10];
-  TF_EXPECT_OK(random_access_file->Read(0, 10, &result, scratch));
+  TF_EXPECT_OK(
+      random_access_file->Read(0, result, absl::MakeSpan(scratch, 10)));
 }
 
 TEST(RetryingFileSystemTest, NewRandomAccessFile_AllRetriesFailed) {
@@ -278,9 +280,10 @@ TEST(RetryingFileSystemTest, NewRandomAccessFile_AllRetriesFailed) {
       fs.NewRandomAccessFile("filename.txt", nullptr, &random_access_file));
 
   // Use it and check the results.
-  StringPiece result;
+  absl::string_view result;
   char scratch[10];
-  const auto& status = random_access_file->Read(0, 10, &result, scratch);
+  const auto& status =
+      random_access_file->Read(0, result, absl::MakeSpan(scratch, 10));
   EXPECT_TRUE(absl::StrContains(status.message(), "Retriable error #10"))
       << status;
 }
@@ -309,10 +312,11 @@ TEST(RetryingFileSystemTest, NewRandomAccessFile_NoRetriesForSomeErrors) {
       fs.NewRandomAccessFile("filename.txt", nullptr, &random_access_file));
 
   // Use it and check the results.
-  StringPiece result;
+  absl::string_view result;
   char scratch[10];
   EXPECT_EQ("Failed precondition",
-            random_access_file->Read(0, 10, &result, scratch).message());
+            random_access_file->Read(0, result, absl::MakeSpan(scratch, 10))
+                .message());
 }
 
 TEST(RetryingFileSystemTest, NewWritableFile_ImmediateSuccess) {
@@ -337,7 +341,7 @@ TEST(RetryingFileSystemTest, NewWritableFile_ImmediateSuccess) {
   std::unique_ptr<WritableFile> writable_file;
   TF_EXPECT_OK(fs.NewWritableFile("filename.txt", nullptr, &writable_file));
 
-  StringPiece result;
+  absl::string_view result;
   TF_EXPECT_OK(writable_file->Name(&result));
   EXPECT_EQ(result, "");
 

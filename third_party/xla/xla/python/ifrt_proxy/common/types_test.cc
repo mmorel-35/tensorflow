@@ -22,9 +22,9 @@
 #include <gtest/gtest.h>
 #include "xla/pjrt/pjrt_common.h"
 #include "xla/python/ifrt_proxy/common/types.pb.h"
-#include "tsl/platform/status_matchers.h"
-#include "tsl/platform/statusor.h"
-#include "tsl/platform/test.h"
+#include "xla/tsl/platform/status_matchers.h"
+#include "xla/tsl/platform/statusor.h"
+#include "xla/tsl/platform/test.h"
 
 namespace xla {
 namespace ifrt {
@@ -39,7 +39,8 @@ TEST_P(VariantTest, ToFromVariantProto) {
   const auto& variant = GetParam();
   TF_ASSERT_OK_AND_ASSIGN(proto::Variant variant_proto,
                           ToVariantProto(variant));
-  EXPECT_THAT(FromVariantProto(variant_proto), IsOkAndHolds(variant));
+  EXPECT_THAT(FromVariantProto(variant_proto),
+              absl_testing::IsOkAndHolds(variant));
 }
 
 INSTANTIATE_TEST_SUITE_P(

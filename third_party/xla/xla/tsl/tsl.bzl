@@ -1,5 +1,8 @@
 """Provides build configuration for TSL"""
 
+load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
+load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
+load("@rules_python//python:py_library.bzl", "py_library")
 load("@bazel_skylib//lib:new_sets.bzl", "sets")
 load(
     "@local_config_cuda//cuda:build_defs.bzl",
@@ -8,7 +11,10 @@ load(
 load(
     "//xla/tsl/mkl:build_defs.bzl",
     "if_enable_mkl",
-    "if_mkl",
+    "if_mkldnn_aarch64_acl",
+    "if_mkldnn_openmp",
+    "if_onednn",
+    "if_onednn_async",
     "onednn_v3_define",
 )
 load(
@@ -16,18 +22,11 @@ load(
     "if_enable_acl",
 )
 load(
-    "@local_tsl//third_party/mkl_dnn:build_defs.bzl",
-    "if_mkldnn_aarch64_acl",
-    "if_mkldnn_aarch64_acl_openmp",
-    "if_mkldnn_openmp",
-)
-load(
     "@local_config_rocm//rocm:build_defs.bzl",
     "if_rocm",
-    "if_rocm_is_configured",
 )
 load(
-    "@local_tsl//tsl/platform:rules_cc.bzl",
+    "//xla/tsl/platform:rules_cc.bzl",
     "cc_binary",
     "cc_library",
     "cc_shared_library",
@@ -36,11 +35,22 @@ load(
     "@local_config_tensorrt//:build_defs.bzl",
     "if_tensorrt",
 )
+load(
+    "@local_xla//third_party/py/rules_pywrap:pywrap.default.bzl",
+    "use_pywrap_rules",
+)
+load(
+    "//xla/tsl:package_groups.bzl",
+    "DEFAULT_LOAD_VISIBILITY",
+    "LEGACY_TSL_TSL_USERS",
+)
 
 # Internally this loads a macro, but in OSS this is a function
 # buildifier: disable=out-of-order-load
 def register_extension_info(**_kwargs):
     pass
+
+visibility(DEFAULT_LOAD_VISIBILITY + LEGACY_TSL_TSL_USERS)
 
 two_gpu_tags = ["requires-gpu-nvidia:2", "notap", "manual", "no_pip"]
 
@@ -91,8 +101,7 @@ def if_cuda_or_rocm(if_true, if_false = []):
 
       """
     return select({
-        "@local_config_cuda//cuda:using_nvcc": if_true,
-        "@local_config_cuda//cuda:using_clang": if_true,
+        clean_dep("//xla/tsl:is_cuda_enabled"): if_true,
         "@local_config_rocm//rocm:using_hipcc": if_true,
         "//conditions:default": if_false,
     })
@@ -124,7 +133,10 @@ def internal_visibility(internal_targets):
     return if_google(internal_targets, ["//visibility:public"])
 
 # TODO(jakeharmon): Use this to replace if_static
+# TODO(b/356020232): remove completely after migration is done
 def if_tsl_link_protobuf(if_true, if_false = []):
+    if use_pywrap_rules():
+        return if_true
     return select({
         "//conditions:default": if_true,
         clean_dep("//xla/tsl:tsl_protobuf_header_only"): if_false,
@@ -167,7 +179,7 @@ def if_not_fuchsia(a):
 
 def if_nvcc(a):
     return select({
-        "@local_config_cuda//cuda:using_nvcc": a,
+        clean_dep("//xla/tsl:is_cuda_nvcc"): a,
         "//conditions:default": [],
     })
 
@@ -213,7 +225,6 @@ def if_nccl(if_true, if_false = []):
     return select({
         clean_dep("//xla/tsl:no_nccl_support"): if_false,
         clean_dep("//xla/tsl:windows"): if_false,
-        clean_dep("//xla/tsl:arm"): if_false,
         "//conditions:default": if_true,
     })
 
@@ -224,49 +235,70 @@ def if_with_tpu_support(if_true, if_false = []):
         "//conditions:default": if_false,
     })
 
-def get_win_copts(is_external = False):
-    WINDOWS_COPTS = [
-        # copybara:uncomment_begin(no MSVC flags in google)
-        # "-DPLATFORM_WINDOWS",
-        # "-DEIGEN_HAS_C99_MATH",
-        # "-DTENSORFLOW_USE_EIGEN_THREADPOOL",
-        # "-DEIGEN_AVOID_STL_ARRAY",
-        # "-Iexternal/gemmlowp",
-        # "-DNOGDI",
-        # copybara:uncomment_end_and_comment_begin
-        "/DPLATFORM_WINDOWS",
-        "/DEIGEN_HAS_C99_MATH",
-        "/DTENSORFLOW_USE_EIGEN_THREADPOOL",
-        "/DEIGEN_AVOID_STL_ARRAY",
-        "/Iexternal/gemmlowp",
-        "/wd4018",  # -Wno-sign-compare
-        # Bazel's CROSSTOOL currently pass /EHsc to enable exception by
-        # default. We can't pass /EHs-c- to disable exception, otherwise
-        # we will get a waterfall of flag conflict warnings. Wait for
-        # Bazel to fix this.
-        # "/D_HAS_EXCEPTIONS=0",
-        # "/EHs-c-",
-        "/wd4577",
-        "/DNOGDI",
-        # copybara:comment_end
-        # Also see build:windows lines in tensorflow/opensource_only/.bazelrc
-        # where we set some other options globally.
-    ]
+def get_win_copts(
+        is_external = False,
+        is_msvc = False):
+    """Get the corresponding windows-specific build flags
+
+    Args:
+        is_external: sets dllexport
+        is_msvc: whether the compiler expects msvc-style flags.
+
+    Returns:
+        A list of copts to pass to the cc_library.
+    """
+    WINDOWS_COPTS = []
+    if is_msvc:
+        WINDOWS_COPTS += [
+            "/DPLATFORM_WINDOWS",
+            "/DEIGEN_HAS_C99_MATH",
+            "/DTENSORFLOW_USE_EIGEN_THREADPOOL",
+            "/DEIGEN_AVOID_STL_ARRAY",
+            "/Iexternal/gemmlowp",
+            "/wd4018",  # -Wno-sign-compare
+            # Bazel's CROSSTOOL currently pass /EHsc to enable exception by
+            # default. We can't pass /EHs-c- to disable exception, otherwise
+            # we will get a waterfall of flag conflict warnings. Wait for
+            # Bazel to fix this.
+            # "/D_HAS_EXCEPTIONS=0",
+            # "/EHs-c-",
+            "/wd4577",
+            "/DNOGDI",
+            # Also see build:windows lines in tensorflow/opensource_only/.bazelrc
+            # where we set some other options globally.
+        ]
+    else:
+        WINDOWS_COPTS += [
+            "-DPLATFORM_WINDOWS",
+            "-DEIGEN_HAS_C99_MATH",
+            "-DTENSORFLOW_USE_EIGEN_THREADPOOL",
+            "-DEIGEN_AVOID_STL_ARRAY",
+            "-Iexternal/gemmlowp",
+            "-Wno-sign-compare",
+            "-DNOGDI",
+        ]
 
     if is_external:
-        # copybara:uncomment_begin(no MSVC flags in google)
-        # return WINDOWS_COPTS + ["-UTF_COMPILE_LIBRARY"]
-        # copybara:uncomment_end_and_comment_begin
-        return WINDOWS_COPTS + ["/UTF_COMPILE_LIBRARY"]
-        # copybara:comment_end
-
+        if is_msvc:
+            WINDOWS_COPTS.append(
+                "/UTF_COMPILE_LIBRARY",
+            )
+        else:
+            WINDOWS_COPTS.append(
+                "-UTF_COMPILE_LIBRARY",
+            )
+    elif is_msvc:
+        WINDOWS_COPTS.append(
+            "/DTF_COMPILE_LIBRARY",
+        )
     else:
-        # copybara:uncomment_begin(no MSVC flags in google)
-        # return WINDOWS_COPTS + ["-DTF_COMPILE_LIBRARY"]
-        # copybara:uncomment_end_and_comment_begin
-        return WINDOWS_COPTS + ["/DTF_COMPILE_LIBRARY"]
-        # copybara:comment_end
+        WINDOWS_COPTS.append(
+            "-DTF_COMPILE_LIBRARY",
+        )
+    return WINDOWS_COPTS
 
+# TODO(b/356020232): cleanup non-use_pywrap_rules part once migration is done
+# buildozer: disable=function-docstring-args
 def tsl_copts(
         android_optimization_level_override = "-O2",
         is_external = False,
@@ -281,6 +313,16 @@ def tsl_copts(
     ]
     if android_optimization_level_override:
         android_copts.append(android_optimization_level_override)
+
+    framework_deps = []
+    if use_pywrap_rules():
+        pass
+    else:
+        framework_deps = select({
+            clean_dep("//xla/tsl:framework_shared_object"): [],
+            "//conditions:default": ["-DTENSORFLOW_MONOLITHIC_BUILD"],
+        })
+
     return (
         if_not_windows([
             "-DEIGEN_AVOID_STL_ARRAY",
@@ -296,28 +338,25 @@ def tsl_copts(
         if_tensorrt(["-DGOOGLE_TENSORRT=1"]) +
         if_rocm(["-DTENSORFLOW_USE_ROCM=1"]) +
         # Compile in oneDNN based ops when building for x86 platforms
-        if_mkl(["-DINTEL_MKL"]) +
+        if_onednn(["-DXLA_ONEDNN"]) +
         # Enable additional ops (e.g., ops with non-NHWC data layout) and
         # optimizations for Intel builds using oneDNN if configured
         if_enable_mkl(["-DENABLE_MKL"]) +
         if_mkldnn_openmp(["-DENABLE_ONEDNN_OPENMP"]) +
+        if_onednn_async(["-DENABLE_ONEDNN_ASYNC"]) +
         onednn_v3_define() +
         if_mkldnn_aarch64_acl(["-DDNNL_AARCH64_USE_ACL=1"]) +
-        if_mkldnn_aarch64_acl_openmp(["-DENABLE_ONEDNN_OPENMP"]) +
         if_enable_acl(["-DXLA_CPU_USE_ACL=1", "-fexceptions"]) +
         if_android_arm(["-mfpu=neon", "-fomit-frame-pointer"]) +
         if_linux_x86_64(["-msse3"]) +
         if_ios_x86_64(["-msse4.1"]) +
         if_no_default_logger(["-DNO_DEFAULT_LOGGER"]) +
-        select({
-            clean_dep("//xla/tsl:framework_shared_object"): [],
-            "//conditions:default": ["-DTENSORFLOW_MONOLITHIC_BUILD"],
-        }) +
+        framework_deps +
         select({
             clean_dep("//xla/tsl:android"): android_copts,
             clean_dep("//xla/tsl:emscripten"): [],
             clean_dep("//xla/tsl:macos"): [],
-            clean_dep("//xla/tsl:windows"): get_win_copts(is_external),
+            clean_dep("//xla/tsl:windows"): get_win_copts(is_external, is_msvc = False),
             clean_dep("//xla/tsl:ios"): [],
             clean_dep("//xla/tsl:no_lgpl_deps"): ["-D__TENSORFLOW_NO_LGPL_DEPS__", "-pthread"],
             "//conditions:default": ["-pthread"],
@@ -360,7 +399,7 @@ def tsl_gpu_library(deps = None, cuda_deps = None, copts = tsl_copts(), **kwargs
         cuda_deps = []
 
     kwargs["features"] = kwargs.get("features", []) + ["-use_header_modules"]
-    deps = deps + if_cuda_or_rocm(cuda_deps)
+    deps = deps + if_cuda(cuda_deps)
     if "default_copts" in kwargs:
         copts = kwargs["default_copts"] + copts
         kwargs.pop("default_copts", None)
@@ -368,14 +407,17 @@ def tsl_gpu_library(deps = None, cuda_deps = None, copts = tsl_copts(), **kwargs
         deps = deps + if_cuda([
             clean_dep("//xla/tsl/cuda:cudart"),
             "@local_config_cuda//cuda:cuda_headers",
-        ]) + if_rocm_is_configured([
+        ]) + if_rocm([
+            "@local_config_rocm//rocm:hip",
             "@local_config_rocm//rocm:rocm_headers",
         ]),
-        copts = (copts + if_cuda(["-DGOOGLE_CUDA=1", "-DNV_CUDNN_DISABLE_EXCEPTION"]) + if_rocm(["-DTENSORFLOW_USE_ROCM=1"]) + if_xla_available(["-DTENSORFLOW_USE_XLA=1"]) + if_mkl(["-DINTEL_MKL=1"]) + if_enable_mkl(["-DENABLE_MKL"]) + if_tensorrt(["-DGOOGLE_TENSORRT=1"])),
+        copts = (copts + if_cuda(["-DGOOGLE_CUDA=1", "-DNV_CUDNN_DISABLE_EXCEPTION"]) + if_rocm(["-DTENSORFLOW_USE_ROCM=1"]) + if_xla_available(["-DTENSORFLOW_USE_XLA=1"]) + if_onednn(["-DXLA_ONEDNN"]) + if_enable_mkl(["-DENABLE_MKL"]) + if_tensorrt(["-DGOOGLE_TENSORRT=1"])),
         **kwargs
     )
 
 register_extension_info(extension = tsl_gpu_library, label_regex_for_dep = "{extension_name}")
+
+CollectedDepsInfo = provider("CollectedDepsInfo", fields = ["tf_collected_deps"])
 
 # Traverse the dependency graph along the "deps" attribute of the
 # target and return a struct with one field called 'tf_collected_deps'.
@@ -392,9 +434,9 @@ def _collect_deps_aspect_impl(target, ctx):  # buildifier: disable=unused-variab
         all_deps += ctx.rule.attr.roots
     for dep in all_deps:
         direct.append(dep.label)
-        if hasattr(dep, "tf_collected_deps"):
-            transitive.append(dep.tf_collected_deps)
-    return struct(tf_collected_deps = depset(direct = direct, transitive = transitive))
+        if CollectedDepsInfo in dep:
+            transitive.append(dep[CollectedDepsInfo].tf_collected_deps)
+    return CollectedDepsInfo(tf_collected_deps = depset(direct = direct, transitive = transitive))
 
 collect_deps_aspect = aspect(
     attr_aspects = ["deps", "data", "roots"],
@@ -413,9 +455,9 @@ def _check_deps_impl(ctx):
     required_deps = ctx.attr.required_deps
     disallowed_deps = ctx.attr.disallowed_deps
     for input_dep in ctx.attr.deps:
-        if not hasattr(input_dep, "tf_collected_deps"):
+        if CollectedDepsInfo not in input_dep:
             continue
-        collected_deps = sets.make(input_dep.tf_collected_deps.to_list())
+        collected_deps = sets.make(input_dep[CollectedDepsInfo].tf_collected_deps.to_list())
         for disallowed_dep in disallowed_deps:
             if sets.contains(collected_deps, disallowed_dep.label):
                 fail(
@@ -458,9 +500,6 @@ def get_compatible_with_libtpu_portable():
 def filegroup(**kwargs):
     native.filegroup(**kwargs)
 
-def internal_hlo_deps():
-    return []
-
 # Config setting selector used when building for products
 # which requires restricted licenses to be avoided.
 def if_not_mobile_or_arm_or_macos_or_lgpl_restricted(a):
@@ -491,6 +530,24 @@ def transitive_hdrs(name, deps = [], **kwargs):
     _transitive_hdrs(name = name + "_gather", deps = deps)
     native.filegroup(name = name, srcs = [":" + name + "_gather"], **kwargs)
 
+def cc_header_only_library(name, deps = [], includes = [], extra_deps = [], compatible_with = None, **kwargs):
+    if use_pywrap_rules():
+        cc_library(
+            name = name,
+            deps = deps + extra_deps,
+            compatible_with = compatible_with,
+            **kwargs
+        )
+    else:
+        custom_op_cc_header_only_library(
+            name,
+            deps,
+            includes,
+            extra_deps,
+            compatible_with,
+            **kwargs
+        )
+
 # Create a header only library that includes all the headers exported by
 # the libraries in deps.
 #
@@ -502,9 +559,9 @@ def transitive_hdrs(name, deps = [], **kwargs):
 #
 # For:
 #   * Eigen: it's a header-only library.  Add it directly to your deps.
-#   * GRPC: add a direct dep on @com_github_grpc_grpc//:grpc++_public_hdrs.
+#   * GRPC: add a direct dep on @com_github_grpc_grpc//:grpc++.
 #
-def cc_header_only_library(name, deps = [], includes = [], extra_deps = [], compatible_with = None, **kwargs):
+def custom_op_cc_header_only_library(name, deps = [], includes = [], extra_deps = [], compatible_with = None, **kwargs):
     _transitive_hdrs(
         name = name + "_gather",
         deps = deps,
@@ -768,7 +825,7 @@ def tsl_pybind_extension_opensource(
         testonly = testonly,
     )
 
-    native.py_library(
+    py_library(
         name = name,
         data = select({
             clean_dep("//xla/tsl:windows"): [pyd_file],
@@ -789,3 +846,12 @@ def nvtx_headers():
 
 def tsl_google_bzl_deps():
     return []
+
+def tsl_extra_config_settings():
+    pass
+
+def tsl_extra_config_settings_targets():
+    return []
+
+# TODO(b/356020232): remove after migration is done
+tsl_pybind_extension = tsl_pybind_extension_opensource

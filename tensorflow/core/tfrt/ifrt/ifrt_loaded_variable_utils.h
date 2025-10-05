@@ -18,17 +18,19 @@ limitations under the License.
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "tensorflow/compiler/mlir/tfrt/transforms/ifrt/ifrt_types.h"
+#include "xla/hlo/ir/hlo_sharding.h"
 #include "xla/python/ifrt/client.h"
+#include "xla/tsl/platform/threadpool.h"
 #include "tensorflow/core/framework/resource_handle.h"
 #include "tensorflow/core/tfrt/ifrt/ifrt_config.pb.h"
 #include "tensorflow/core/tfrt/ifrt/ifrt_loaded_variable_registry.h"
 #include "tensorflow/core/tfrt/ifrt/ifrt_restore_tensor_registry.h"
-#include "tsl/platform/threadpool.h"
 #include "tfrt/host_context/concurrent_work_queue.h"  // from @tf_runtime
 
 namespace tensorflow {
@@ -36,6 +38,12 @@ namespace ifrt_serving {
 
 // An index to indicate a non per-core executable bundle cache.
 inline constexpr int kNoCoreSelectedIndex = -1;
+
+// TODO(b/352551302) Delete VariableDeviceShardingConfigProto.
+struct VariableDeviceShardingConfig {
+  std::vector<int> device_ids;
+  xla::HloSharding hlo_sharding;
+};
 
 absl::StatusOr<ifrt_serving::DtypeAndShape> GetDtypeAndShape(
     const ResourceHandle& resource_handle);
@@ -51,13 +59,13 @@ std::string GetRuntimeNameFromVarHandle(const ResourceHandle& handle);
 // can look for the actual loaded variable value in
 // `ifrt_loaded_variable_registry`.
 absl::Status AsyncLoadRestoredTensorAsIfrtLoadedVariable(
-    absl::string_view runtime_name,
+    absl::string_view tensor_name,
     std::shared_ptr<xla::ifrt::Client> ifrt_client,
     const tsl::thread::ThreadPool& thread_pool,
     const ifrt_serving::IfrtRestoreTensorRegistry& ifrt_restore_tensor_registry,
     ifrt_serving::IfrtLoadedVariableRegistry& ifrt_loaded_variable_registry,
     tfrt::ConcurrentWorkQueue* checkpoint_loader_queue,
-    const VariableDeviceShardingConfigProto& sharding_config);
+    const VariableDeviceShardingConfig& sharding_config);
 
 }  // namespace ifrt_serving
 }  // namespace tensorflow

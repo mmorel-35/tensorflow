@@ -10,6 +10,10 @@ load(
     "@local_xla//xla/stream_executor:build_defs.bzl",
     "if_gpu_is_configured",
 )
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
+load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 def _lookup_file(filegroup, path):
     """Extracts file at (relative) path in filegroup."""
@@ -152,7 +156,7 @@ def _gen_kernel_bin_impl(ctx):
 
     # cc_binary seems not to bring its dependencies with it, so do that explicitly here.
     ctx.actions.run(
-        inputs = [ctx.file.mlir_op, ctx.file._tfso],
+        inputs = [ctx.file.mlir_op],
         outputs = [gpu_bin],
         executable = ctx.executable._tool,
         arguments = cmd_args + [
@@ -197,12 +201,6 @@ _gen_kernel_bin_rule = rule(
         "jit": attr.bool(),
         "jit_i64_indexed_for_large_tensors": attr.bool(),
         "extra_args": attr.string_list(),
-        # cc_binary seems not to bring its dependencies with it, so do that explicitly here.
-        "_tfso": attr.label(
-            default = Label("//tensorflow:libtensorflow_framework.so.2"),
-            cfg = "exec",
-            allow_single_file = True,
-        ),
         "_tool": attr.label(
             executable = True,
             default = Label("//tensorflow/compiler/mlir/tools/kernel_gen:hlo_to_kernel"),
@@ -397,7 +395,7 @@ def _gen_kernel_library(
             ]
             if typed_unroll_factors:
                 test_args.append("--unroll_factors=%s" % typed_unroll_factors)
-            native.sh_test(
+            sh_test(
                 name = "{op}_{name}_{platform}_{type}_{output_type}_gen_test".format(
                     op = op,
                     name = name,
@@ -431,8 +429,7 @@ def _gen_kernel_library(
         )
         for (type, output_type, jit, jit_i64_indexed_for_large_tensors) in all_kernels
     ] + ["//tensorflow/compiler/mlir/tools/kernel_gen:tf_framework_c_interface"]
-
-    native.cc_library(
+    cc_library(
         name = name,
         deps = if_gpu_is_configured(kernel_deps + [
             "//tensorflow/compiler/mlir/tools/kernel_gen:tf_gpu_runtime_wrappers",

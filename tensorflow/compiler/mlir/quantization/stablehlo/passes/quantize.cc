@@ -13,13 +13,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include <memory>
-#include <string>
 #include <utility>
 
-#include "absl/container/flat_hash_set.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
-#include "mlir/Dialect/Quant/QuantOps.h"  // from @llvm-project  // IWYU pragma: keep
+#include "mlir/Dialect/Quant/IR/Quant.h"  // from @llvm-project  // IWYU pragma: keep
 #include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
 #include "mlir/IR/BuiltinOps.h"  // from @llvm-project
 #include "mlir/IR/MLIRContext.h"  // from @llvm-project
@@ -31,13 +27,9 @@ limitations under the License.
 #include "mlir/Support/TypeID.h"  // from @llvm-project
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"  // from @llvm-project
 #include "stablehlo/dialect/StablehloOps.h"  // from @stablehlo  // IWYU pragma: keep
-#include "tensorflow/compiler/mlir/lite/quantization/ir/QuantOps.h"
-#include "tensorflow/compiler/mlir/quantization/common/attrs_and_constraints.h"
-#include "tensorflow/compiler/mlir/quantization/common/quantization_lib/quantization_config.h"
-#include "tensorflow/compiler/mlir/quantization/common/quantization_lib/quantization_utils.h"
-#include "tensorflow/compiler/mlir/quantization/stablehlo/passes/passes.h"
+#include "tensorflow/compiler/mlir/quantization/common/ir/QuantOps.h"
+#include "tensorflow/compiler/mlir/quantization/stablehlo/passes/passes.h"  // IWYU pragma: keep
 #include "tensorflow/compiler/mlir/quantization/stablehlo/passes/quantization_patterns.h"
-#include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
 
 namespace mlir::quant::stablehlo {
 
@@ -47,14 +39,16 @@ namespace mlir::quant::stablehlo {
 namespace {
 
 // Base struct for quantization.
-template <typename ConcreteT, typename RootOpT = quantfork::DequantizeCastOp>
+template <typename ConcreteT,
+          typename RootOpT = mlir::quant::ir::DequantizeCastOp>
 struct StableHloQuantizationBase
-    : public StableHloQuantizationPattern<ConcreteT, quantfork::QuantizeCastOp,
-                                          quantfork::DequantizeCastOp,
+    : public StableHloQuantizationPattern<ConcreteT,
+                                          mlir::quant::ir::QuantizeCastOp,
+                                          mlir::quant::ir::DequantizeCastOp,
                                           /*VerifierT=*/void, RootOpT> {
   explicit StableHloQuantizationBase(MLIRContext* ctx)
-      : StableHloQuantizationPattern<ConcreteT, quantfork::QuantizeCastOp,
-                                     quantfork::DequantizeCastOp,
+      : StableHloQuantizationPattern<ConcreteT, mlir::quant::ir::QuantizeCastOp,
+                                     mlir::quant::ir::DequantizeCastOp,
                                      /*VerifierT=*/void, RootOpT>(ctx) {}
 
   static bool AllowWeightOnlyQuantization(Operation& op) { return false; }
@@ -71,10 +65,10 @@ struct StableHloQuantization
 // quantizable ops without floating-point operands.
 struct StableHloQuantizationReverse
     : public StableHloQuantizationBase<StableHloQuantizationReverse,
-                                       quantfork::QuantizeCastOp> {
+                                       mlir::quant::ir::QuantizeCastOp> {
   explicit StableHloQuantizationReverse(MLIRContext* ctx)
       : StableHloQuantizationBase<StableHloQuantizationReverse,
-                                  quantfork::QuantizeCastOp>(ctx) {}
+                                  mlir::quant::ir::QuantizeCastOp>(ctx) {}
 };
 
 class QuantizePass : public impl::QuantizePassBase<QuantizePass> {
@@ -104,7 +98,7 @@ void QuantizePass::runOnOperation() {
   // Quantize all quantizable ops, including ops that are not compute-heavy.
   PopulateAllQuantizablePatterns(ctx, patterns);
 
-  if (failed(applyPatternsAndFoldGreedily(module_op, std::move(patterns)))) {
+  if (failed(applyPatternsGreedily(module_op, std::move(patterns)))) {
     // There are cases where no rewrites happen even if a pattern matches,
     // causing this to result in a convergence failure. Consider this as a
     // best-effort.

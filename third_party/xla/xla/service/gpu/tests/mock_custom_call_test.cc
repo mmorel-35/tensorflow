@@ -13,7 +13,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <gtest/gtest.h>
 #include "xla/service/gpu/tests/gpu_codegen_test.h"
+#include "xla/xla.pb.h"
 
 namespace xla {
 namespace gpu {
@@ -35,7 +37,7 @@ TEST_F(UnknownCustomCallFails, UnknownCustomCallFails) {
 }
 
 class MockedCustomCall : public GpuCodegenTest {
-  DebugOptions GetDebugOptionsForTest() override {
+  DebugOptions GetDebugOptionsForTest() const override {
     DebugOptions opts;
     opts.set_xla_gpu_mock_custom_calls(true);
     return opts;

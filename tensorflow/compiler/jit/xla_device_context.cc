@@ -136,7 +136,7 @@ void XlaDeviceContext::CopyCPUTensorToDevice(const Tensor* cpu_tensor,
   XlaLayoutPreference layout_preference =
       shape_determination_fns_.layout_preference_fn(
           device_tensor->shape(), device_tensor->dtype(), std::nullopt);
-  Status status = [&]() -> Status {
+  absl::Status status = [&]() -> absl::Status {
     TF_ASSIGN_OR_RETURN(xla::Shape shape,
                         shape_determination_fns_.shape_representation_fn(
                             device_tensor->shape(), device_tensor->dtype(),
@@ -263,7 +263,7 @@ void XlaDeviceContext::CopyDeviceTensorToCPU(const Tensor* device_tensor,
       device_to_host_stream.get(), xla_tensor->shaped_buffer(), literal,
       [this, ref, xla_tensor, done, device_to_host_stream,
        device_allows_sync_on_completion](absl::Status status) {
-        Status done_status = status;
+        absl::Status done_status = status;
         VLOG(2) << "Transfer from device as literal: "
                 << xla_tensor->shaped_buffer().ToString();
         // For devices don't allow sync on completion, the device execution is
@@ -294,15 +294,15 @@ void XlaDeviceContext::CopyDeviceTensorToCPU(const Tensor* device_tensor,
 
 se::Stream* XlaDeviceContext::GetDeviceToDeviceStream() {
   DCHECK_GT(device_to_device_streams_.size(), 0);
-  absl::MutexLock lock(&mu_);
+  absl::MutexLock lock(mu_);
   int stream = next_stream_;
   next_stream_ = (next_stream_ + 1) % device_to_device_streams_.size();
   return device_to_device_stream(stream);
 }
 
-Status XlaDeviceContext::ThenExecute(Device* device,
-                                     stream_executor::Stream* stream,
-                                     std::function<void()> func) {
+absl::Status XlaDeviceContext::ThenExecute(Device* device,
+                                           stream_executor::Stream* stream,
+                                           std::function<void()> func) {
   VLOG(2) << "XlaDeviceContext::ThenExecute";
   return stream->DoHostCallback(std::move(func));
 }

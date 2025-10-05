@@ -22,11 +22,13 @@ limitations under the License.
 #include <vector>
 
 #include "absl/memory/memory.h"
-#include "tensorflow/core/lib/gtl/map_util.h"
+#include "xla/tsl/platform/macros.h"
 #include "tensorflow/core/lib/strings/strcat.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/mutex.h"
+#include "tensorflow/core/platform/stringpiece.h"
 #include "tensorflow/python/lib/core/safe_pyobject_ptr.h"
+#include "tsl/platform/thread_annotations.h"
 
 namespace tensorflow {
 namespace swig {
@@ -64,10 +66,9 @@ PyObject* GetRegisteredPyObject(const string& name) {
   const auto* m = RegisteredPyObjectMap();
   auto it = m->find(name);
   if (it == m->end()) {
-    PyErr_SetString(PyExc_TypeError,
-                    tensorflow::strings::StrCat("No object with name ", name,
-                                                " has been registered.")
-                        .c_str());
+    PyErr_SetString(PyExc_TypeError, absl::StrCat("No object with name ", name,
+                                                  " has been registered.")
+                                         .c_str());
     return nullptr;
   }
   return it->second;
@@ -82,18 +83,17 @@ PyObject* RegisterPyObject(PyObject* name, PyObject* value) {
     key = PyUnicode_AsUTF8(name);
 #endif
   } else {
-    PyErr_SetString(PyExc_TypeError, tensorflow::strings::StrCat(
-                                         "Expected name to be a str, got",
-                                         PyObjectToString(name))
-                                         .c_str());
+    PyErr_SetString(
+        PyExc_TypeError,
+        absl::StrCat("Expected name to be a str, got", PyObjectToString(name))
+            .c_str());
     return nullptr;
   }
 
   auto* m = RegisteredPyObjectMap();
   if (m->find(key) != m->end()) {
-    PyErr_SetString(PyExc_TypeError, tensorflow::strings::StrCat(
-                                         "Value already registered for ", key)
-                                         .c_str());
+    PyErr_SetString(PyExc_TypeError,
+                    absl::StrCat("Value already registered for ", key).c_str());
     return nullptr;
   }
 
@@ -118,7 +118,7 @@ bool IsString(PyObject* o) {
 // Note that '__class__' attribute is set only in new-style classes.
 // A lot of tensorflow code uses __class__ without checks, so it seems like
 // we only support new-style classes.
-StringPiece GetClassName(PyObject* o) {
+absl::string_view GetClassName(PyObject* o) {
   // __class__ is equivalent to type() for new style classes.
   // type() is equivalent to PyObject_Type()
   // (https://docs.python.org/3.5/c-api/object.html#c.PyObject_Type)
@@ -128,9 +128,9 @@ StringPiece GetClassName(PyObject* o) {
 
   // __name__ is the value of `tp_name` after the last '.'
   // (https://docs.python.org/2/c-api/typeobj.html#c.PyTypeObject.tp_name)
-  StringPiece name(type->tp_name);
+  absl::string_view name(type->tp_name);
   size_t pos = name.rfind('.');
-  if (pos != StringPiece::npos) {
+  if (pos != absl::string_view::npos) {
     name.remove_prefix(pos + 1);
   }
   return name;
@@ -148,7 +148,7 @@ string PyObjectToString(PyObject* o) {
     string s(PyUnicode_AsUTF8(str));
 #endif
     Py_DECREF(str);
-    return tensorflow::strings::StrCat("type=", GetClassName(o), " str=", s);
+    return absl::StrCat("type=", GetClassName(o), " str=", s);
   } else {
     return "<failed to execute str() on object>";
   }
@@ -804,7 +804,7 @@ void SetDifferentKeysError(PyObject* dict1, PyObject* dict2, string* error_msg,
     return;
   }
   *is_type_error = false;
-  *error_msg = tensorflow::strings::StrCat(
+  *error_msg = absl::StrCat(
       "The two dictionaries don't have the same set of keys. "
       "First structure has keys ",
       PyObjectToString(k1.get()), ", while second structure has keys ",
@@ -814,7 +814,7 @@ void SetDifferentKeysError(PyObject* dict1, PyObject* dict2, string* error_msg,
 // Returns true iff there were no "internal" errors. In other words,
 // errors that has nothing to do with structure checking.
 // If an "internal" error occurred, the appropriate Python error will be
-// set and the caller can propage it directly to the user.
+// set and the caller can propagate it directly to the user.
 //
 // Both `error_msg` and `is_type_error` must be non-null. `error_msg` must
 // be empty.
@@ -985,10 +985,9 @@ bool AssertSameStructureHelper(
     }
     if (struct_compatible.get() == Py_None) {
       *is_type_error = false;
-      *error_msg = tensorflow::strings::StrCat(
-          "Incompatible CompositeTensor TypeSpecs: ",
-          PyObjectToString(type_spec_1), " vs. ",
-          PyObjectToString(type_spec_2));
+      *error_msg = absl::StrCat("Incompatible CompositeTensor TypeSpecs: ",
+                                PyObjectToString(type_spec_1), " vs. ",
+                                PyObjectToString(type_spec_2));
       return true;
     }
   }

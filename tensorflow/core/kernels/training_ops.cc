@@ -164,15 +164,15 @@ struct ApplyAdagradV2<CPUDevice, T> {
 
 template <typename T, typename Tindex, bool has_epsilon>
 struct SparseApplyAdagrad<CPUDevice, T, Tindex, has_epsilon> {
-  Status operator()(const CPUDevice& d, typename TTypes<T>::Matrix var,
-                    typename TTypes<T>::Matrix accum,
-                    typename TTypes<T>::ConstScalar lr,
-                    typename TTypes<T>::ConstScalar epsilon,
-                    typename TTypes<T>::ConstMatrix grad,
-                    typename TTypes<Tindex>::ConstVec indices,
-                    int64_t inner_dim, bool update_slots) {
+  absl::Status operator()(const CPUDevice& d, typename TTypes<T>::Matrix var,
+                          typename TTypes<T>::Matrix accum,
+                          typename TTypes<T>::ConstScalar lr,
+                          typename TTypes<T>::ConstScalar epsilon,
+                          typename TTypes<T>::ConstMatrix grad,
+                          typename TTypes<Tindex>::ConstVec indices,
+                          int64_t inner_dim, bool update_slots) {
     const Tindex N = static_cast<Tindex>(indices.dimension(0));
-    if (N == 0) return OkStatus();
+    if (N == 0) return absl::OkStatus();
     const Tindex first_dim_size = static_cast<Tindex>(var.dimension(0));
     const T lr_scalar = lr();
     const int in_bytes = inner_dim * sizeof(T) * 3;
@@ -238,7 +238,7 @@ struct SparseApplyAdagrad<CPUDevice, T, Tindex, has_epsilon> {
       d.parallelFor(N, cost, shard);
     }
 
-    return OkStatus();
+    return absl::OkStatus();
   }
 };
 
@@ -272,16 +272,16 @@ struct ApplyProximalAdagrad<CPUDevice, T> {
 
 template <typename T, typename Tindex>
 struct SparseApplyProximalAdagrad<CPUDevice, T, Tindex> {
-  Status operator()(const CPUDevice& d, typename TTypes<T>::Matrix var,
-                    typename TTypes<T>::Matrix accum,
-                    typename TTypes<T>::ConstScalar lr,
-                    typename TTypes<T>::ConstScalar l1,
-                    typename TTypes<T>::ConstScalar l2,
-                    typename TTypes<T>::ConstMatrix grad,
-                    typename TTypes<Tindex>::ConstVec indices,
-                    int64_t inner_dim) {
+  absl::Status operator()(const CPUDevice& d, typename TTypes<T>::Matrix var,
+                          typename TTypes<T>::Matrix accum,
+                          typename TTypes<T>::ConstScalar lr,
+                          typename TTypes<T>::ConstScalar l1,
+                          typename TTypes<T>::ConstScalar l2,
+                          typename TTypes<T>::ConstMatrix grad,
+                          typename TTypes<Tindex>::ConstVec indices,
+                          int64_t inner_dim) {
     const Tindex N = static_cast<Tindex>(indices.dimension(0));
-    if (N == 0) return OkStatus();
+    if (N == 0) return absl::OkStatus();
     const Tindex first_dim_size = static_cast<Tindex>(var.dimension(0));
     const T lr_scalar = lr();
     const T l1_scalar = l1();
@@ -338,7 +338,7 @@ struct SparseApplyProximalAdagrad<CPUDevice, T, Tindex> {
         }
       }
     }
-    return OkStatus();
+    return absl::OkStatus();
   }
 };
 
@@ -587,17 +587,18 @@ void ComputeFtrl(GradTy grad,
 
 template <typename T, typename Tindex, bool has_l2_shrinkage>
 struct SparseApplyFtrl<CPUDevice, T, Tindex, has_l2_shrinkage> {
-  Status operator()(const CPUDevice& d, typename TTypes<T>::Matrix var_flat,
-                    typename TTypes<T>::Matrix accum_flat,
-                    typename TTypes<T>::Matrix linear_flat,
-                    typename TTypes<T>::ConstScalar lr,
-                    typename TTypes<T>::ConstScalar l1,
-                    typename TTypes<T>::ConstScalar l2,
-                    typename TTypes<T>::ConstScalar l2_shrinkage,
-                    typename TTypes<T>::ConstScalar lr_power,
-                    typename TTypes<T>::ConstMatrix grad_flat,
-                    typename TTypes<Tindex>::ConstVec indices_vec,
-                    int64_t inner_dim, bool multiply_linear_by_lr) {
+  absl::Status operator()(const CPUDevice& d,
+                          typename TTypes<T>::Matrix var_flat,
+                          typename TTypes<T>::Matrix accum_flat,
+                          typename TTypes<T>::Matrix linear_flat,
+                          typename TTypes<T>::ConstScalar lr,
+                          typename TTypes<T>::ConstScalar l1,
+                          typename TTypes<T>::ConstScalar l2,
+                          typename TTypes<T>::ConstScalar l2_shrinkage,
+                          typename TTypes<T>::ConstScalar lr_power,
+                          typename TTypes<T>::ConstMatrix grad_flat,
+                          typename TTypes<Tindex>::ConstVec indices_vec,
+                          int64_t inner_dim, bool multiply_linear_by_lr) {
     const Tindex N = static_cast<Tindex>(indices_vec.dimension(0));
     if (N > 0) {
       T lr_scalar = lr();
@@ -679,7 +680,7 @@ struct SparseApplyFtrl<CPUDevice, T, Tindex, has_l2_shrinkage> {
         }
       }
     }
-    return OkStatus();
+    return absl::OkStatus();
   }
 };
 
@@ -1255,7 +1256,7 @@ class SparseApplyAdadeltaOp : public OpKernel {
 
     for (int d = 1; d < var.dims(); d++) {
       OP_REQUIRES(ctx, var.dim_size(d) == grad.dim_size(d),
-                  errors::InvalidArgument(strings::StrCat(
+                  errors::InvalidArgument(absl::StrCat(
                       "var and grad must match in dimension ", d)));
     }
     const Tindex N = indices.dim_size(0);
@@ -1464,7 +1465,7 @@ class SparseApplyProximalGradientDescentOp : public OpKernel {
     int64_t inner_dim = 1;
     for (int d = 1; d < var.dims(); d++) {
       OP_REQUIRES(ctx, var.dim_size(d) == grad.dim_size(d),
-                  errors::InvalidArgument(strings::StrCat(
+                  errors::InvalidArgument(absl::StrCat(
                       "var and grad must match in dimension ", d)));
       inner_dim *= grad.dim_size(d);
     }
@@ -1924,7 +1925,7 @@ class SparseApplyAdagradOp : public OpKernel {
     int64_t inner_dim = 1;
     for (int d = 1; d < var.dims(); d++) {
       OP_REQUIRES(ctx, var.dim_size(d) == grad.dim_size(d),
-                  errors::InvalidArgument(strings::StrCat(
+                  errors::InvalidArgument(absl::StrCat(
                       "var and grad must match in dimension ", d)));
       inner_dim *= grad.dim_size(d);
     }
@@ -2058,7 +2059,7 @@ class SparseApplyAdagradV2Op : public OpKernel {
     int64_t inner_dim = 1;
     for (int d = 1; d < var.dims(); d++) {
       OP_REQUIRES(ctx, var.dim_size(d) == grad.dim_size(d),
-                  errors::InvalidArgument(strings::StrCat(
+                  errors::InvalidArgument(absl::StrCat(
                       "var and grad must match in dimension ", d)));
       inner_dim *= grad.dim_size(d);
     }
@@ -2207,7 +2208,7 @@ class SparseApplyProximalAdagradOp : public OpKernel {
     int64_t inner_dim = 1;
     for (int d = 1; d < var.dims(); d++) {
       OP_REQUIRES(ctx, var.dim_size(d) == grad.dim_size(d),
-                  errors::InvalidArgument(strings::StrCat(
+                  errors::InvalidArgument(absl::StrCat(
                       "var and grad must match in dimension ", d)));
       inner_dim *= grad.dim_size(d);
     }
@@ -2464,7 +2465,7 @@ class SparseApplyAdagradDAOp : public OpKernel {
     int64_t inner_dim = 1;
     for (int d = 1; d < var.dims(); d++) {
       OP_REQUIRES(ctx, var.dim_size(d) == grad.dim_size(d),
-                  errors::InvalidArgument(strings::StrCat(
+                  errors::InvalidArgument(absl::StrCat(
                       "var and grad must match in dimension ", d)));
       inner_dim *= grad.dim_size(d);
     }
@@ -2890,7 +2891,7 @@ class SparseApplyFtrlOp : public OpKernel {
     int64_t inner_dim = 1;
     for (int d = 1; d < var.dims(); d++) {
       OP_REQUIRES(ctx, var.dim_size(d) == grad.dim_size(d),
-                  errors::InvalidArgument(strings::StrCat(
+                  errors::InvalidArgument(absl::StrCat(
                       "var and grad must match in dimension ", d)));
       inner_dim *= grad.dim_size(d);
     }
@@ -3208,7 +3209,7 @@ class SparseApplyMomentumOp : public OpKernel {
 
     for (int d = 1; d < var.dims(); d++) {
       OP_REQUIRES(ctx, var.dim_size(d) == grad.dim_size(d),
-                  errors::InvalidArgument(strings::StrCat(
+                  errors::InvalidArgument(absl::StrCat(
                       "var and grad must match in dimension ", d)));
     }
     const Tindex N = indices.dim_size(0);
@@ -3427,7 +3428,7 @@ class SparseApplyKerasMomentumOp : public OpKernel {
 
     for (int d = 1; d < var.dims(); d++) {
       OP_REQUIRES(ctx, var.dim_size(d) == grad.dim_size(d),
-                  errors::InvalidArgument(strings::StrCat(
+                  errors::InvalidArgument(absl::StrCat(
                       "var and grad must match in dimension ", d)));
     }
     const Tindex N = indices.dim_size(0);
@@ -3664,7 +3665,7 @@ class ApplyAdamWithAmsgradOp : public OpKernel {
   void Compute(OpKernelContext* ctx) override {
     const bool sparse = false;
     auto locks = MaybeLockVariableInputMutexesInOrder<Device, T>(
-        ctx, use_exclusive_lock_, sparse, {0, 1, 2});
+        ctx, use_exclusive_lock_, sparse, {0, 1, 2, 3});
 
     Tensor var;
     OP_REQUIRES_OK(ctx, GetInputTensorFromVariable<Device, T>(

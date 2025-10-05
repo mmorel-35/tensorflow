@@ -23,10 +23,12 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include "absl/container/flat_hash_map.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/memory/memory.h"
 #include "absl/types/span.h"
+#include "tensorflow/compiler/jit/device_compilation_cluster_signature.h"
 #include "tensorflow/compiler/jit/device_compilation_profiler.h"
 #include "tensorflow/compiler/jit/device_compiler.h"
 #include "tensorflow/compiler/jit/flags.h"
@@ -83,7 +85,7 @@ XlaCompiler::CompileOptions GetCompileOptions(bool for_pjrt = false) {
 // Gets `variables` from `ctx`, locks them and builds XlaCompiler::Arguments
 // using them. Stores the arguments in `args`. `variables` and `args` passed in
 // will be cleared before populating them.
-Status GetAndLockVariablesAndBuildXlaCompilerArguments(
+absl::Status GetAndLockVariablesAndBuildXlaCompilerArguments(
     const OpKernelContext& ctx, const std::vector<const Tensor*>& inputs,
     const std::vector<int>& constant_indices,
     const std::vector<int>& variable_indices,
@@ -103,11 +105,17 @@ Status GetAndLockVariablesAndBuildXlaCompilerArguments(
 }
 }  // namespace
 
-Status XlaCompileOnDemandOp::Run(const ResourceVarsSnapshot& variable_args,
-                                 const XlaCompiler::CompilationResult* result,
-                                 const XlaDeviceCompiler* xla_device_compiler,
-                                 xla::LocalExecutable* executable,
-                                 OpKernelContext* ctx) {
+XlaCompileOnDemandOp::XlaCompileOnDemandOp(OpKernelConstruction* ctx)
+    : OpKernel(ctx),
+      platform_info_(XlaPlatformInfoFromDevice(ctx->device())),
+      function_(GetDeviceCompilerFunction(ctx->def())),
+      canonical_function_(Canonicalize(function_)) {}
+
+absl::Status XlaCompileOnDemandOp::Run(
+    const ResourceVarsSnapshot& variable_args,
+    const XlaCompiler::CompilationResult* result,
+    const XlaDeviceCompiler* xla_device_compiler,
+    xla::LocalExecutable* executable, OpKernelContext* ctx) {
   xla::LocalClient* client =
       static_cast<xla::LocalClient*>(xla_device_compiler->client());
 
@@ -123,7 +131,7 @@ Status XlaCompileOnDemandOp::Run(const ResourceVarsSnapshot& variable_args,
           ? platform_info_.xla_device_metadata()->UseMultipleStreams()
           : false);
 
-  std::map<int, const Tensor*> snapshot_ptrs;
+  absl::flat_hash_map<int, const Tensor*> snapshot_ptrs;
   for (auto& p : variable_args) {
     snapshot_ptrs.emplace(p.first,
                           p.second.has_value() ? &p.second.value() : nullptr);
@@ -167,7 +175,7 @@ Status XlaCompileOnDemandOp::Run(const ResourceVarsSnapshot& variable_args,
   return absl::OkStatus();
 }
 
-Status XlaCompileOnDemandOp::Compile(
+absl::Status XlaCompileOnDemandOp::Compile(
     const std::vector<XlaCompiler::Argument>& args, OpKernelContext* ctx,
     PjRtDeviceCompiler** pjrt_device_compiler,
     DeviceCompilationProfiler** profiler,
@@ -185,11 +193,12 @@ Status XlaCompileOnDemandOp::Compile(
   XlaCompiler::CompileOptions compile_options = GetCompileOptions(true);
 
   return (*pjrt_device_compiler)
-      ->CompileSingleOpIfNeeded(options, args, compile_options, ctx, *profiler,
-                                result, executable);
+      ->CompileSingleOpIfNeeded(options, function_, canonical_function_, args,
+                                compile_options, ctx, *profiler, result,
+                                executable);
 }
 
-Status XlaCompileOnDemandOp::Compile(
+absl::Status XlaCompileOnDemandOp::Compile(
     const std::vector<XlaCompiler::Argument>& args, OpKernelContext* ctx,
     XlaDeviceCompiler** xla_device_compiler,
     DeviceCompilationProfiler** profiler,
@@ -227,8 +236,9 @@ Status XlaCompileOnDemandOp::Compile(
   XlaCompiler::CompileOptions compile_options = GetCompileOptions();
 
   return (*xla_device_compiler)
-      ->CompileSingleOpIfNeeded(options, args, compile_options, ctx, *profiler,
-                                result, executable);
+      ->CompileSingleOpIfNeeded(options, function_, canonical_function_, args,
+                                compile_options, ctx, *profiler, result,
+                                executable);
 }
 
 void XlaCompileOnDemandOp::Compute(OpKernelContext* ctx) {

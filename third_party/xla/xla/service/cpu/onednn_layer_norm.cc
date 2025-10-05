@@ -13,42 +13,45 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#if defined(INTEL_MKL) && defined(ENABLE_ONEDNN_V3)
-
 #include "xla/service/cpu/onednn_layer_norm.h"
 
-#include <algorithm>
-#include <cmath>
-#include <initializer_list>
-#include <vector>
+#include <cstdint>
+#include <string>
+#include <unordered_map>
 
 #define EIGEN_USE_THREADS
 
-#include "dnnl.hpp"
-#include "absl/base/dynamic_annotations.h"
+#include "absl/base/attributes.h"
+#include "oneapi/dnnl/dnnl_threadpool.hpp"
+#include "oneapi/dnnl/dnnl_types.h"
 #include "xla/executable_run_options.h"
 #include "xla/service/cpu/backend_config.pb.h"
+#include "xla/service/cpu/onednn_config.pb.h"
 #include "xla/service/cpu/onednn_memory_util.h"
 #include "xla/service/cpu/runtime_lightweight_check.h"
 #include "xla/tsl/util/onednn_threadpool.h"
-#include "unsupported/Eigen/CXX11/Tensor"
+
+// Eigen Tensor must come after `onednn_threadpool.h`
+#include "unsupported/Eigen/CXX11/Tensor"  // NOLINT
 
 namespace xla {
 namespace cpu {
 namespace {
+
 using dnnl::engine;
 using dnnl::layer_normalization_forward;
 using dnnl::memory;
 using dnnl::normalization_flags;
 using dnnl::prop_kind;
 using dnnl::stream;
+
 }  // namespace
 
 ABSL_ATTRIBUTE_NO_SANITIZE_MEMORY void __xla_cpu_runtime_OneDnnLayerNorm(
     void* result, void** args) {
   // args[0]: ptr to nargs. We don't use nargs here.
   // args[1]: ptr to ExecutableRunOptions
-  // args[2]: ptr to OneDnnLayerNormConfig
+  // args[2]: ptr to OneDnnNormConfig
   // args[3...]: ptrs to operands
   int arg_indx = 1;
   const xla::ExecutableRunOptions* run_options =
@@ -65,7 +68,7 @@ ABSL_ATTRIBUTE_NO_SANITIZE_MEMORY void __xla_cpu_runtime_OneDnnLayerNorm(
   auto onednn_stream = stream(cpu_engine);
 #endif  // ENABLE_ONEDNN_OPENMP
   std::string config_str(static_cast<const char*>(args[arg_indx++]));
-  OneDnnLayerNormConfig ln_config;
+  OneDnnNormConfig ln_config;
   ln_config.ParseFromString(config_str);
 
   MemrefInfo layer_minfo(args[arg_indx++]);
@@ -82,7 +85,6 @@ ABSL_ATTRIBUTE_NO_SANITIZE_MEMORY void __xla_cpu_runtime_OneDnnLayerNorm(
   auto scale_mem = memory(scaleshift_md, cpu_engine, gamma_minfo.Data());
   auto shift_mem = memory(scaleshift_md, cpu_engine, beta_minfo.Data());
 
-  // TODO(intel-tf): Move epsilon to OneDnnLayerNormConfig.
   float epsilon;
   *(reinterpret_cast<int32_t*>(&epsilon)) = ln_config.epsilon_typecast();
 
@@ -103,5 +105,3 @@ ABSL_ATTRIBUTE_NO_SANITIZE_MEMORY void __xla_cpu_runtime_OneDnnLayerNorm(
 
 }  // namespace cpu
 }  // namespace xla
-
-#endif  // INTEL_MKL && ENABLE_ONEDNN_V3

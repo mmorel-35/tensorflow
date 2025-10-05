@@ -24,6 +24,8 @@ limitations under the License.
 #include "tensorflow/c/eager/c_api_internal.h"
 #include "tensorflow/c/eager/c_api_test_util.h"
 #include "tensorflow/c/eager/tfe_tensorhandle_internal.h"
+#include "xla/tsl/lib/core/status_test_util.h"
+#include "xla/tsl/protobuf/coordination_config.pb.h"
 #include "tensorflow/core/distributed_runtime/server_lib.h"
 #include "tensorflow/core/framework/function.pb.h"
 #include "tensorflow/core/platform/strcat.h"
@@ -31,8 +33,6 @@ limitations under the License.
 #include "tensorflow/core/protobuf/cluster.pb.h"
 #include "tensorflow/core/protobuf/rewriter_config.pb.h"
 #include "tensorflow/core/protobuf/tensorflow_server.pb.h"
-#include "tsl/lib/core/status_test_util.h"
-#include "tsl/protobuf/coordination_config.pb.h"
 
 namespace tensorflow {
 namespace {
@@ -105,7 +105,7 @@ TEST_P(SingleClientRecoverableJobsTest, TestRecoverWorkerFailure) {
   client_job->set_name("localhost");
   int client_port = tensorflow::testing::PickUnusedPortOrDie();
   client_job->mutable_tasks()->insert(
-      {0, strings::StrCat("localhost:", client_port)});
+      {0, absl::StrCat("localhost:", client_port)});
   server_def.set_job_name("localhost");
   std::string serialized = server_def.SerializeAsString();
 
@@ -159,7 +159,7 @@ TEST_P(SingleClientRecoverableJobsTest, TestRecoverWorkerFailure) {
       if (job.name() == "localhost") {
         job.mutable_tasks()->clear();
         job.mutable_tasks()->insert(
-            {0, strings::StrCat("localhost:", client_port)});
+            {0, absl::StrCat("localhost:", client_port)});
         break;
       }
     }
@@ -184,7 +184,7 @@ TEST_P(SingleClientRecoverableJobsTest, TestRecoverWorkerFailure) {
       if (iter->name() == "worker") {
         int worker_1_port = tensorflow::testing::PickUnusedPortOrDie();
         auto& tasks = *iter->mutable_tasks();
-        tasks[1] = strings::StrCat("localhost:", worker_1_port);
+        tasks[1] = absl::StrCat("localhost:", worker_1_port);
         ++iter;
       } else if (iter->name() == "localhost") {
         saved_client_job = *iter;

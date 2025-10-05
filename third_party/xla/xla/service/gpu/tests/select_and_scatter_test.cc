@@ -13,6 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <gtest/gtest.h>
 #include "xla/error_spec.h"
 #include "xla/service/gpu/tests/gpu_codegen_test.h"
 
@@ -45,7 +46,7 @@ ENTRY %select_and_scatter (operand: f32[5,5], source: f32[3,3]) -> f32[3,3] {
   ROOT %result = f32[3,3]{1,0} select-and-scatter(f32[3,3]{1,0} %source, f32[5,5]{1,0} %operand, f32[] %initial), window={size=1x1 pad=1_1x1_1}, select=%select_op, scatter=%scatter_op
 }
 )";
-  EXPECT_TRUE(RunAndCompareNoHloPasses(hlo_text, ErrorSpec{1e-5, 1e-5}));
+  EXPECT_TRUE(RunAndCompare(hlo_text, ErrorSpec{1e-5, 1e-5}));
 }
 
 }  // namespace

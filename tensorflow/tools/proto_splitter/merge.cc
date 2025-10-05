@@ -23,8 +23,10 @@ limitations under the License.
 #include <vector>
 
 #include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/string_view.h"
 #include "riegeli/base/object.h"  // from @riegeli
 #include "riegeli/bytes/fd_reader.h"  // from @riegeli
 #include "riegeli/records/record_reader.h"  // from @riegeli
@@ -139,6 +141,37 @@ absl::Status Merger::ReadPartial(absl::string_view prefix,
   return s;
 }
 
+absl::Status Merger::ReadChunkedFromString(
+    absl::string_view data, tsl::protobuf::Message* merged_message) {
+  uint64_t start_time = Env::Default()->NowMicros();
+
+  // Create riegeli string reader.
+  TF_ASSIGN_OR_RETURN(auto reader, GetRiegeliStringReader(data));
+
+  auto read_metadata = GetChunkMetadata(reader);
+  if (!read_metadata.ok()) {
+    reader.Close();
+    return absl::FailedPreconditionError(
+        absl::StrCat("Couldn't read ChunkMetadata from chunked proto.\n",
+                     read_metadata.status().ToString()));
+  }
+  ChunkMetadata chunk_metadata = read_metadata.value();
+
+  std::vector<ChunkInfo> chunks_info = std::vector<ChunkInfo>(
+      chunk_metadata.chunks().begin(), chunk_metadata.chunks().end());
+
+  // Read the remaining chunks.
+  absl::Status s =
+      ReadFields(chunk_metadata.message(), reader, chunks_info, merged_message);
+
+  reader.Close();
+
+  uint64_t end_time = Env::Default()->NowMicros();
+  LOG(INFO) << "Finished reading and merging chunked proto, took "
+            << HumanReadableDuration(end_time - start_time) << ".";
+  return s;
+}
+
 absl::Status Merger::ReadPb(const std::string& pb_file,
                             Message* merged_message) {
   uint64_t start_time = Env::Default()->NowMicros();
@@ -154,11 +187,11 @@ absl::Status Merger::ReadPb(const std::string& pb_file,
   return ret;
 }
 
-absl::Status Merger::ReadFields(
-    const ChunkedMessage& chunked_message,
-    riegeli::RecordReader<riegeli::FdReader<>>& reader,
-    const std::vector<ChunkInfo>& chunks_info,
-    tsl::protobuf::Message* merged_message) {
+template <typename RecordReader>
+absl::Status Merger::ReadFields(const ChunkedMessage& chunked_message,
+                                RecordReader& reader,
+                                const std::vector<ChunkInfo>& chunks_info,
+                                tsl::protobuf::Message* merged_message) {
   if (chunked_message.has_chunk_index()) {
     // Chunks referenced by fields should be merged into the parent chunk.
     TF_ASSIGN_OR_RETURN(
@@ -219,11 +252,12 @@ absl::Status Merger::ReadFields(
   return absl::OkStatus();
 }
 
+template <typename RecordReader>
 absl::Status Merger::ProcessField(
     const ChunkedField& chunked_field, Message* merged_message,
     const std::vector<ChunkInfo>& chunks_info,
-    const std::vector<std::unique_ptr<Message>>& chunks,
-    riegeli::RecordReader<riegeli::FdReader<>>& reader, MergerOp op) {
+    const std::vector<std::unique_ptr<Message>>& chunks, RecordReader& reader,
+    MergerOp op) {
   std::string chunk;
   switch (op) {
     case MergerOp::READ: {
@@ -257,6 +291,14 @@ absl::Status Merger::ProcessField(
     merged_message = curr_message;
     field_desc = merged_message->GetDescriptor()->FindFieldByNumber(
         std::get<int>(field.first));
+
+    if (field_desc == nullptr) {
+      return absl::FailedPreconditionError(
+          absl::StrCat("Field with number ", std::get<int>(field.first),
+                       " not found in message descriptor.",
+                       merged_message->GetDescriptor()->full_name(), ".\n"));
+    }
+
     auto res = GetMutableField(merged_message, field);
     if (!res.ok()) {
       if (!absl::IsNotFound(res.status())) return res.status();

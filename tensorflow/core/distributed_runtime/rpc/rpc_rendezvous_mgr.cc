@@ -15,6 +15,9 @@ limitations under the License.
 
 #include "tensorflow/core/distributed_runtime/rpc/rpc_rendezvous_mgr.h"
 
+#include <memory>
+
+#include "absl/synchronization/notification.h"
 #include "tensorflow/core/common_runtime/device.h"
 #include "tensorflow/core/common_runtime/device_mgr.h"
 #include "tensorflow/core/common_runtime/dma_helper.h"
@@ -58,7 +61,7 @@ class RpcRecvTensorCall : public BaseRecvTensorCall {
  public:
   RpcRecvTensorCall() : wi_(nullptr), dst_device_(nullptr) {}
 
-  void Init(WorkerInterface* wi, int64_t step_id, StringPiece key,
+  void Init(WorkerInterface* wi, int64_t step_id, absl::string_view key,
             AllocatorAttributes alloc_attrs, Device* dst_device,
             const Rendezvous::Args& recv_args, Rendezvous::DoneCallback done) {
     wi_ = wi;
@@ -102,7 +105,7 @@ class RpcRecvTensorCall : public BaseRecvTensorCall {
     StartRTCall(std::move(recv_done));
   }
 
-  void StartAbort(const Status& s) override {
+  void StartAbort(const absl::Status& s) override {
     {
       mutex_lock l(mu_);
       status_.Update(s);
@@ -110,7 +113,7 @@ class RpcRecvTensorCall : public BaseRecvTensorCall {
     opts_.StartCancel();
   }
 
-  Status status() const override {
+  absl::Status status() const override {
     mutex_lock l(mu_);
     return status_;
   }
@@ -136,9 +139,9 @@ class RpcRecvTensorCall : public BaseRecvTensorCall {
   // Start the main RecvTensor call, checking for an async abort.
   void StartRTCall(std::function<void()> recv_done) {
     resp_.InitAlloc(dst_device_, alloc_attrs_);
-    auto abort_checked = std::make_shared<Notification>();
+    auto abort_checked = std::make_shared<absl::Notification>();
     auto cb = [this, abort_checked,
-               recv_done = std::move(recv_done)](const Status& s) {
+               recv_done = std::move(recv_done)](const absl::Status& s) {
       // Make sure the Rendezvous abort checking is finished before running the
       // callback, which might destroy the current call object.
       abort_checked->WaitForNotification();
@@ -155,7 +158,7 @@ class RpcRecvTensorCall : public BaseRecvTensorCall {
     // the `RecvTensorAsync` request registers its RPC cancellation to `opts_`.
     // In that case, the previous `StartAbort` would not trigger the
     // cancellation of this call.
-    Status s;
+    absl::Status s;
     {
       mutex_lock l(mu_);
       s = status_;
@@ -179,7 +182,7 @@ class RpcRecvTensorCall : public BaseRecvTensorCall {
   Rendezvous::DoneCallback done_;
 
   mutable mutex mu_;
-  Status status_ TF_GUARDED_BY(mu_);
+  absl::Status status_ TF_GUARDED_BY(mu_);
 
   RpcRecvTensorCall(const RpcRecvTensorCall&) = delete;
   void operator=(const RpcRecvTensorCall&) = delete;
@@ -234,7 +237,7 @@ void RpcRemoteRendezvous::RecvFromRemoteAsync(
     const Rendezvous::ParsedKey& parsed, const Rendezvous::Args& recv_args,
     DoneCallback done) {
   CHECK(is_initialized());
-  Status s;
+  absl::Status s;
 
   // Prepare a RecvTensor call that can handle being aborted.
   RpcRecvTensorCall* call = get_call_freelist()->New();
@@ -294,7 +297,7 @@ void RpcRemoteRendezvous::RecvFromRemoteAsync(
     DeregisterCall(call, recv_args);
     // If StartAbort was called prior to DeregisterCall, then the
     // current status should be bad.
-    Status s = call->status();
+    absl::Status s = call->status();
     // NOTE: `*session()` can potentially be deleted before we return from
     // `call->done()(...)`, so we must release the worker before calling the
     // callback.

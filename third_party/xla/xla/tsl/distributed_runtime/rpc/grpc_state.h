@@ -16,21 +16,22 @@ limitations under the License.
 #ifndef XLA_TSL_DISTRIBUTED_RUNTIME_RPC_GRPC_STATE_H_
 #define XLA_TSL_DISTRIBUTED_RUNTIME_RPC_GRPC_STATE_H_
 
+#include <memory>
 #include <queue>
 #include <string>
 #include <utility>
 
+#include "absl/status/status.h"
 #include "grpcpp/generic/generic_stub.h"
 #include "grpcpp/grpcpp.h"
-#include "absl/status/status.h"
 #include "xla/tsl/distributed_runtime/call_options.h"
 #include "xla/tsl/distributed_runtime/rpc/grpc_client_cq_tag.h"
 #include "xla/tsl/distributed_runtime/rpc/grpc_util.h"
+#include "xla/tsl/platform/errors.h"
+#include "xla/tsl/platform/status.h"
+#include "xla/tsl/platform/threadpool.h"
 #include "xla/tsl/util/env_var.h"
-#include "tsl/platform/errors.h"
-#include "tsl/platform/status.h"
 #include "tsl/platform/strcat.h"
-#include "tsl/platform/threadpool.h"
 
 namespace tsl {
 
@@ -79,7 +80,7 @@ class RPCState : public GrpcClientCQTag {
               } else if (fail_fast_env_lower == "false") {
                 return false;
               } else {
-                string error_message = strings::StrCat(
+                string error_message = absl::StrCat(
                     "Invalid GRPC_FAIL_FAST config: ", fail_fast_env);
                 LOG(WARNING) << error_message;
                 done(errors::InvalidArgument(error_message));
@@ -125,7 +126,7 @@ class RPCState : public GrpcClientCQTag {
   }
 
   void StartCall() {
-    context_.reset(new ::grpc::ClientContext());
+    context_ = std::make_unique<::grpc::ClientContext>();
     context_->set_wait_for_ready(!fail_fast_);
     if (timeout_in_ms_ > 0) {
       context_->set_deadline(
@@ -186,12 +187,12 @@ class RPCState : public GrpcClientCQTag {
     } else {
       // Attach additional GRPC error information if any to the final status
       string error_msg = std::string(s.message());
-      strings::StrAppend(&error_msg, "\nAdditional GRPC error information");
+      absl::StrAppend(&error_msg, "\nAdditional GRPC error information");
       if (target_) {
-        strings::StrAppend(&error_msg, " from remote target ", *target_);
+        absl::StrAppend(&error_msg, " from remote target ", *target_);
       }
-      strings::StrAppend(&error_msg, " while calling ", method_);
-      strings::StrAppend(&error_msg, ":\n:", context_->debug_error_string());
+      absl::StrAppend(&error_msg, " while calling ", method_);
+      absl::StrAppend(&error_msg, ":\n:", context_->debug_error_string());
       s = errors::CreateWithUpdatedMessage(s, error_msg);
       // Always treat gRPC cancellation as a derived error. This ensures that
       // other error types are preferred during status aggregation. (gRPC

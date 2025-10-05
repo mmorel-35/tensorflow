@@ -2,6 +2,8 @@
 # For clients using async APIs, please use tensorflow/lite/async/c instead of this package.
 # NOTE: Targets in this package are experimental.
 
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_cc//cc:cc_test.bzl", "cc_test")
 load("//tensorflow:tensorflow.default.bzl", "get_compatible_with_portable")
 load(
     "//tensorflow/lite:build_def.bzl",
@@ -118,6 +120,9 @@ cc_test(
     name = "async_signature_runner_test",
     srcs = ["async_signature_runner_test.cc"],
     copts = tflite_copts() + tflite_copts_warnings(),
+    data = [
+        "//tensorflow/lite:testdata/no_signatures.bin",
+    ],
     deps = [
         ":async_signature_runner",
         ":internal",

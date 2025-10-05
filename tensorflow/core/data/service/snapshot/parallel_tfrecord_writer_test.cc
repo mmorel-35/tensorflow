@@ -28,18 +28,20 @@ limitations under the License.
 #include "absl/container/flat_hash_map.h"
 #include "absl/memory/memory.h"
 #include "absl/status/status.h"
+#include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
+#include "xla/tsl/lib/core/status_test_util.h"
+#include "xla/tsl/lib/io/compression.h"
+#include "xla/tsl/platform/env.h"
+#include "xla/tsl/platform/errors.h"
+#include "xla/tsl/platform/status_matchers.h"
+#include "xla/tsl/platform/statusor.h"
+#include "xla/tsl/platform/test.h"
 #include "tensorflow/core/data/service/byte_size.h"
 #include "tensorflow/core/data/snapshot_utils.h"
 #include "tensorflow/core/framework/tensor.h"
-#include "tsl/lib/core/status_test_util.h"
-#include "tsl/lib/io/compression.h"
-#include "tsl/platform/env.h"
-#include "tsl/platform/errors.h"
-#include "tsl/platform/status_matchers.h"
-#include "tsl/platform/statusor.h"
-#include "tsl/platform/test.h"
+#include "tensorflow/core/framework/types.pb.h"
 
 namespace tensorflow {
 namespace data {
@@ -223,7 +225,8 @@ TEST_P(ParallelTFRecordWriterParamTest, WriteRecords) {
 
   const auto [files, stats] = Unzip(file_stats);
   EXPECT_THAT(ReadRecords<int64_t>(files, Compression()),
-              IsOkAndHolds(UnorderedElementsAreArray(Range(NumElements()))));
+              absl_testing::IsOkAndHolds(
+                  UnorderedElementsAreArray(Range(NumElements()))));
   VerifyFileStats(stats, NumElements());
 }
 
@@ -250,7 +253,7 @@ TEST_P(ParallelTFRecordWriterParamTest, ConcurrentWrites) {
 
   const auto [files, stats] = Unzip(file_stats);
   EXPECT_THAT(ReadRecords<int64_t>(files, Compression()),
-              IsOkAndHolds(UnorderedElementsAreArray(
+              absl_testing::IsOkAndHolds(UnorderedElementsAreArray(
                   Repeat(Range(NumElements()), NumClients()))));
   VerifyFileStats(stats, NumElements() * NumClients());
 }
@@ -280,7 +283,7 @@ TEST(ParallelTFRecordWriterTest, WriteNoRecord) {
 
   const auto [files, stats] = Unzip(file_stats);
   EXPECT_THAT(ReadRecords<int64_t>(files, tsl::io::compression::kNone),
-              IsOkAndHolds(IsEmpty()));
+              absl_testing::IsOkAndHolds(IsEmpty()));
 }
 
 TEST(ParallelTFRecordWriterTest, CannotWriteFinalizedWriter) {
@@ -294,8 +297,9 @@ TEST(ParallelTFRecordWriterTest, CannotWriteFinalizedWriter) {
           /*thread_options=*/{}, /*name=*/"Client",
           [&parallel_tfrecord_writer]() {
             RangeIterator range_iterator(std::numeric_limits<int64_t>::max());
-            EXPECT_THAT(WriteRecords(parallel_tfrecord_writer, range_iterator),
-                        StatusIs(absl::StatusCode::kFailedPrecondition));
+            EXPECT_THAT(
+                WriteRecords(parallel_tfrecord_writer, range_iterator),
+                absl_testing::StatusIs(absl::StatusCode::kFailedPrecondition));
           }));
 
   parallel_tfrecord_writer.Finalize().status().IgnoreError();
@@ -313,7 +317,7 @@ TEST(ParallelTFRecordWriterTest, DirectoryDoesNotExist) {
   TF_ASSERT_OK(range_iterator.GetNext(element, end_of_sequence));
   parallel_tfrecord_writer.Write(element).IgnoreError();
   EXPECT_THAT(parallel_tfrecord_writer.Finalize().status(),
-              StatusIs(absl::StatusCode::kNotFound));
+              absl_testing::StatusIs(absl::StatusCode::kNotFound));
 }
 
 }  // namespace

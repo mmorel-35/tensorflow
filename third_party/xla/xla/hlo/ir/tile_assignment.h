@@ -16,13 +16,22 @@ limitations under the License.
 #ifndef XLA_HLO_IR_TILE_ASSIGNMENT_H_
 #define XLA_HLO_IR_TILE_ASSIGNMENT_H_
 
+#include <array>
+#include <cstdint>
 #include <functional>
+#include <initializer_list>
 #include <memory>
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <utility>
 
 #include "absl/algorithm/container.h"
+#include "absl/base/thread_annotations.h"
+#include "absl/functional/function_ref.h"
+#include "absl/log/check.h"
+#include "absl/status/status.h"
+#include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "xla/array.h"
 #include "xla/printer.h"
@@ -53,11 +62,11 @@ class IotaTileAssignment {
   // `reshape_dims`: is the dimensions the 1D iota array is reshaped to.
   // `transpose_perm`: is the dimension permutation to transpose `reshape_dims`.
   //
-  // e.g. dims=[8,8,8] reshape_dims=[4,2,2], transpose_perm=[0,1,2] (no
-  // transpose) corresponds to [8,8,8]<=[16] which in full array V1 format is
+  // e.g. dims=[4,4,1] reshape_dims=[4,2,2], transpose_perm=[0,1,2] (no
+  // transpose) corresponds to [4,4,1]<=[16] which in full array V1 format is
   // [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15].
-  // e.g. dims=[8,8,8] reshape_dims=[4,2,2], transpose_perm=[1,0,2] (swap dim 0
-  // and dim 1) corresponds to [8,8,8]<=[4,2,2]T(1,0,2) which in full array V1
+  // e.g. dims=[4,4,1] reshape_dims=[4,2,2], transpose_perm=[1,0,2] (swap dim 0
+  // and dim 1) corresponds to [4,4,1]<=[4,2,2]T(1,0,2) which in full array V1
   // format is [0,1,4,5,8,9,12,13,2,3,6,7,10,11,14,15].
   static IotaTileAssignment Create(absl::Span<const int64_t> dims,
                                    absl::Span<const int64_t> reshape_dims,
@@ -157,6 +166,11 @@ class IotaTileAssignment {
   std::unique_ptr<char[]> storage_;
 };
 
+// Materializes array representation of IotaTileAssignment.
+Array<int64_t> ToArray(absl::Span<const int64_t> reshape_dims,
+                       absl::Span<const int> transpose_perm,
+                       absl::Span<const int64_t> dims);
+
 // Internal class that represents how an ordered list of device IDs are sharded
 // along different dimensions. It manages full or compact representation of the
 // device IDs without having callers worry about what underlying format is used.
@@ -173,12 +187,19 @@ class TileAssignment {
       : TileAssignment(std::make_shared<const Array<int64_t>>(
             std::initializer_list<int64_t>{1}, device_id)) {}
   explicit TileAssignment(IotaTileAssignment iota) : iota_(std::move(iota)) {}
+  explicit TileAssignment(std::initializer_list<int64_t> dims)
+      : iota_(IotaTileAssignment::Create(dims)) {}
   explicit TileAssignment(absl::Span<const int64_t> dims)
       : iota_(IotaTileAssignment::Create(dims)) {}
   explicit TileAssignment(absl::Span<const int64_t> dims,
                           absl::Span<const int64_t> reshape_dims,
                           absl::Span<const int> transpose_perm)
       : iota_(IotaTileAssignment::Create(dims, reshape_dims, transpose_perm)) {}
+
+  TileAssignment(const TileAssignment& other);
+  TileAssignment(TileAssignment&& other);
+  TileAssignment& operator=(const TileAssignment& other);
+  TileAssignment& operator=(TileAssignment&& other);
 
   bool operator==(const TileAssignment& other) const;
   bool operator!=(const TileAssignment& other) const {
@@ -204,6 +225,14 @@ class TileAssignment {
 
   void Each(
       absl::FunctionRef<void(absl::Span<const int64_t>, int64_t)> f) const;
+
+  // Templated variant of Each() that avoids virtual function call
+  // overhead per element. Useful for hot code paths.
+  template <class Fn>
+  void TemplatedEach(const Fn& fn) const {
+    MaybeMaterializeFullArray();
+    array_->TemplatedEach(fn);
+  }
 
   absl::Status EachStatus(
       absl::FunctionRef<absl::Status(absl::Span<const int64_t>, int64_t)> f)
@@ -232,7 +261,7 @@ class TileAssignment {
   const Array<int64_t>& array() const;
   // Similar to array() but returns the underlying shared_ptr to avoid deep
   // copy.
-  const std::shared_ptr<const Array<int64_t>>& shared_array() const;
+  std::shared_ptr<const Array<int64_t>> shared_array() const;
   // Makes a deep copy of shared_array().
   std::shared_ptr<Array<int64_t>> shared_array_clone() const;
 
@@ -255,18 +284,21 @@ class TileAssignment {
         shared_array_(std::move(shared_array)),
         array_(shared_array_.get()) {}
 
-  void MaybeMaterializeFullArray() const;
+  void MaybeMaterializeFullArray() const ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
 
   static const Array<int64_t>* ReplicatedArray() {
-    static auto* array = new Array<int64_t>({0});
+    static auto* const array = new Array<int64_t>({0});
     return array;
   }
 
   std::optional<IotaTileAssignment> iota_;
+
+  mutable absl::Mutex mu_;
   // If iota_ is set, shared_array_ is a lazy cache of the materialized array.
-  mutable std::shared_ptr<const Array<int64_t>> shared_array_;
+  mutable std::shared_ptr<const Array<int64_t>> shared_array_
+      ABSL_GUARDED_BY(mu_);
   // Pointer to the storage of the fully materialized array format.
-  mutable const Array<int64_t>* array_ = nullptr;
+  mutable const Array<int64_t>* array_ ABSL_GUARDED_BY(mu_) = nullptr;
 };
 
 }  // namespace xla

@@ -15,6 +15,8 @@ limitations under the License.
 
 #include "xla/tools/run_hlo_module.h"
 
+#include <chrono>
+#include <cstddef>
 #include <functional>
 #include <iomanip>
 #include <iostream>
@@ -32,6 +34,7 @@ limitations under the License.
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/str_format.h"
 #include "absl/strings/str_replace.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
@@ -52,6 +55,7 @@ limitations under the License.
 #include "xla/tools/run_hlo_module.pb.h"
 #include "xla/util.h"
 #include "xla/xla_data.pb.h"
+#include "tsl/platform/env.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/path.h"
 #include "tsl/platform/status.h"
@@ -146,19 +150,15 @@ absl::StatusOr<Literal> ExecuteWithRunner(
   std::cerr << "Running HLO module with runner " << runner->Name() << "...\n";
   XLA_VLOG_LINES(1, module->ToString());
   const auto start = std::chrono::high_resolution_clock::now();
-  ExecutionProfile profile;
   auto result_status =
       (buffer_assignment_proto == nullptr)
-          ? runner->Execute(std::move(module), args, run_hlo_passes, &profile)
+          ? runner->Execute(std::move(module), args, run_hlo_passes)
           : runner->ExecuteWithBufferAssignment(std::move(module),
                                                 buffer_assignment_proto, args,
-                                                run_hlo_passes, &profile);
+                                                run_hlo_passes);
   const auto end = std::chrono::high_resolution_clock::now();
   std::chrono::duration<double> diff = end - start;
   std::cerr << "... compiled and ran in " << diff.count() << "s.\n";
-  double run_time = static_cast<double>(profile.compute_time_ns()) / 1e9;
-  std::cerr << "execution time for runner " << runner->Name() << ": "
-            << run_time << "s.\n";
 
   TF_RETURN_WITH_CONTEXT_IF_ERROR(
       result_status.status(),
@@ -201,8 +201,6 @@ absl::Status RunAndCompareInternal(
             .status());
   }
 
-  const HloModuleProto test_module_proto = test_module->ToProto();
-
   TF_ASSIGN_OR_RETURN(
       auto args, copy_result_on_failure(
                      MakeFakeArguments(test_module.get(), engine,
@@ -221,9 +219,12 @@ absl::Status RunAndCompareInternal(
           "number of expected arguments.");
     } else {
       for (int i = 0; i < args.size(); ++i) {
-        if (!literal_comparison::EqualShapes(
-                 xla::Shape(args[i].shape()),
-                 xla::Shape(iteration_literals_proto->arguments(i).shape()))
+        TF_ASSIGN_OR_RETURN(
+            auto expected_shape,
+            xla::Shape::FromProto(
+                iteration_literals_proto->arguments(i).shape()));
+        if (!literal_comparison::EqualShapes(xla::Shape(args[i].shape()),
+                                             expected_shape)
                  .ok()) {
           if (test_run_result != nullptr) {
             *test_run_result = ModuleResult::kOtherError;
@@ -256,14 +257,18 @@ absl::Status RunAndCompareInternal(
 
   std::unique_ptr<HloModule> reference_module;
   if (reference_runner != nullptr) {
+    // If reference platform is the same as test platform, we shouldn't
+    // deoptimize the reference module.
+    bool skip_deoptimization = options.reference_platform == options.platform;
+
     // PrepareReferenceModule needs to know the *test* runner, in order to
     // properly match the test runner's numerics.
     TF_ASSIGN_OR_RETURN(
         reference_module,
         copy_result_on_failure(
-            PrepareReferenceModule(*test_module, test_runner,
-                                   config_modifier_hook,
-                                   reference_module_modifier_hook),
+            PrepareReferenceModule(
+                *test_module, test_runner, config_modifier_hook,
+                reference_module_modifier_hook, skip_deoptimization),
             ModuleResult::kCompilationError, reference_run_result));
   }
 
@@ -496,12 +501,16 @@ absl::Status RunAndCompare(
     std::function<absl::Status(const RunHloModuleOptions& options,
                                HloModule& module)>
         compilation_env_modifier_hook) {
+  std::string input_format = options.input_format;
+  if (input_format.empty()) {
+    input_format = std::string(tsl::io::Extension(hlo_filename));
+  }
   BufferAssignmentProto buffer_assignment_proto;
   TF_ASSIGN_OR_RETURN(
       auto test_module,
       LoadModuleFromFile(
-          hlo_filename, options.input_format,
-          hlo_module_loader_details::Config(), config_modifier_hook,
+          hlo_filename, input_format, hlo_module_loader_details::Config(),
+          config_modifier_hook,
           options.use_buffer_assignment_from_proto ? &buffer_assignment_proto
                                                    : nullptr));
   HloVerifier verifier(
@@ -522,15 +531,13 @@ absl::Status RunAndCompare(
   if (iteration_literals_proto == nullptr) {
     // User did not explicitly give input
     if (!options.force_fake_data && !options.isolate_instructions &&
-        (options.input_format == "pb" || options.input_format == "pbtxt")) {
+        (input_format == "pb" || input_format == "pbtxt")) {
       // User is giving a snapshot (which contains inputs)
       LOG(INFO) << "Using input data from the user-provided snapshot.";
-      TF_ASSIGN_OR_RETURN(
-          iteration_literals_proto_local,
-          LoadInputFromFile(hlo_filename, options.input_format));
+      TF_ASSIGN_OR_RETURN(iteration_literals_proto_local,
+                          LoadInputFromFile(hlo_filename, input_format));
       iteration_literals_proto = iteration_literals_proto_local.get();
-    } else if (options.input_format == "pb" ||
-               options.input_format == "pbtxt") {
+    } else if (input_format == "pb" || input_format == "pbtxt") {
       LOG(INFO)
           << "Ignoring input data from snapshot and using fake data instead.";
     }
@@ -541,5 +548,24 @@ absl::Status RunAndCompare(
                                                : nullptr,
       test_runner, reference_runner, engine, options, iteration_literals_proto,
       reference_module_modifier_hook, config_modifier_hook);
+}
+
+void ReadInputLiteralsFromFile(const std::string& file_path,
+                               RunHloModuleLiterals* input_literals_proto) {
+  if (!tsl::ReadTextOrBinaryProto(tsl::Env::Default(), file_path,
+                                  input_literals_proto)
+           .ok() ||
+      input_literals_proto->iterations().empty()) {
+    // Fallback to trying to read RunHloModuleIterationLiterals
+    xla::RunHloModuleIterationLiterals iteration_literals_proto;
+    if (!tsl::ReadTextOrBinaryProto(tsl::Env::Default(), file_path,
+                                    &iteration_literals_proto)
+             .ok()) {
+      LOG(QFATAL) << "Failed to deserialize input literals from file "
+                  << file_path << "\n";
+    }
+    input_literals_proto->clear_iterations();
+    *input_literals_proto->add_iterations() = iteration_literals_proto;
+  }
 }
 }  // namespace xla

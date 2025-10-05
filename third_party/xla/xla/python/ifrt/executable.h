@@ -22,26 +22,41 @@ limitations under the License.
 #include <string>
 #include <vector>
 
-#include "absl/container/flat_hash_map.h"
+#include "absl/container/flat_hash_set.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "llvm/Support/ExtensibleRTTI.h"
 #include "xla/hlo/ir/hlo_module.h"
-#include "xla/pjrt/pjrt_client.h"
-#include "xla/pjrt/pjrt_common.h"
 #include "xla/pjrt/pjrt_executable.h"
+#include "xla/pjrt/pjrt_layout.h"
 #include "xla/python/ifrt/array.h"
+#include "xla/python/ifrt/attribute_map.h"
 #include "xla/python/ifrt/device.h"
-#include "xla/python/ifrt/future.h"
-#include "xla/tsl/concurrency/ref_count.h"
+#include "xla/python/ifrt/device_list.h"
+#include "xla/python/ifrt/execute_options.pb.h"
+#include "xla/python/ifrt/serdes.h"
+#include "xla/python/ifrt/serdes_default_version_accessor.h"
+#include "xla/python/ifrt/serdes_version.h"
+#include "xla/python/ifrt/user_context.h"
+#include "xla/tsl/concurrency/future.h"
+#include "xla/xla_data.pb.h"
 
 namespace xla {
 namespace ifrt {
 
 class Client;
-class CompileOptions;
+struct CompileOptions;
 struct DeserializeExecutableOptions;
+
+struct ExecutableVersion : llvm::RTTIExtends<ExecutableVersion, Serializable> {
+  // Returns true iff this version is compatible with `other`. The logic for
+  // checking the version compatibility is an implementation detail of
+  // `ExecutableVersion` subclasses.
+  virtual bool IsCompatibleWith(const ExecutableVersion& other) const = 0;
+
+  static char ID;  // NOLINT
+};
 
 // Wraps a computation that has been partially compiled and can be loaded.
 class Executable : public llvm::RTTIExtends<Executable, llvm::RTTIRoot> {
@@ -75,10 +90,10 @@ class Executable : public llvm::RTTIExtends<Executable, llvm::RTTIRoot> {
   // Returns a list of output `OpSharding`.
   virtual std::optional<std::vector<OpSharding>> GetOutputShardings() const = 0;
   // Returns a list of parameter layouts.
-  virtual absl::StatusOr<std::vector<std::unique_ptr<Layout>>>
+  virtual absl::StatusOr<std::vector<std::shared_ptr<const xla::PjRtLayout>>>
   GetParameterLayouts() const = 0;
   // Returns a list of output/result layouts.
-  virtual absl::StatusOr<std::vector<std::unique_ptr<Layout>>>
+  virtual absl::StatusOr<std::vector<std::shared_ptr<const xla::PjRtLayout>>>
   GetOutputLayouts() const = 0;
   // Returns an `HloModule` (optimized) per partition.
   virtual absl::StatusOr<std::vector<std::shared_ptr<HloModule>>>
@@ -91,20 +106,50 @@ class Executable : public llvm::RTTIExtends<Executable, llvm::RTTIRoot> {
   virtual absl::StatusOr<std::vector<std::vector<absl::string_view>>>
   GetOutputMemoryKinds() const = 0;
 
-  using CostAnalysisValue = xla::PjRtValueType;
-
   // Returns named values for cost properties of this executable (such as
   // operations, size of input/outputs, and run time estimate). Properties may
   // differ for different implementations and platforms.
-  virtual absl::StatusOr<absl::flat_hash_map<std::string, CostAnalysisValue>>
-  GetCostAnalysis() const = 0;
-
-  // Returns the compile options used to compile this executable.
-  // TODO(phawkins): consider removing this API and having the client remember
-  // the compile options used to create the executable.
-  virtual const CompileOptions* GetCompileOptions() const = 0;
+  virtual absl::StatusOr<AttributeMap> GetCostAnalysis() const = 0;
 
   static char ID;  // NOLINT
+};
+
+using ExecutableRef = std::shared_ptr<Executable>;
+
+struct ExecuteOptions {
+  // If non-zero, identifies this execution as part of a potentially
+  // multi-device launch. This can be used to detect scheduling errors, e.g. if
+  // multi-host programs are launched in different orders on different hosts,
+  // the launch IDs may be used by the runtime to detect the mismatch.
+  int32_t launch_id = 0;
+
+  // A set of indices denoting the input arrays that should not be donated. An
+  // input array may be non-donable, for example, if it is referenced more than
+  // once. Since such runtime information is not available at compile time, the
+  // compiler might mark the input as `may-alias`, which could lead IFRT to
+  // donate the input array when it should not. By defining this set of indices,
+  // a higher-level IFRT caller can instruct IFRT client not to donate specific
+  // input arrays.
+  absl::flat_hash_set<int> non_donatable_input_indices;
+
+  // If true, populate `ExecuteResult::status`. Otherwise, the status is left as
+  // an invalid future.
+  bool fill_status = false;
+
+  // Execution stream ID identifies the series of executions that must be
+  // executed in program order.  Executions with different execution stream IDs
+  // may be executed in any order and concurrently.
+  int64_t execution_stream_id = 0;
+
+  // Custom execution options specific to the runtime. The user and the runtime
+  // are responsible for ensuring version compatibility.
+  std::optional<AttributeMap> custom_options;
+
+  absl::StatusOr<ExecuteOptionsProto> ToProto(
+      SerDesVersion version = SerDesDefaultVersionAccessor::Get()) const;
+
+  static absl::StatusOr<ExecuteOptions> FromProto(
+      const ExecuteOptionsProto& proto);
 };
 
 // Wraps a computation that has been fully compiled and loaded for execution.
@@ -123,9 +168,19 @@ class LoadedExecutable
   // Returns a fingerprint of this executable.
   virtual absl::StatusOr<std::optional<std::string>> Fingerprint() const = 0;
 
+  // Returns the executable version that can be used for verifying the
+  // compatibility with a runtime.
+  virtual absl::StatusOr<std::unique_ptr<ExecutableVersion>>
+  executable_version() const = 0;
+
   // Serializes this executable into a string. The compatibility of the
   // serialized executable is implementation-specific.
   virtual absl::StatusOr<std::string> Serialize() const = 0;
+
+  // Returns the user context associated with the creation of this executable.
+  // May be `nullptr` if the user context is unset or the runtime does not
+  // support it.
+  virtual UserContextRef user_context() const = 0;
 
   // Returns a future that becomes ready when the executable is ready to be
   // used for execution.
@@ -135,7 +190,7 @@ class LoadedExecutable
   // compilation work in the background. Implementations must still ensure that
   // all other methods can be used even without explicitly waiting for the ready
   // future (e.g., via blocking).
-  virtual Future<> GetReadyFuture() const = 0;
+  virtual tsl::Future<> GetReadyFuture() const = 0;
 
   // The following APIs are taken from `xla::PjRtExecutable` for fast
   // prototyping.
@@ -154,13 +209,20 @@ class LoadedExecutable
   // Returns a list of parameter Sharding.
   virtual std::optional<std::vector<OpSharding>> GetParameterShardings()
       const = 0;
+
+  // Returns the indices of parameters that will be donated whenever `Execute`
+  // gets called, provided they are not present in
+  // `execute_options.non_donatable_input_indices`.
+  virtual absl::StatusOr<absl::Span<const int>> GetDonatableInputIndices()
+      const = 0;
+
   // Returns a list of output OpSharding.
   virtual std::optional<std::vector<OpSharding>> GetOutputShardings() const = 0;
   // Returns a list of parameter layouts.
-  virtual absl::StatusOr<std::vector<std::unique_ptr<Layout>>>
+  virtual absl::StatusOr<std::vector<std::shared_ptr<const xla::PjRtLayout>>>
   GetParameterLayouts() const = 0;
   // Returns a list of output/result layouts.
-  virtual absl::StatusOr<std::vector<std::unique_ptr<Layout>>>
+  virtual absl::StatusOr<std::vector<std::shared_ptr<const xla::PjRtLayout>>>
   GetOutputLayouts() const = 0;
   // Return an HloModule (optimized) per partition.
   virtual absl::StatusOr<std::vector<std::shared_ptr<HloModule>>>
@@ -175,21 +237,19 @@ class LoadedExecutable
   // Returns named values for cost properties of this executable (such as
   // operations, size of input/outputs, and run time estimate). Properties may
   // differ for different implementations and platforms.
-  virtual absl::StatusOr<
-      absl::flat_hash_map<std::string, Executable::CostAnalysisValue>>
-  GetCostAnalysis() const = 0;
+  virtual absl::StatusOr<AttributeMap> GetCostAnalysis() const = 0;
 
   // `LoadedExecutable` methods.
 
-  // Short-term alias.
-  using ExecuteOptions = ::xla::ExecuteOptions;
+  using ExecuteOptions = ::xla::ifrt::ExecuteOptions;
 
   // Result from an execution.
   struct ExecuteResult {
-    // Resulting status of the execution.
-    Future<> status;
+    // Resulting status of the execution. Filled only if
+    // `ExecuteOptions::fill_status` is true.
+    tsl::Future<> status;
     // Output arrays.
-    std::vector<tsl::RCReference<Array>> outputs;
+    std::vector<ArrayRef> outputs;
   };
 
   // Executes the executable on devices.
@@ -210,30 +270,24 @@ class LoadedExecutable
   // (e.g., having per-argument/output booleans or providing a separate barrier
   // API).
   virtual absl::StatusOr<ExecuteResult> Execute(
-      absl::Span<tsl::RCReference<Array>> args, const ExecuteOptions& options,
-      std::optional<DeviceList> devices) = 0;
+      absl::Span<ArrayRef> args, const ExecuteOptions& options,
+      std::optional<DeviceListRef> devices) = 0;
 
-  // Deletes the executable from the devices. The operation may be asynchronous.
-  // The returned future will have the result of the deletion on the devices.
-  // Implementations that do not track the completion of the deletion operation
-  // may make the future immediately ready with an OK status.
-  virtual Future<> Delete() = 0;
-  // Returns whether the executable has been enqueued for deletion from the
-  // devices.
-  virtual bool IsDeleted() const = 0;
+  // Returns the list of devices where the executable has been compiled and
+  // loaded onto.
+  virtual const DeviceListRef& devices() const = 0;
 
   // The following APIs are taken from xla::PjRtLoadedExecutable for fast
   // prototyping.
   // TODO(hyeontaek): Move the following XLA-specific methods to
   // pjrt_executable.h and put it in an `XlaCompatibleExecutable`.
 
-  using LogicalDeviceIds = ::xla::PjRtLoadedExecutable::LogicalDeviceIds;
-  virtual absl::Span<const LogicalDeviceIds> addressable_device_logical_ids()
-      const = 0;
   virtual absl::Span<Device* const> addressable_devices() const = 0;
 
   static char ID;  // NOLINT
 };
+
+using LoadedExecutableRef = std::shared_ptr<LoadedExecutable>;
 
 }  // namespace ifrt
 }  // namespace xla

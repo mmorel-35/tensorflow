@@ -13,6 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include "absl/status/status.h"
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/shape_inference.h"
 
@@ -26,7 +27,7 @@ limitations under the License.
 
 using ::tensorflow::shape_inference::InferenceContext;
 
-::tensorflow::Status ScalarOutput(InferenceContext* c) {
+absl::Status ScalarOutput(InferenceContext* c) {
   c->set_output(0, c->Scalar());
   return absl::OkStatus();
 }

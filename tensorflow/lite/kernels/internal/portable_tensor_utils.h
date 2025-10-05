@@ -170,6 +170,7 @@ inline void BatchQuantizeFloats(const float* float_data_ptr, int n_batch,
       tensor_utils::SymmetricQuantizeFloats(
           float_data_ptr + offset, n_data, quantized_data_ptr + offset,
           &unused_min, &unused_max, &scaling_factors[b]);
+      if (zero_points) zero_points[b] = 0;
     }
   }
 }
@@ -317,7 +318,7 @@ void ApplyLayerNormFloat(const int16_t* input,
 void ApplySigmoid(const int16_t* input, int32_t n_batch, int32_t n_input,
                   int16_t* output);
 
-// Same as above but the internal calcualtion is float.
+// Same as above but the internal calculation is float.
 void ApplySigmoidFloat(const int16_t* input, int32_t n_batch, int32_t n_input,
                        int16_t* output);
 
@@ -333,7 +334,7 @@ void ApplySigmoidFloat(const int16_t* input, int32_t n_batch, int32_t n_input,
 void ApplyTanh(int32_t intger_bits, const int16_t* input, int32_t n_batch,
                int32_t n_input, int16_t* output);
 
-// Apply Tanh to a quantized vector. Tbe internal calculation is in float.
+// Apply Tanh to a quantized vector. The internal calculation is in float.
 //    - Input has 2^(integer_bits) as scale.
 //    - Output has Q0.15 as scale.
 void ApplyTanhFloat(const int16_t* input, int32_t n_batch, int32_t n_input,
@@ -617,6 +618,20 @@ void ApplySignbitToVector(const float* __restrict__ vector, int v_size,
 void UnpackDenseInt4IntoInt8(const int8_t* src_buffer, int num_elements,
                              int8_t* dst_buffer);
 
+// Pack `src_buffer` into a densely packed buffer of int4 values.
+// Parameters:
+//   src_buffer   : Buffer containing int4 values stored in int8 memory.
+//   num_elements : Number of elements stored in the buffer. Note that this can
+//                  be smaller than the size of `src_buffer` by 1 if it's odd,
+//                  in which case the last nibble in `src_buffer` is ignored.
+//                  This should be equal to the size of `dst_buffer`.
+//   dst_buffer   : Buffer to pack into. Should be allocated by the caller.
+//                  Size should be at least `num_elements`.
+// Notes:
+//   For example, given `src_buffer = {0x02, 0x01, 0x04, 0x03}`, calling this
+//   function will return `dst_buffer = {0x12, 0x34}`.
+void PackInt8IntoDenseInt4(const int8_t* src_buffer, int num_elements,
+                           int8_t* dst_buffer);
 }  // namespace tensor_utils
 
 }  // namespace tflite

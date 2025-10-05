@@ -15,21 +15,29 @@ limitations under the License.
 
 #include "tensorflow/compiler/jit/kernels/xla_ops.h"
 
+#include <cstdint>
 #include <functional>
-#include <map>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <set>
 #include <string>
-#include <string_view>
 #include <tuple>
 #include <utility>
+#include <vector>
 
+#include "absl/base/const_init.h"
+#include "absl/base/thread_annotations.h"
 #include "absl/container/flat_hash_map.h"
+#include "absl/container/node_hash_map.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
-#include "absl/types/optional.h"
+#include "absl/strings/string_view.h"
+#include "absl/synchronization/mutex.h"
+#include "absl/types/span.h"
 #include "tensorflow/compiler/jit/device_compilation_profiler.h"
 #include "tensorflow/compiler/jit/device_compiler.h"
 #include "tensorflow/compiler/jit/encapsulate_subgraphs_pass.h"
@@ -37,6 +45,7 @@ limitations under the License.
 #include "tensorflow/compiler/jit/pjrt_compile_util.h"
 #include "tensorflow/compiler/jit/variable_info.h"
 #include "tensorflow/compiler/jit/variable_info_util.h"
+#include "tensorflow/compiler/jit/xla_activity.pb.h"
 #include "tensorflow/compiler/jit/xla_activity_listener.h"
 #include "tensorflow/compiler/jit/xla_compile_util.h"
 #include "tensorflow/compiler/jit/xla_compiler_options_util.h"
@@ -50,24 +59,38 @@ limitations under the License.
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
 #include "xla/client/local_client.h"
 #include "xla/executable_run_options.h"
+#include "xla/hlo/ir/hlo_input_output_alias_config.h"
 #include "xla/pjrt/pjrt_client.h"
+#include "xla/service/executable.h"
 #include "xla/service/gpu/gpu_executable_run_options.h"
+#include "xla/stream_executor/host/host_platform_id.h"
 #include "xla/tsl/concurrency/async_value_ref.h"
+#include "xla/tsl/protobuf/error_codes.pb.h"
 #include "tensorflow/core/framework/allocator.h"
+#include "tensorflow/core/framework/control_flow.h"
+#include "tensorflow/core/framework/device.h"
+#include "tensorflow/core/framework/function.h"
 #include "tensorflow/core/framework/node_def_util.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/op_requires.h"
+#include "tensorflow/core/framework/rendezvous.h"
 #include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/lib/monitoring/counter.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/errors.h"
+#include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/platform/refcount.h"
-#include "tensorflow/core/platform/statusor.h"
 #include "tensorflow/core/platform/stream_executor_no_cuda.h"
-#include "tensorflow/core/profiler/lib/traceme.h"
+#include "tensorflow/core/platform/threadpool.h"
+#include "tensorflow/core/platform/tstring.h"
+#include "tensorflow/core/platform/types.h"
+#include "tensorflow/core/util/device_name_utils.h"
 #include "tensorflow/core/util/stream_executor_util.h"
-#include "tsl/platform/statusor.h"
+#include "tsl/platform/thread_annotations.h"
+#include "tsl/profiler/lib/traceme.h"
 
 // OP_REQUIRES_OK_RETURN is the same as OP_REQUIRES_OK except that
 // in error case, it returns RET instead of void.
@@ -205,7 +228,8 @@ XlaComputationLaunchContext GetLaunchContext(
   return launch_context;
 }
 
-Status GetTaskName(const std::string_view device_name, std::string* task_name) {
+absl::Status GetTaskName(const absl::string_view device_name,
+                         std::string* task_name) {
   string ignored;
   if (!DeviceNameUtils::SplitDeviceName(device_name, task_name, &ignored)) {
     return errors::InvalidArgument("Unable to parse device name: ",
@@ -366,7 +390,7 @@ GetXlaCompilerArgsAndSnapshotVariables(
   return result;
 }
 
-Status CompileToLocalExecutable(
+absl::Status CompileToLocalExecutable(
     OpKernelContext* ctx, const NameAttrList& function, bool has_ref_vars,
     const XlaPlatformInfo& platform_info,
     const std::vector<XlaCompiler::Argument>& args,
@@ -419,7 +443,7 @@ Status CompileToLocalExecutable(
       compilation_result, executable);
 }
 
-Status GetUpdatedVariables(
+absl::Status GetUpdatedVariables(
     const OpKernelContext* ctx, absl::Span<const Tensor* const> inputs,
     absl::Span<const int> variable_indices,
     const XlaCompiler::CompilationResult& compilation_result,
@@ -442,7 +466,7 @@ static thread::ThreadPool* GetOrCreateThreadPoolForCollective(
   static auto& thread_pool_cache ABSL_GUARDED_BY(m) =
       *new absl::node_hash_map<XlaCompilationResult::CollectiveInfo,
                                thread::ThreadPool>();
-  absl::MutexLock l(&m);
+  absl::MutexLock l(m);
   auto it = thread_pool_cache.find(collective_info);
   if (it == thread_pool_cache.end()) {
     // Create & cache thread pool.
@@ -509,7 +533,7 @@ void XlaLocalLaunchBase::ComputeAsync(OpKernelContext* ctx, DoneCallback done) {
     std::set<int> variables_updated;
     // Here we only need to reader-lock the variables, so we pass an empty
     // variables_updated set here.
-    Status status = GetVariableInfosFromInputs(
+    absl::Status status = GetVariableInfosFromInputs(
         ctx->resource_manager(), ctx->device(), inputs, resources_,
         &variables_updated, &variable_infos);
     OP_REQUIRES_OK_ASYNC(ctx, status, done);
@@ -528,7 +552,7 @@ void XlaLocalLaunchBase::ComputeAsync(OpKernelContext* ctx, DoneCallback done) {
                           platform_info_.device_type());
   if (use_pjrt) {
     VLOG(2) << "Compiling using PJRT";
-    Status status = CompileToPjRtLoadedExecutable(
+    absl::Status status = CompileToPjRtLoadedExecutable(
         *ctx, platform_info_, function_, xla_compiler_args,
         DeviceCompileMode::kStrict, has_ref_vars_,
         /*may_alias_resource_update=*/true, &compilation_result, &pjrt_client,
@@ -569,7 +593,7 @@ void XlaLocalLaunchBase::ComputeAsync(OpKernelContext* ctx, DoneCallback done) {
     return;
   }
 
-  Status status = CompileToLocalExecutable(
+  absl::Status status = CompileToLocalExecutable(
       ctx, function_, /*has_ref_vars=*/has_ref_vars_, platform_info_,
       xla_compiler_args, DeviceCompileMode::kStrict,
       /*may_alias_resource_update=*/true, &client, &compilation_result,
@@ -591,7 +615,7 @@ void XlaLocalLaunchBase::ComputeAsync(OpKernelContext* ctx, DoneCallback done) {
           done);
       OP_REQUIRES_OK_ASYNC(ctx, LockVariables(absl::MakeSpan(variable_infos)),
                            done);
-      std::map<int, const Tensor*> resource_var_ptrs;
+      absl::flat_hash_map<int, const Tensor*> resource_var_ptrs;
       for (int i = 0; i < resources.size(); i++) {
         resource_var_ptrs[resources[i]] = variable_infos[i].var()->tensor();
       }
@@ -776,7 +800,7 @@ void XlaCompileOp::Compute(OpKernelContext* ctx) {
 
     // Do not alias resource updates as locking variables in XlaCompile and
     // unlocking them in XlaRun may lead to deadlocks.
-    Status status;
+    absl::Status status;
     if (use_pjrt) {
       VLOG(2) << "Using PJRT for compilation. Function name: "
               << function_.name();
@@ -915,7 +939,7 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
   const xla::HloInputOutputAliasConfig& input_output_alias =
       closure.executable()->executable()->module().input_output_alias_config();
   absl::StatusOr<std::vector<xla::ExecutionInput>> execution_inputs;
-  std::map<int, const Tensor*> snapshot_ptrs;
+  absl::flat_hash_map<int, const Tensor*> snapshot_ptrs;
   {
     tsl::profiler::TraceMe hlo_module_activity(
         [&] {

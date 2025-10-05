@@ -17,9 +17,9 @@ limitations under the License.
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "absl/status/status.h"
+#include "xla/tsl/lib/core/status_test_util.h"
 #include "tensorflow/core/tfrt/graph_executor/config.pb.h"
 #include "tensorflow/core/tfrt/graph_executor/test_config.pb.h"
-#include "tsl/lib/core/status_test_util.h"
 #include "tsl/platform/status_matchers.h"
 #include "tsl/platform/statusor.h"
 
@@ -80,7 +80,7 @@ TEST(ConfigTest, NotFound) {
                           RuntimeConfig::CreateFromProto(runtime_config_proto));
 
   EXPECT_THAT(runtime_config.Get<TestConfig2>(),
-              ::tsl::testing::StatusIs(absl::StatusCode::kNotFound));
+              absl_testing::StatusIs(absl::StatusCode::kNotFound));
 }
 
 TEST(ConfigTest, Duplicate) {
@@ -91,7 +91,7 @@ TEST(ConfigTest, Duplicate) {
 
   TF_ASSERT_OK(runtime_config.Add(expected_test_config1));
   EXPECT_THAT(runtime_config.Add(expected_test_config1),
-              ::tsl::testing::StatusIs(absl::StatusCode::kAlreadyExists));
+              absl_testing::StatusIs(absl::StatusCode::kAlreadyExists));
 }
 
 }  // namespace

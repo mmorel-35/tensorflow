@@ -14,11 +14,13 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/tfrt/runtime/work_queue_interface.h"
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
 #include <utility>
 
+#include "absl/status/statusor.h"
 #include "tfrt/host_context/execution_context.h"  // from @tf_runtime
 
 namespace tensorflow {
@@ -76,7 +78,7 @@ class DefaultWorkQueueWrapper : public WorkQueueInterface {
   }
 
   absl::StatusOr<std::unique_ptr<WorkQueueInterface>> InitializeRequest(
-      int64_t request_id) const override {
+      int64_t request_id, int priority) const override {
     return {std::make_unique<DefaultWorkQueueWrapper>(request_id, work_queue_,
                                                       GetIntraOpThreadPool())};
   }

@@ -26,6 +26,7 @@ limitations under the License.
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/synchronization/mutex.h"
+#include "absl/synchronization/notification.h"
 #include "xla/literal.h"
 #include "xla/service/compiler.h"
 #include "xla/service/maybe_owning_device_memory.h"
@@ -71,7 +72,7 @@ absl::Status TransferManager::TransferLiteralFromDevice(
   absl::Cleanup cleanup = [&]() { stream->ReturnSubStream(substream); };
 
   absl::Status ret;
-  tsl::Notification n;
+  absl::Notification n;
   TransferLiteralFromDevice(
       substream, device_buffer, literal,
       [&](absl::Status status) {
@@ -177,12 +178,14 @@ absl::Status TransferManager::ReadDynamicShapes(
             auto metadata,
             TransferArrayFromDevice(
                 stream,
-                ShapeUtil::MakeShape(S32, {buffer_shape.dimensions_size()}),
+                ShapeUtil::MakeShape(
+                    S32,
+                    {static_cast<int64_t>(buffer_shape.dimensions().size())}),
                 metadata_buffer));
 
         // Update shape size from metadata.
         for (int64_t i = 0; i < metadata.element_count(); ++i) {
-          device_sub_shape.mutable_dimensions()[i] = metadata.Get<int32_t>({i});
+          device_sub_shape.set_dimensions(i, metadata.Get<int32_t>({i}));
         }
         return absl::OkStatus();
       }));
@@ -196,7 +199,7 @@ absl::Status TransferManager::ReadDynamicShapes(
 /* static */ void TransferManager::RegisterTransferManager(
     se::Platform::Id platform_id,
     TransferManagerCreationFunction creation_function) {
-  absl::MutexLock lock(&TransferManager::platform_transfer_manager_mutex_);
+  absl::MutexLock lock(TransferManager::platform_transfer_manager_mutex_);
   auto* managers = GetPlatformTransferManagers();
   CHECK(managers->find(platform_id) == managers->end());
   (*managers)[platform_id].creation_function = creation_function;
@@ -204,7 +207,7 @@ absl::Status TransferManager::ReadDynamicShapes(
 
 /* static */ absl::StatusOr<TransferManager*> TransferManager::GetForPlatform(
     const se::Platform* platform) {
-  absl::MutexLock lock(&TransferManager::platform_transfer_manager_mutex_);
+  absl::MutexLock lock(TransferManager::platform_transfer_manager_mutex_);
   auto* managers = GetPlatformTransferManagers();
 
   auto it = managers->find(platform->id());
@@ -270,6 +273,8 @@ absl::Status TransferManager::WriteRootTupleIndexTable(
                device_memory.size());
 
   std::vector<se::DeviceMemoryBase> elements;
+  elements.reserve(
+      ShapeUtil::TupleElementCount(device_buffer.on_device_shape()));
   for (int64_t i = 0;
        i < ShapeUtil::TupleElementCount(device_buffer.on_device_shape()); ++i) {
     elements.push_back(device_buffer.buffer({i}));
@@ -290,6 +295,7 @@ absl::Status TransferManager::WriteRootTupleIndexTable(
                device_memory.size());
 
   std::vector<se::DeviceMemoryBase> elements;
+  elements.reserve(ShapeUtil::TupleElementCount(buffer_tree.shape()));
   for (int64_t i = 0; i < ShapeUtil::TupleElementCount(buffer_tree.shape());
        ++i) {
     elements.push_back(buffer_tree.element({i}).AsDeviceMemoryBase());
@@ -300,7 +306,8 @@ absl::Status TransferManager::WriteRootTupleIndexTable(
 
 absl::StatusOr<ScopedShapedBuffer> TransferManager::AllocateScopedShapedBuffer(
     const Shape& on_host_shape, se::DeviceMemoryAllocator* allocator,
-    int device_ordinal, DeviceShapeRepresentationFn shape_representation_fn) {
+    int device_ordinal, int physical_device_ordinal,
+    DeviceShapeRepresentationFn shape_representation_fn) {
   if (!LayoutUtil::HasLayout(on_host_shape)) {
     return InvalidArgument("Shape must have a layout: %s",
                            ShapeUtil::HumanStringWithLayout(on_host_shape));
@@ -312,7 +319,7 @@ absl::StatusOr<ScopedShapedBuffer> TransferManager::AllocateScopedShapedBuffer(
   TF_RET_CHECK(LayoutUtil::HasLayout(on_device_shape));
 
   ScopedShapedBuffer shaped_buffer(std::move(on_device_shape), allocator,
-                                   device_ordinal);
+                                   device_ordinal, physical_device_ordinal);
 
   // Allocate an appropriate sized buffer for each element in the shape
   // including the tuple pointer arrays.

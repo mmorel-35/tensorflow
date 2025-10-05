@@ -113,6 +113,12 @@ tf_proto {
       type: TYPE_BOOL
     }
     field {
+      name: "tfrt_use_ifrt"
+      number: 32
+      label: LABEL_OPTIONAL
+      type: TYPE_BOOL
+    }
+    field {
       name: "backend_server_port"
       number: 28
       label: LABEL_OPTIONAL
@@ -166,6 +172,24 @@ tf_proto {
       number: 26
       label: LABEL_OPTIONAL
       type: TYPE_BOOL
+    }
+    field {
+      name: "finalize_function_library_runtime"
+      number: 33
+      label: LABEL_OPTIONAL
+      type: TYPE_BOOL
+    }
+    field {
+      name: "finalize_resource_manager"
+      number: 34
+      label: LABEL_OPTIONAL
+      type: TYPE_BOOL
+    }
+    field {
+      name: "tf2xla_dump_dir"
+      number: 35
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
     }
     enum_type {
       name: "MlirBridgeRollout"

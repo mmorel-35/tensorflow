@@ -17,17 +17,19 @@ limitations under the License.
 #define XLA_SERVICE_WHILE_UTIL_H_
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/inlined_vector.h"
 #include "absl/functional/function_ref.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/service/call_inliner.h"
-#include "xla/statusor.h"
 #include "xla/xla_data.pb.h"
 
 namespace xla {
@@ -56,6 +58,29 @@ class WhileUtil {
     // operation.
     CallInliner::InlinedInstructionMap while_condition_instruction_map;
   };
+
+  // Copies `to_hoist` to the computation containing `while_instr`, hoisting
+  // its operands as needed. `to_hoist` is an instruction in
+  // `while_instr->while_body()`, and this function copies it and its operands
+  // to `while_instr->parent()` if they are loop invariant.
+  //
+  // The function performs a DFS traversal starting from `to_hoist`. If an
+  // operand of an instruction being hoisted has not yet been hoisted, it is
+  // recursively hoisted.
+  //
+  // `is_hoisted`, `get_hoisted`, and `set_hoisted` are callbacks used to
+  // manage hoisted instructions:
+  // - `is_hoisted` should return true if an instruction is already hoisted.
+  // - `get_hoisted` should return the instruction in `while_instr->parent()`
+  //   corresponding to the hoisted instruction in `while_instr->while_body()`.
+  // - `set_hoisted` is called to register a `new_instruction` in
+  //   `while_instr->parent()` as the hoisted version of `old_instruction` in
+  //   `while_instr->while_body()`.
+  static void CreateLoopInvariantCopy(
+      HloInstruction* to_hoist, HloInstruction* while_instr,
+      const std::function<bool(HloInstruction*)>& is_hoisted,
+      const std::function<HloInstruction*(HloInstruction*)>& get_hoisted,
+      const std::function<void(HloInstruction*, HloInstruction*)>& set_hoisted);
 
   // Replaces `while_instr` with a new while instruction that is equivalent to
   // `while_instr` except that it has all of the HLO instructions in
@@ -124,6 +149,11 @@ class WhileUtil {
   // question.
   static absl::flat_hash_map<int64_t, absl::InlinedVector<HloInstruction*, 1>>
   GetGTEsMapForWhileConditional(const HloComputation& while_conditional);
+
+  // Modifies the trip count of the loop by the given increment.
+  // Requires loop body to be incrementing the induction variable by exactly 1.
+  static absl::Status IncrementWhileLoopTripCount(
+      const HloInstruction& while_instruction, int32_t increment);
 };
 }  // namespace xla
 

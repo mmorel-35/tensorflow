@@ -20,7 +20,7 @@ limitations under the License.
 #include <string>
 
 #include "absl/strings/string_view.h"
-#include "tsl/platform/errors.h"
+#include "xla/tsl/platform/errors.h"
 #include "tsl/platform/regexp.h"
 #include "tsl/platform/strcat.h"
 
@@ -32,8 +32,8 @@ absl::Status FindOpRegistationFromFile(absl::string_view filename,
       R"regex((REGISTER_OP)\("([\w>]+)"\))regex"};
   std::ifstream f(std::string{filename});
   if (f.bad()) {
-    return tsl::errors::IOError(
-        tsl::strings::StrCat("Cannot open file: ", filename), errno);
+    return tsl::errors::IOError(absl::StrCat("Cannot open file: ", filename),
+                                errno);
   }
   std::string line;
   absl::string_view reg_keyword, op_name;

@@ -23,6 +23,7 @@ limitations under the License.
 
 #include "absl/numeric/bits.h"
 #include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
+#include "xla/tsl/framework/device_type.h"
 #include "tensorflow/core/framework/bfloat16.h"
 #include "tensorflow/core/framework/full_type.pb.h"
 #include "tensorflow/core/framework/numeric_types.h"
@@ -33,7 +34,6 @@ limitations under the License.
 #include "tensorflow/core/lib/gtl/inlined_vector.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/types.h"
-#include "tsl/framework/device_type.h"
 
 namespace tensorflow {
 
@@ -88,7 +88,7 @@ typedef absl::InlinedVector<std::pair<DeviceType, int32>, 4UL>
 // Convert the enums to strings for errors:
 std::string DataTypeString(DataType dtype);
 std::string DeviceTypeString(const DeviceType& device_type);
-std::string DataTypeSliceString(const DataTypeSlice dtypes);
+std::string DataTypeSliceString(DataTypeSlice dtypes);
 inline std::string DataTypeVectorString(const DataTypeVector& dtypes) {
   return DataTypeSliceString(dtypes);
 }
@@ -98,25 +98,25 @@ inline std::string DataTypeVectorString(const DataTypeVector& dtypes) {
 // cannot represent any of the DT_*_REF values.
 class DataTypeSet {
  private:
-  const uint32 mask_;
+  const uint64 mask_;
 
-  static constexpr uint32 kNumBits = 32;
+  static constexpr uint64 kNumBits = 64;
 
  public:
   constexpr DataTypeSet(const DataTypeSet& other) : mask_(other.mask_) {}
-  explicit constexpr DataTypeSet(uint32 mask) : mask_(mask) {}
+  explicit constexpr DataTypeSet(uint64 mask) : mask_(mask) {}
 
   constexpr bool Contains(DataType dt) const {
-    return (static_cast<uint32>(dt) < kNumBits) &&
-           ((mask_ >> static_cast<uint32>(dt)) & 1u) != 0u;
+    return (static_cast<uint64>(dt) < kNumBits) &&
+           ((mask_ >> static_cast<uint64>(dt)) & 1ull) != 0ull;
   }
 
   class Iterator {
     const DataTypeSet& set_;
-    uint32 pos_;
+    uint64 pos_;
 
    public:
-    Iterator(const DataTypeSet& set, uint32 pos) : set_(set), pos_(pos) {
+    Iterator(const DataTypeSet& set, uint64 pos) : set_(set), pos_(pos) {
       DCHECK_LE(pos, kNumBits);
     }
     DataType operator*() const { return static_cast<DataType>(pos_); }
@@ -124,8 +124,8 @@ class DataTypeSet {
       ++pos_;
       DCHECK_LE(pos_, kNumBits);
       if (pos_ < kNumBits) {
-        uint32 remaining_mask = set_.mask_ >> pos_;
-        if (remaining_mask != 0u) {
+        uint64 remaining_mask = set_.mask_ >> pos_;
+        if (remaining_mask != 0ull) {
           pos_ += absl::countr_zero(remaining_mask);
         }
       }
@@ -168,10 +168,10 @@ class DataTypeSet {
 
 // If "sp" names a valid type, store it in "*dt" and return true.  Otherwise,
 // return false.
-bool DataTypeFromString(StringPiece sp, DataType* dt);
+bool DataTypeFromString(absl::string_view sp, DataType* dt);
 
 constexpr inline DataTypeSet ToSet(DataType dt) {
-  return DataTypeSet(1u << static_cast<uint32>(dt));
+  return DataTypeSet(1ull << static_cast<uint64>(dt));
 }
 
 // DT_FLOAT + kDataTypeRefOffset == DT_FLOAT_REF, etc.
@@ -205,7 +205,9 @@ constexpr DataTypeSet kAllTypes =
     ToSet(DT_QUINT16) | ToSet(DT_QINT32) | ToSet(DT_HALF) | ToSet(DT_RESOURCE) |
     ToSet(DT_VARIANT) | ToSet(DT_UINT32) | ToSet(DT_UINT64) |
     ToSet(DT_BFLOAT16) | ToSet(DT_FLOAT8_E5M2) | ToSet(DT_FLOAT8_E4M3FN) |
-    ToSet(DT_INT4) | ToSet(DT_UINT4);
+    ToSet(DT_FLOAT8_E4M3FNUZ) | ToSet(DT_FLOAT8_E4M3B11FNUZ) |
+    ToSet(DT_FLOAT8_E5M2FNUZ) | ToSet(DT_INT4) | ToSet(DT_UINT4) |
+    ToSet(DT_INT2) | ToSet(DT_UINT2);
 
 inline const DataTypeSet& AllTypes() { return kAllTypes; }
 
@@ -308,7 +310,7 @@ struct EnumToDataType {};  // Specializations below
 #define MATCH_TYPE_AND_ENUM(TYPE, ENUM)                 \
   template <>                                           \
   struct DataTypeToEnum<TYPE> {                         \
-    static DataType v() { return ENUM; }                \
+    static constexpr DataType v() { return ENUM; }      \
     static DataType ref() { return MakeRefType(ENUM); } \
     static constexpr DataType value = ENUM;             \
   };                                                    \
@@ -342,14 +344,19 @@ MATCH_TYPE_AND_ENUM(bfloat16, DT_BFLOAT16);
 MATCH_TYPE_AND_ENUM(Eigen::half, DT_HALF);
 MATCH_TYPE_AND_ENUM(float8_e5m2, DT_FLOAT8_E5M2);
 MATCH_TYPE_AND_ENUM(float8_e4m3fn, DT_FLOAT8_E4M3FN);
+MATCH_TYPE_AND_ENUM(float8_e4m3fnuz, DT_FLOAT8_E4M3FNUZ);
+MATCH_TYPE_AND_ENUM(float8_e4m3b11fnuz, DT_FLOAT8_E4M3B11FNUZ);
+MATCH_TYPE_AND_ENUM(float8_e5m2fnuz, DT_FLOAT8_E5M2FNUZ);
 MATCH_TYPE_AND_ENUM(int4, DT_INT4);
 MATCH_TYPE_AND_ENUM(uint4, DT_UINT4);
+MATCH_TYPE_AND_ENUM(int2, DT_INT2);
+MATCH_TYPE_AND_ENUM(uint2, DT_UINT2);
 MATCH_TYPE_AND_ENUM(ResourceHandle, DT_RESOURCE);
 MATCH_TYPE_AND_ENUM(Variant, DT_VARIANT);
 
 template <>
 struct DataTypeToEnum<long> {
-  static DataType v() { return value; }
+  static constexpr DataType v() { return value; }
   static DataType ref() { return MakeRefType(value); }
   static constexpr DataType value = sizeof(long) == 4 ? DT_INT32 : DT_INT64;
 };
@@ -364,7 +371,7 @@ struct EnumToDataType<DT_INT64> {
 
 template <>
 struct DataTypeToEnum<unsigned long> {
-  static DataType v() { return value; }
+  static constexpr DataType v() { return value; }
   static DataType ref() { return MakeRefType(value); }
   static constexpr DataType value =
       sizeof(unsigned long) == 4 ? DT_UINT32 : DT_UINT64;
@@ -380,7 +387,7 @@ struct EnumToDataType<DT_UINT64> {
 
 template <>
 struct DataTypeToEnum<long long> {
-  static DataType v() { return DT_INT64; }
+  static constexpr DataType v() { return DT_INT64; }
   static DataType ref() { return MakeRefType(DT_INT64); }
   static constexpr DataType value = DT_INT64;
 };
@@ -391,7 +398,7 @@ struct IsValidDataType<long long> {
 
 template <>
 struct DataTypeToEnum<unsigned long long> {
-  static DataType v() { return DT_UINT64; }
+  static constexpr DataType v() { return DT_UINT64; }
   static DataType ref() { return MakeRefType(DT_UINT64); }
   static constexpr DataType value = DT_UINT64;
 };
@@ -421,15 +428,20 @@ constexpr DataTypeSet kDataTypesCanUseMemcpy =
     ToSet(DT_UINT64) | ToSet(DT_BOOL) | ToSet(DT_QINT8) | ToSet(DT_QUINT8) |
     ToSet(DT_QINT16) | ToSet(DT_QUINT16) | ToSet(DT_QINT32) |
     ToSet(DT_BFLOAT16) | ToSet(DT_HALF) | ToSet(DT_FLOAT8_E5M2) |
-    ToSet(DT_FLOAT8_E4M3FN) | ToSet(DT_INT4) | ToSet(DT_UINT4);
-inline bool DataTypeCanUseMemcpy(DataType dt) {
+    ToSet(DT_FLOAT8_E4M3FN) | ToSet(DT_FLOAT8_E4M3FNUZ) |
+    ToSet(DT_FLOAT8_E4M3B11FNUZ) | ToSet(DT_FLOAT8_E5M2FNUZ) | ToSet(DT_INT4) |
+    ToSet(DT_UINT4) | ToSet(DT_INT2) | ToSet(DT_UINT2);
+
+constexpr bool DataTypeCanUseMemcpy(DataType dt) {
   return kDataTypesCanUseMemcpy.Contains(dt);
 }
 
 // Returns true iff 'dt' is a real, non-quantized floating point type.
 constexpr DataTypeSet kDataTypeIsFloating =
     ToSet(DT_HALF) | ToSet(DT_BFLOAT16) | ToSet(DT_FLOAT) | ToSet(DT_DOUBLE) |
-    ToSet(DT_FLOAT8_E4M3FN) | ToSet(DT_FLOAT8_E5M2);
+    ToSet(DT_FLOAT8_E4M3FN) | ToSet(DT_FLOAT8_E5M2) |
+    ToSet(DT_FLOAT8_E4M3FNUZ) | ToSet(DT_FLOAT8_E4M3B11FNUZ) |
+    ToSet(DT_FLOAT8_E5M2FNUZ);
 inline bool DataTypeIsFloating(DataType dt) {
   return kDataTypeIsFloating.Contains(dt);
 }
@@ -452,7 +464,7 @@ inline bool DataTypeIsQuantized(DataType dt) {
 constexpr DataTypeSet kDataTypeIsInteger =
     ToSet(DT_INT4) | ToSet(DT_UINT4) | ToSet(DT_INT8) | ToSet(DT_UINT8) |
     ToSet(DT_INT16) | ToSet(DT_UINT16) | ToSet(DT_INT32) | ToSet(DT_UINT32) |
-    ToSet(DT_INT64) | ToSet(DT_UINT64);
+    ToSet(DT_INT64) | ToSet(DT_UINT64) | ToSet(DT_INT2) | ToSet(DT_UINT2);
 inline bool DataTypeIsInteger(DataType dt) {
   return kDataTypeIsInteger.Contains(dt);
 }
@@ -460,15 +472,15 @@ inline bool DataTypeIsInteger(DataType dt) {
 // Is the dtype a signed integral type?
 constexpr DataTypeSet kDataTypeIsSigned = ToSet(DT_INT4) | ToSet(DT_INT8) |
                                           ToSet(DT_INT16) | ToSet(DT_INT32) |
-                                          ToSet(DT_INT64);
+                                          ToSet(DT_INT64) | ToSet(DT_INT2);
 inline bool DataTypeIsSigned(DataType dt) {
   return kDataTypeIsSigned.Contains(dt);
 }
 
 // Is the dtype an unsigned integral type?
-constexpr DataTypeSet kDataTypeIsUnsigned = ToSet(DT_UINT4) | ToSet(DT_UINT8) |
-                                            ToSet(DT_UINT16) |
-                                            ToSet(DT_UINT32) | ToSet(DT_UINT64);
+constexpr DataTypeSet kDataTypeIsUnsigned =
+    ToSet(DT_UINT4) | ToSet(DT_UINT8) | ToSet(DT_UINT16) | ToSet(DT_UINT32) |
+    ToSet(DT_UINT64) | ToSet(DT_UINT2);
 inline bool DataTypeIsUnsigned(DataType dt) {
   return kDataTypeIsUnsigned.Contains(dt);
 }

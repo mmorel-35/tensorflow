@@ -1,5 +1,6 @@
 """Build rules for Tensorflow/XLA testing."""
 
+load("//tensorflow:py.default.bzl", "py_library")
 load("//tensorflow:strict.default.bzl", "py_strict_test")
 load("//tensorflow:tensorflow.bzl", "py_test")
 load("//tensorflow/compiler/tests:plugin.bzl", "plugins")
@@ -73,6 +74,12 @@ def tf_xla_py_test(
         cpu_xla_device = "CPU"
         gpu_xla_device = "GPU"
 
+    py_library(
+        name = name + "_lib",
+        srcs = srcs,
+        deps = deps,
+        testonly = 1,
+    )
     for backend in backends:
         test_name = "{}_{}".format(name, backend)
         backend_tags = ["tf_xla_{}".format(backend)]
@@ -132,6 +139,10 @@ def tf_xla_py_test(
                 # version.
                 continue
 
+            # Rules may set exec_properties, but Google has internal
+            # exec_properties values so they don't merge easily. Just strip them
+            # all for now.
+            kwargs.pop("exec_properties", {})
             test_rule(
                 name = updated_name,
                 srcs = srcs,
@@ -139,7 +150,7 @@ def tf_xla_py_test(
                 args = backend_args,
                 main = "{}.py".format(name) if main == None else main,
                 data = data + backend_data,
-                deps = deps + backend_deps + extra_dep,
+                deps = deps + backend_deps + extra_dep + [name + "_lib"],
                 tags = test_tags + extra_tag,
                 exec_properties = tf_exec_properties({"tags": test_tags}),
                 **kwargs

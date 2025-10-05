@@ -20,9 +20,10 @@ limitations under the License.
 #include <string>
 #include <utility>
 
+#include "absl/strings/string_view.h"
 #include "xla/hlo/ir/hlo_instruction.h"
-#include "xla/service/hlo_parser.h"
-#include "xla/test.h"
+#include "xla/hlo/parser/hlo_parser.h"
+#include "xla/hlo/testlib/test.h"
 #include "xla/xla_data.pb.h"
 
 namespace xla {
@@ -153,6 +154,37 @@ class HloShardingMatcher
   std::optional<HloSharding> sharding_;
 };
 
+// Verify the frontend attribute with the provided key of an instruction against
+// the provided value.
+class HloFrontendAttributeMatcher
+    : public ::testing::MatcherInterface<const HloInstruction*> {
+ public:
+  explicit HloFrontendAttributeMatcher(absl::string_view key,
+                                       absl::string_view value)
+      : key_(key), value_(value) {}
+
+  bool MatchAndExplain(const HloInstruction* instruction,
+                       ::testing::MatchResultListener* listener) const override;
+  void DescribeTo(std::ostream* os) const override;
+
+ private:
+  std::string key_, value_;
+};
+
+class HloUsedByMatcher
+    : public ::testing::MatcherInterface<const HloInstruction*> {
+ public:
+  explicit HloUsedByMatcher(::testing::Matcher<const HloInstruction*> used_by)
+      : used_by_(std::move(used_by)) {}
+
+  bool MatchAndExplain(const HloInstruction* instruction,
+                       ::testing::MatchResultListener* listener) const override;
+  void DescribeTo(std::ostream* os) const override;
+
+ private:
+  ::testing::Matcher<const HloInstruction*> used_by_;
+};
+
 // Matches a Dot HLO instruction with specific LHS and RHS contracting
 // dimensions.
 class HloDotWithContractingDimsMatcher : public HloMatcher {
@@ -264,6 +296,10 @@ namespace opcode_matchers {
         ::xla::HloOpcode::k##opcode, {operands...}));                      \
   }
 HLO_MATCHER(Abs);
+HLO_MATCHER(Acos);
+HLO_MATCHER(Acosh);
+HLO_MATCHER(Asin);
+HLO_MATCHER(Atanh);
 HLO_MATCHER(Add);
 HLO_MATCHER(AddDependency);
 HLO_MATCHER(AfterAll);
@@ -284,6 +320,7 @@ HLO_MATCHER(BitcastConvert);
 HLO_MATCHER(Broadcast);
 HLO_MATCHER(Call);
 HLO_MATCHER(Ceil);
+HLO_MATCHER(Cholesky);
 HLO_MATCHER(Clamp);
 HLO_MATCHER(CollectiveBroadcast);
 HLO_MATCHER(CollectivePermute);
@@ -297,6 +334,7 @@ HLO_MATCHER(Convolution);
 HLO_MATCHER(Copy);
 HLO_MATCHER(CopyDone);
 HLO_MATCHER(CopyStart);
+HLO_MATCHER(Cosh);
 HLO_MATCHER(Divide);
 HLO_MATCHER(Domain);
 HLO_MATCHER(DynamicSlice);
@@ -323,6 +361,8 @@ HLO_MATCHER(Outfeed);
 HLO_MATCHER(Pad);
 HLO_MATCHER(PartitionId);
 HLO_MATCHER(Power);
+HLO_MATCHER(RaggedAllToAll);
+HLO_MATCHER(RaggedDot);
 HLO_MATCHER(Recv);
 HLO_MATCHER(RecvDone);
 HLO_MATCHER(Reduce);
@@ -346,12 +386,14 @@ HLO_MATCHER(ShiftLeft);
 HLO_MATCHER(ShiftRightArithmetic);
 HLO_MATCHER(ShiftRightLogical);
 HLO_MATCHER(Sign);
+HLO_MATCHER(Sinh);
 HLO_MATCHER(Slice);
 HLO_MATCHER(Sort);
 HLO_MATCHER(Subtract);
 HLO_MATCHER(Tan);
 HLO_MATCHER(Tanh);
 HLO_MATCHER(Transpose);
+HLO_MATCHER(TriangularSolve);
 HLO_MATCHER(Tuple);
 HLO_MATCHER(While);
 HLO_MATCHER(Xor);
@@ -504,6 +546,19 @@ inline ::testing::Matcher<const ::xla::HloInstruction*> Sharding(
 inline ::testing::Matcher<const ::xla::HloInstruction*> NoSharding() {
   return ::testing::MakeMatcher(
       new ::xla::testing::HloShardingMatcher(std::nullopt));
+}
+
+// Verifies that the frontend attribute with the given key is present and
+// matches the given value.
+inline ::testing::Matcher<const ::xla::HloInstruction*> FrontendAttribute(
+    absl::string_view key, absl::string_view value) {
+  return ::testing::MakeMatcher(
+      new ::xla::testing::HloFrontendAttributeMatcher(key, value));
+}
+
+inline ::testing::Matcher<const ::xla::HloInstruction*> UsedBy(
+    ::testing::Matcher<const HloInstruction*> used_by) {
+  return ::testing::MakeMatcher(new ::xla::testing::HloUsedByMatcher(used_by));
 }
 
 inline ::testing::Matcher<const ::xla::HloInstruction*> Dot() {

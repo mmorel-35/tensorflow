@@ -15,17 +15,15 @@ limitations under the License.
 
 #include "tensorflow/compiler/mlir/op_or_arg_name_mapper.h"
 
+#include <optional>
 #include <string>
 
 #include "absl/strings/string_view.h"
 #include "llvm/ADT/APInt.h"
-#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
-#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/FormatVariadic.h"
-#include "mlir/IR/Location.h"  // from @llvm-project
 #include "mlir/IR/Operation.h"  // from @llvm-project
 #include "mlir/IR/Value.h"  // from @llvm-project
 #include "mlir/Support/LLVM.h"  // from @llvm-project
@@ -78,6 +76,23 @@ llvm::StringRef OpOrArgNameMapper::GetUniqueName(llvm::StringRef prefix,
       }
     }
   }
+}
+
+std::optional<llvm::StringRef> OpOrArgNameMapper::GetMappedName(
+    OpOrVal op_or_val) {
+  auto name = GetMappedNameView(op_or_val);
+  if (name.has_value()) return StringViewToRef(name.value());
+  return std::nullopt;
+}
+
+std::optional<absl::string_view> OpOrArgNameMapper::GetMappedNameView(
+    OpOrVal op_or_val) {
+  if (!op_or_val_to_name_.contains(op_or_val)) {
+    return std::nullopt;
+  }
+  auto& name = op_or_val_to_name_[op_or_val];
+  if (!name.empty()) return name;
+  return std::nullopt;
 }
 
 llvm::StringRef OpOrArgNameMapper::GetUniqueName(OpOrVal op_or_val,

@@ -15,11 +15,15 @@ limitations under the License.
 
 #include "tensorflow/core/kernels/sparse/kernels.h"
 
+#include <cstdint>
+
+#include <gmock/gmock.h>
 #include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/tensor_testutil.h"
 #include "tensorflow/core/framework/tensor_types.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/platform/test.h"
 #include "tsl/platform/errors.h"
@@ -93,7 +97,7 @@ TEST(SparseTensorToCSRSparseMatrix, InvalidBatchThrowsIllegalArgument) {
       coo_to_csr(/*batch_size=*/3, /*num_rows=*/3, /*num_cols=*/4,
                  indices.template matrix<int64_t>(), batch_ptr.vec<int32>(),
                  csr_row_ptr.vec<int32>(), csr_col_ind.vec<int32>()),
-      tsl::testing::StatusIs(tsl::error::Code::INVALID_ARGUMENT,
+      absl_testing::StatusIs(tsl::error::Code::INVALID_ARGUMENT,
                              ::testing::ContainsRegex(
                                  "Batch index .* is outside of valid range")));
 }
@@ -114,7 +118,7 @@ TEST(SparseTensorToCSRSparseMatrix, InvalidRowThrowsIllegalArgument) {
       coo_to_csr(/*batch_size=*/3, /*num_rows=*/3, /*num_cols=*/4,
                  indices.template matrix<int64_t>(), batch_ptr.vec<int32>(),
                  csr_row_ptr.vec<int32>(), csr_col_ind.vec<int32>()),
-      tsl::testing::StatusIs(
+      absl_testing::StatusIs(
           tsl::error::Code::INVALID_ARGUMENT,
           ::testing::ContainsRegex("Row index .* is outside of valid range")));
 }
@@ -135,7 +139,7 @@ TEST(SparseTensorToCSRSparseMatrix, InvalidColThrowsIllegalArgument) {
       coo_to_csr(/*batch_size=*/3, /*num_rows=*/3, /*num_cols=*/4,
                  indices.template matrix<int64_t>(), batch_ptr.vec<int32>(),
                  csr_row_ptr.vec<int32>(), csr_col_ind.vec<int32>()),
-      tsl::testing::StatusIs(tsl::error::Code::INVALID_ARGUMENT,
+      absl_testing::StatusIs(tsl::error::Code::INVALID_ARGUMENT,
                              ::testing::ContainsRegex(
                                  "Column index .* is outside of valid range")));
 }
@@ -157,7 +161,7 @@ TEST(SparseTensorToCSRSparseMatrix, InvalidRankIllegalArgument) {
       coo_to_csr(/*batch_size=*/3, /*num_rows=*/3, /*num_cols=*/4,
                  indices.template matrix<int64_t>(), batch_ptr.vec<int32>(),
                  csr_row_ptr.vec<int32>(), csr_col_ind.vec<int32>()),
-      tsl::testing::StatusIs(tsl::error::Code::INVALID_ARGUMENT,
+      absl_testing::StatusIs(tsl::error::Code::INVALID_ARGUMENT,
                              ::testing::ContainsRegex(
                                  "Indices must have either 2 or 3 columns.")));
 }

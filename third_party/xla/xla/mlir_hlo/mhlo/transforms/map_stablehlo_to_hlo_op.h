@@ -149,17 +149,34 @@ MAP_STABLEHLO_TO_HLO(SortOp)
 MAP_STABLEHLO_TO_HLO(SqrtOp)
 MAP_STABLEHLO_TO_HLO(SubtractOp)
 MAP_STABLEHLO_TO_HLO(TanhOp)
+MAP_STABLEHLO_TO_HLO(TanOp)
 MAP_STABLEHLO_TO_HLO(TorchIndexSelectOp)
 MAP_STABLEHLO_TO_HLO(TransposeOp)
 MAP_STABLEHLO_TO_HLO(TriangularSolveOp)
 MAP_STABLEHLO_TO_HLO(TupleOp)
-MAP_STABLEHLO_TO_HLO(UnaryEinsumOp)
+// (deprecated) MAP_STABLEHLO_TO_HLO(UnaryEinsumOp)
 MAP_STABLEHLO_TO_HLO(UniformDequantizeOp)
 MAP_STABLEHLO_TO_HLO(UniformQuantizeOp)
 MAP_STABLEHLO_TO_HLO(WhileOp)
 MAP_STABLEHLO_TO_HLO(XorOp)
 
 #undef MAP_STABLEHLO_TO_HLO
+
+#define MAP_HLO_TO_HLO_TYPE_REWRITE(OpName)   \
+  template <>                                 \
+  struct HloToStablehloOpImpl<mhlo::OpName> { \
+    using Type = mhlo::OpName;                \
+  };                                          \
+  template <>                                 \
+  struct StablehloToHloOpImpl<mhlo::OpName> { \
+    using Type = mhlo::OpName;                \
+  };
+MAP_HLO_TO_HLO_TYPE_REWRITE(AddDependencyOp)
+MAP_HLO_TO_HLO_TYPE_REWRITE(AsyncStartOp)
+MAP_HLO_TO_HLO_TYPE_REWRITE(AsyncUpdateOp)
+MAP_HLO_TO_HLO_TYPE_REWRITE(AsyncDoneOp)
+
+#undef MAP_HLO_TO_HLO_TYPE_REWRITE
 
 }  // namespace stablehlo
 }  // namespace mlir

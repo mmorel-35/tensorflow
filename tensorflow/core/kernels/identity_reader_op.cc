@@ -31,10 +31,10 @@ namespace tensorflow {
 class IdentityReader : public ReaderBase {
  public:
   explicit IdentityReader(const string& node_name)
-      : ReaderBase(strings::StrCat("IdentityReader '", node_name, "'")) {}
+      : ReaderBase(absl::StrCat("IdentityReader '", node_name, "'")) {}
 
-  Status ReadLocked(tstring* key, tstring* value, bool* produced,
-                    bool* at_end) override {
+  absl::Status ReadLocked(tstring* key, tstring* value, bool* produced,
+                          bool* at_end) override {
     *key = current_work();
     *value = current_work();
     *produced = true;
@@ -44,14 +44,14 @@ class IdentityReader : public ReaderBase {
 
   // Stores state in a ReaderBaseState proto, since IdentityReader has
   // no additional state beyond ReaderBase.
-  Status SerializeStateLocked(tstring* state) override {
+  absl::Status SerializeStateLocked(tstring* state) override {
     ReaderBaseState base_state;
     SaveBaseState(&base_state);
     SerializeToTString(base_state, state);
     return absl::OkStatus();
   }
 
-  Status RestoreStateLocked(const tstring& state) override {
+  absl::Status RestoreStateLocked(const tstring& state) override {
     ReaderBaseState base_state;
     if (!ParseProtoUnlimited(&base_state, state)) {
       return errors::InvalidArgument("Could not parse state for ", name(), ": ",

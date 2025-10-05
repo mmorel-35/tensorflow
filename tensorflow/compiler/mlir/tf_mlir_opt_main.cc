@@ -19,7 +19,6 @@ limitations under the License.
 #include "mlir/Transforms/Passes.h"  // from @llvm-project
 #include "tensorflow//compiler/mlir/tensorflow/transforms/tf_saved_model_passes.h"
 #include "tensorflow/compiler/mlir/init_mlir.h"
-#include "tensorflow/compiler/mlir/lite/transforms/passes.h"
 #include "tensorflow/compiler/mlir/quantization/stablehlo/passes/bridge/passes.h"
 #include "tensorflow/compiler/mlir/register_common_dialects.h"
 #include "tensorflow/compiler/mlir/tensorflow/transforms/host_runtime/lower_cluster_to_runtime_ops.h"
@@ -33,14 +32,10 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/tf2xla/internal/passes/clustering_passes.h"
 #include "tensorflow/compiler/mlir/tf2xla/internal/passes/mlir_to_graph_passes.h"
 #include "tensorflow/compiler/mlir/tf2xla/transforms/passes.h"
-#include "tensorflow/compiler/mlir/tosa/tf_passes.h"
-#include "tensorflow/compiler/mlir/tosa/tf_tfl_passes.h"
-#include "tensorflow/compiler/mlir/tosa/tfl_passes.h"
-#include "tensorflow/compiler/mlir/tosa/transforms/passes.h"
 #include "xla/mlir/framework/transforms/passes.h"
 #include "xla/mlir_hlo/mhlo/transforms/passes.h"
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
   tensorflow::InitMlir y(&argc, &argv);
 
   mlir::registerAllPasses();
@@ -48,7 +43,6 @@ int main(int argc, char **argv) {
   mlir::registerTensorFlowPasses();
   mlir::TFDevice::registerTensorFlowDevicePasses();
   mlir::tf_saved_model::registerTensorFlowSavedModelPasses();
-  mlir::TFL::registerTensorFlowLitePasses();
   mlir::mhlo::registerAllMhloPasses();
 
   // These are in compiler/mlir/tf2xla and not part of the above MHLO passes.
@@ -57,10 +51,6 @@ int main(int argc, char **argv) {
   mlir::quant::stablehlo::registerBridgePasses();
   tensorflow::tf2xla::internal::registerTFXLABridgeClusteringPasses();
   tensorflow::tf2xla::internal::registerTFXLABridgeMlirToGraphPasses();
-  mlir::tosa::registerLegalizeTosaPasses();
-  mlir::tosa::registerTFtoTOSALegalizationPipeline();
-  mlir::tosa::registerTFLtoTOSALegalizationPipeline();
-  mlir::tosa::registerTFTFLtoTOSALegalizationPipeline();
   mlir::tf_test::registerTensorFlowTestPasses();
   mlir::xla_framework::registerXlaFrameworkPasses();
   tensorflow::RegisterConvertMlirToXlaHloPipelineWithDefaults();

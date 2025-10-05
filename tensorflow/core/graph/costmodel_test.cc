@@ -101,13 +101,13 @@ Node* AddNode(Graph& graph, const string& name, const string& node_type,
               int num_inputs) {
   auto builder = NodeDefBuilder(name, node_type);
   for (int i = 0; i < num_inputs; ++i) {
-    builder = builder.Input(strings::StrCat("node_", i), i, DT_FLOAT);
+    builder = builder.Input(absl::StrCat("node_", i), i, DT_FLOAT);
   }
 
   NodeDef node_def;
   TF_CHECK_OK(builder.Finalize(&node_def));
 
-  Status s;
+  absl::Status s;
   Node* node = graph.AddNode(node_def, &s);
   TF_CHECK_OK(s);
   return node;

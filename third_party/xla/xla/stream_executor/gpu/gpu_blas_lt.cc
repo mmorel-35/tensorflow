@@ -16,20 +16,27 @@ limitations under the License.
 #include "xla/stream_executor/gpu/gpu_blas_lt.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <utility>
 
+#include "absl/log/log.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_format.h"
+#include "absl/synchronization/mutex.h"
 #include "xla/primitive_util.h"
 #include "xla/service/algorithm_util.h"
 #include "xla/stream_executor/blas.h"
+#include "xla/stream_executor/gpu/gpu_blas_lt.pb.h"
 #include "xla/stream_executor/stream.h"
 #include "xla/stream_executor/stream_executor.h"
+#include "xla/tsl/platform/statusor.h"
+#include "xla/tsl/protobuf/dnn.pb.h"
 #include "xla/util.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/protobuf/dnn.pb.h"
 #if GOOGLE_CUDA
 #include "tsl/platform/tensor_float_32_utils.h"
 #endif
@@ -46,12 +53,20 @@ absl::StatusOr<DataType> AsBlasDataType(PrimitiveType dtype) {
   switch (dtype) {
     case PrimitiveType::F8E5M2:
       return DataType::kF8E5M2;
+    case PrimitiveType::F8E4M3:
+      return DataType::kF8E4M3;
     case PrimitiveType::F8E4M3FN:
       return DataType::kF8E4M3FN;
     case PrimitiveType::F8E5M2FNUZ:
       return DataType::kF8E5M2FNUZ;
     case PrimitiveType::F8E4M3FNUZ:
       return DataType::kF8E4M3FNUZ;
+    case PrimitiveType::F8E3M4:
+      return DataType::kF8E3M4;
+    case PrimitiveType::F4E2M1FN:
+      return DataType::kF4E2M1FN;
+    case PrimitiveType::F8E8M0FNU:
+      return DataType::kF8E8M0FNU;
     case PrimitiveType::S8:
       return DataType::kInt8;
     case PrimitiveType::F16:
@@ -79,12 +94,20 @@ absl::StatusOr<PrimitiveType> AsXlaPrimitiveType(DataType dtype) {
   switch (dtype) {
     case DataType::kF8E5M2:
       return PrimitiveType::F8E5M2;
+    case DataType::kF8E4M3:
+      return PrimitiveType::F8E4M3;
     case DataType::kF8E4M3FN:
       return PrimitiveType::F8E4M3FN;
     case DataType::kF8E5M2FNUZ:
       return PrimitiveType::F8E5M2FNUZ;
     case DataType::kF8E4M3FNUZ:
       return PrimitiveType::F8E4M3FNUZ;
+    case DataType::kF8E3M4:
+      return PrimitiveType::F8E3M4;
+    case DataType::kF4E2M1FN:
+      return PrimitiveType::F4E2M1FN;
+    case DataType::kF8E8M0FNU:
+      return PrimitiveType::F8E8M0FNU;
     case DataType::kInt8:
       return PrimitiveType::S8;
     case DataType::kHalf:
@@ -135,15 +158,64 @@ void MatrixLayout::Transpose() {
   order = (order == Order::kRowMajor) ? Order::kColumnMajor : Order::kRowMajor;
 }
 
+absl::StatusOr<MatrixLayout> MatrixLayout::FromProto(
+    const xla::GemmConfigProto::MatrixLayout& proto) {
+  Order order;
+  switch (proto.order()) {
+    case xla::GemmConfigProto::MatrixLayout::ORDER_ROW_MAJOR:
+      order = Order::kRowMajor;
+      break;
+    case xla::GemmConfigProto::MatrixLayout::ORDER_COLUMN_MAJOR:
+      order = Order::kColumnMajor;
+      break;
+    case xla::GemmConfigProto::MatrixLayout::ORDER_UNKNOWN:
+    default:
+      return absl::InvalidArgumentError("Invalid matrix layout order");
+  }
+
+  TF_ASSIGN_OR_RETURN(blas::Transpose transpose,
+                      blas::FromProto(proto.transpose()));
+  return MatrixLayout(proto.dtype(), proto.num_rows(), proto.num_cols(), order,
+                      proto.batch_size(), proto.leading_dim_stride(),
+                      proto.batch_stride(), transpose);
+}
+
+xla::GemmConfigProto::MatrixLayout MatrixLayout::ToProto() const {
+  xla::GemmConfigProto::MatrixLayout proto;
+  switch (order) {
+    case Order::kRowMajor:
+      proto.set_order(xla::GemmConfigProto::MatrixLayout::ORDER_ROW_MAJOR);
+      break;
+    case Order::kColumnMajor:
+      proto.set_order(xla::GemmConfigProto::MatrixLayout::ORDER_COLUMN_MAJOR);
+      break;
+    default: {
+      LOG(FATAL) << "Invalid matrix layout order";
+    }
+  }
+  proto.set_num_rows(num_rows);
+  proto.set_num_cols(num_cols);
+  proto.set_batch_size(batch_size);
+  proto.set_leading_dim_stride(leading_dim_stride);
+  proto.set_batch_stride(batch_stride);
+  proto.set_transpose(blas::ToProto(transpose));
+  proto.set_dtype(dtype);
+  return proto;
+}
+
 absl::StatusOr<ComputationType> GetBlasComputationType(
     xla::PrecisionConfig::Algorithm algorithm, xla::PrimitiveType lhs_dtype,
     xla::PrimitiveType output_dtype, int64_t compute_precision) {
   if (algorithm == xla::PrecisionConfig::ALG_UNSET) {
     switch (output_dtype) {
       case PrimitiveType::F8E5M2:      // fall-through
+      case PrimitiveType::F8E4M3:      // fall-through
       case PrimitiveType::F8E4M3FN:    // fall-through
       case PrimitiveType::F8E5M2FNUZ:  // fall-through
       case PrimitiveType::F8E4M3FNUZ:  // fall-through
+      case PrimitiveType::F8E3M4:      // fall-through
+      case PrimitiveType::F4E2M1FN:    // fall-through
+      case PrimitiveType::F8E8M0FNU:   // fall-through
       case PrimitiveType::F16:         // fall-through
       case PrimitiveType::BF16:
         // Accumulate in f32 precision.
@@ -214,6 +286,139 @@ DataType GetScaleType(DataType c_type, ComputationType computation_type) {
               : c_type);
 }
 
-}  // namespace gpu
+absl::StatusOr<BlasLt::MatmulPlan*> BlasLt::GetOrCreateMatmulPlan(
+    const std::string& key, PlanCreateFunc create) {
+  absl::MutexLock lock(plan_cache_mu_);  // double mutex ???
+  auto res = plan_cache_.emplace(key, MatmulPlanPtr{});
+  // New entry inserted: always create a new matmul plan if key is empty,
+  // this is used by command_buffer_thunk test.
+  if (res.second || key.empty()) {
+    VLOG(2) << "Creating a plan for: " << key;
+    TF_ASSIGN_OR_RETURN(res.first->second, create());
+    VLOG(2) << "Plan created: cache size: " << plan_cache_.size();
+  }
+  return res.first->second.get();
+}
 
+void BlasLt::ClearMatmulPlanCache() {
+  absl::MutexLock lock(plan_cache_mu_);
+  plan_cache_.clear();
+}
+
+size_t BlasLt::GetMatmulPlanCacheSize() const {
+  absl::MutexLock lock(plan_cache_mu_);
+  return plan_cache_.size();
+}
+
+absl::StatusOr<GemmConfig> GemmConfig::FromProto(
+    const xla::GemmConfigProto& proto) {
+  TF_ASSIGN_OR_RETURN(MatrixLayout lhs_layout,
+                      MatrixLayout::FromProto(proto.lhs_layout()));
+  TF_ASSIGN_OR_RETURN(MatrixLayout rhs_layout,
+                      MatrixLayout::FromProto(proto.rhs_layout()));
+  TF_ASSIGN_OR_RETURN(MatrixLayout c_layout,
+                      MatrixLayout::FromProto(proto.c_layout()));
+  TF_ASSIGN_OR_RETURN(MatrixLayout output_layout,
+                      MatrixLayout::FromProto(proto.output_layout()));
+  std::optional<blas::ComputationType> compute_type =
+      blas::FromProto(proto.compute_type());
+  return GemmConfig{
+      std::move(lhs_layout),
+      std::move(rhs_layout),
+      std::move(c_layout),
+      std::move(output_layout),
+      {proto.alpha_real(), proto.alpha_imag()},
+      proto.beta(),
+      proto.compute_precision(),
+      proto.precision_algorithm(),
+      proto.has_algorithm() ? std::optional(proto.algorithm()) : std::nullopt,
+      proto.grad_x(),
+      proto.grad_y(),
+      compute_type};
+}
+
+xla::GemmConfigProto GemmConfig::ToProto() const {
+  xla::GemmConfigProto proto;
+  *proto.mutable_lhs_layout() = lhs_layout.ToProto();
+  *proto.mutable_rhs_layout() = rhs_layout.ToProto();
+  *proto.mutable_c_layout() = c_layout.ToProto();
+  *proto.mutable_output_layout() = output_layout.ToProto();
+  proto.set_alpha_real(alpha.real());
+  proto.set_alpha_imag(alpha.imag());
+  proto.set_beta(beta);
+  proto.set_compute_precision(compute_precision);
+  proto.set_precision_algorithm(precision_algorithm);
+  if (algorithm.has_value()) {
+    proto.set_algorithm(*algorithm);
+  }
+  proto.set_grad_x(grad_x);
+  proto.set_grad_y(grad_y);
+  if (compute_type.has_value()) {
+    proto.set_compute_type(blas::ToProto(*compute_type));
+  }
+  return proto;
+}
+
+absl::StatusOr<BlasLt::Epilogue> BlasLt::EpilogueFromProto(
+    const xla::BlasLtEpilogueProto& proto) {
+  switch (proto) {
+    case xla::BlasLtEpilogueProto::EPILOGUE_DEFAULT:
+      return Epilogue::kDefault;
+    case xla::BlasLtEpilogueProto::EPILOGUE_RELU:
+      return Epilogue::kReLU;
+    case xla::BlasLtEpilogueProto::EPILOGUE_BIAS:
+      return Epilogue::kBias;
+    case xla::BlasLtEpilogueProto::EPILOGUE_BIAS_THEN_RELU:
+      return Epilogue::kBiasThenReLU;
+    case xla::BlasLtEpilogueProto::EPILOGUE_GELU:
+      return Epilogue::kGELU;
+    case xla::BlasLtEpilogueProto::EPILOGUE_SILU:
+      return Epilogue::kSILU;
+    case xla::BlasLtEpilogueProto::EPILOGUE_SILU_WITH_AUX:
+      return Epilogue::kSILUWithAux;
+    case xla::BlasLtEpilogueProto::EPILOGUE_GELU_WITH_AUX:
+      return Epilogue::kGELUWithAux;
+    case xla::BlasLtEpilogueProto::EPILOGUE_BIAS_THEN_GELU:
+      return Epilogue::kBiasThenGELU;
+    case xla::BlasLtEpilogueProto::EPILOGUE_BIAS_THEN_SILU:
+      return Epilogue::kBiasThenSILU;
+    case xla::BlasLtEpilogueProto::EPILOGUE_BIAS_THEN_GELU_WITH_AUX:
+      return Epilogue::kBiasThenGELUWithAux;
+    case xla::BlasLtEpilogueProto::EPILOGUE_BIAS_THEN_SILU_WITH_AUX:
+      return Epilogue::kBiasThenSILUWithAux;
+    default:
+      return absl::InvalidArgumentError("Unsupported epilogue type");
+  }
+}
+
+xla::BlasLtEpilogueProto BlasLt::EpilogueToProto(Epilogue epilogue) {
+  switch (epilogue) {
+    case Epilogue::kDefault:
+      return xla::BlasLtEpilogueProto::EPILOGUE_DEFAULT;
+    case Epilogue::kReLU:
+      return xla::BlasLtEpilogueProto::EPILOGUE_RELU;
+    case Epilogue::kBias:
+      return xla::BlasLtEpilogueProto::EPILOGUE_BIAS;
+    case Epilogue::kBiasThenReLU:
+      return xla::BlasLtEpilogueProto::EPILOGUE_BIAS_THEN_RELU;
+    case Epilogue::kGELU:
+      return xla::BlasLtEpilogueProto::EPILOGUE_GELU;
+    case Epilogue::kSILU:
+      return xla::BlasLtEpilogueProto::EPILOGUE_SILU;
+    case Epilogue::kSILUWithAux:
+      return xla::BlasLtEpilogueProto::EPILOGUE_SILU_WITH_AUX;
+    case Epilogue::kGELUWithAux:
+      return xla::BlasLtEpilogueProto::EPILOGUE_GELU_WITH_AUX;
+    case Epilogue::kBiasThenGELU:
+      return xla::BlasLtEpilogueProto::EPILOGUE_BIAS_THEN_GELU;
+    case Epilogue::kBiasThenSILU:
+      return xla::BlasLtEpilogueProto::EPILOGUE_BIAS_THEN_SILU;
+    case Epilogue::kBiasThenGELUWithAux:
+      return xla::BlasLtEpilogueProto::EPILOGUE_BIAS_THEN_GELU_WITH_AUX;
+    case Epilogue::kBiasThenSILUWithAux:
+      return xla::BlasLtEpilogueProto::EPILOGUE_BIAS_THEN_SILU_WITH_AUX;
+  }
+}
+
+}  // namespace gpu
 }  // namespace stream_executor

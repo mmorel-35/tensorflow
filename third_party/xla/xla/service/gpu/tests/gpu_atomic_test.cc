@@ -13,9 +13,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-
+#include <gtest/gtest.h>
 #include "xla/service/gpu/tests/gpu_codegen_test.h"
-#include "tsl/platform/test.h"
+#include "xla/stream_executor/cuda/cuda_compute_capability.h"
 
 namespace xla {
 namespace gpu {
@@ -101,10 +101,10 @@ TEST_F(GpuAtomicTest, TestAddAtomicF32) {
 )";
 
   CompileAndVerifyIr(hlo_string, is_built_with_rocm_ ? R"(
-CHECK: atomicrmw fadd ptr addrspace(1) %[[ADDR:.*]], float %[[VALUE:.*]] syncscope("agent") seq_cst
+CHECK: atomicrmw fadd ptr %[[ADDR:.*]], float %[[VALUE:.*]] syncscope("agent-one-as") monotonic
 )"
                                                      : R"(
-CHECK: atomicrmw fadd ptr %[[ADDR:.*]], float %[[VALUE:.*]] seq_cst
+CHECK: atomicrmw fadd ptr %[[ADDR:.*]], float %[[VALUE:.*]] monotonic
 )");
 }
 
@@ -114,7 +114,8 @@ TEST_F(GpuAtomicTest, TestAddAtomicF64) {
            .default_stream_executor()
            ->GetDeviceDescription()
            .cuda_compute_capability()
-           .IsAtLeast(6)) {
+           .SupportsAllFeaturesOf(
+               stream_executor::CudaComputeCapability::Pascal())) {
     return;
   }
 
@@ -141,7 +142,7 @@ TEST_F(GpuAtomicTest, TestAddAtomicF64) {
 )";
 
   CompileAndVerifyIr(hlo_string, R"(
-CHECK: atomicrmw fadd ptr %[[ADDR:.*]], double %[[VALUE:.*]] seq_cst
+CHECK: atomicrmw fadd ptr %[[ADDR:.*]], double %[[VALUE:.*]] monotonic
 )");
 }
 

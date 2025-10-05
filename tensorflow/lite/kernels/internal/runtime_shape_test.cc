@@ -12,6 +12,8 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+// This file is copied to MLIR to avoid a dependency on TFLite.
+// LINT.IfChange
 
 #include "tensorflow/lite/kernels/internal/runtime_shape.h"
 
@@ -237,8 +239,10 @@ TEST(RuntimeShapeTest, TestExtendedShapeSmallToBig) {
 TEST_P(RuntimeShapeTest, TestFlatSize) {
   const std::vector<int32_t> src = IotaVector(kSmallSize);
   const RuntimeShape shape(src.size(), src.data());
-  EXPECT_EQ(shape.FlatSize(),
-            std::reduce(src.begin(), src.end(), 1, std::multiplies<int>{}));
+  int32_t flat_size = 1;
+  for (std::vector<int>::const_iterator it = src.begin(); it != src.end(); ++it)
+    flat_size *= *it;
+  EXPECT_EQ(shape.FlatSize(), flat_size);
 }
 
 INSTANTIATE_TEST_SUITE_P(BigSmall, RuntimeShapeTest,
@@ -249,3 +253,5 @@ INSTANTIATE_TEST_SUITE_P(BigSmall, RuntimeShapeTest,
 
 }  // namespace
 }  // namespace tflite
+
+// LINT.ThenChange(//tensorflow/compiler/mlir/lite/kernels/internal/runtime_shape_test.cc)

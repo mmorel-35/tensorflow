@@ -1,4 +1,4 @@
-// RUN: tf-opt %s -tfl-legalize-tf --cse -split-input-file| FileCheck %s --dump-input=fail
+// RUN: litert-opt %s -tfl-legalize-tf --cse -split-input-file| FileCheck %s --dump-input=fail
 
 func.func @add(%arg0: tensor<1xf32>, %arg1: tensor<1xf32>) -> tensor<1xf32> {
   %0 = "tf.Add"(%arg0, %arg1) : (tensor<1xf32>, tensor<1xf32>) -> tensor<1xf32>
@@ -151,6 +151,17 @@ func.func @softmax(%arg0: tensor<8x16xf32>) -> tensor<8x16xf32> {
 
 // CHECK-LABEL: softmax
 // CHECK:  "tfl.softmax"(%arg0) <{beta = 1.000000e+00 : f32}> : (tensor<8x16xf32>) -> tensor<8x16xf32>
+}
+
+func.func @softsign(%arg0: tensor<8x16xf32>) -> tensor<8x16xf32> {
+  %0 = "tf.Softsign"(%arg0) : (tensor<8x16xf32>) -> tensor<8x16xf32>
+  func.return %0 : tensor<8x16xf32>
+
+  // CHECK-LABEL: softsign
+  // CHECK:  %[[abs:.*]] = "tfl.abs"(%arg0) : (tensor<8x16xf32>) -> tensor<8x16xf32>
+  // CHECK:  %[[cst:.*]] = arith.constant dense<1.000000e+00> : tensor<f32>
+  // CHECK:  %[[add_result:.*]] = tfl.add(%[[abs]], %[[cst]]) <{fused_activation_function = "NONE"}> : (tensor<8x16xf32>, tensor<f32>) -> tensor<8x16xf32>
+  // CHECK: %[[RES0:.*]] = tfl.div %arg0, %[[add_result]] {fused_activation_function = "NONE"} : tensor<8x16xf32>
 }
 
 func.func @softplus(%arg0: tensor<8x16xf32>) -> tensor<8x16xf32> {
@@ -1421,7 +1432,7 @@ func.func @strided_slice_big_dims(%arg0: tensor<5x6x7xf32>, %arg1: tensor<3xi32>
   %0 = "tf.StridedSlice"(%arg0, %arg1, %arg2, %arg3) {begin_mask = 0 : i64, ellipsis_mask = 0 : i64, end_mask = 0 : i64, new_axis_mask = 7 : i64, shrink_axis_mask = 0 : i64, offset = false} : (tensor<5x6x7xf32>, tensor<3xi32>, tensor<3xi32>, tensor<3xi32>) -> tensor<1x1x5x6x7xf32>
   func.return %0 : tensor<1x1x5x6x7xf32>
   // CHECK-LABEL: strided_slice_big_dims
-  // CHECK: %0 = "tf.StridedSlice"(%arg0, %arg1, %arg2, %arg3) <{begin_mask = 0 : i64, ellipsis_mask = 0 : i64, end_mask = 0 : i64, new_axis_mask = 7 : i64, shrink_axis_mask = 0 : i64}> {offset = false} : (tensor<5x6x7xf32>, tensor<3xi32>, tensor<3xi32>, tensor<3xi32>) -> tensor<1x1x5x6x7xf32>
+  // CHECK: %0 = "tfl.strided_slice"(%arg0, %arg1, %arg2, %arg3) <{begin_mask = 0 : i32, ellipsis_mask = 0 : i32, end_mask = 0 : i32, new_axis_mask = 7 : i32, offset = false, shrink_axis_mask = 0 : i32}> : (tensor<5x6x7xf32>, tensor<3xi32>, tensor<3xi32>, tensor<3xi32>) -> tensor<1x1x5x6x7xf32>
 }
 
 func.func @slice1Tensor(%arg0: tensor<2x3x5xf32>, %arg1: tensor<3xi32>, %arg2: tensor<3xi32>) -> tensor<?x3x5xf32> {
@@ -1985,12 +1996,19 @@ func.func @mul_with_int32_7d_inputs(%arg0: tensor<1x1x1x1x1x3x1xi32>, %arg1 : te
 
 // CHECK-LABEL: testDivWithBroadcastToOps
 func.func @testDivWithBroadcastToOps(%arg0: tensor<1x2x1x4x5x6xi32>, %arg1: tensor<1x2x3x4x5x1xi32>) -> tensor<1x2x3x4x5x6xi32> {
-  // CHECK: [[CST:%.*]] = arith.constant dense<[1, 2, 3, 4, 5, 6]> : tensor<6xi64>
-  // CHECK: [[BCAST:%.*]] = "tfl.broadcast_to"(%arg0, [[CST]])
-  // CHECK: [[BCAST_1:%.*]] = "tfl.broadcast_to"(%arg1, [[CST]])
-  // CHECK: tfl.div [[BCAST]], [[BCAST_1]] {fused_activation_function = "NONE"} : tensor<1x2x3x4x5x6xi32>
+  // CHECK: tfl.div(%arg0, %arg1) <{fused_activation_function = "NONE"}> : (tensor<1x2x1x4x5x6xi32>, tensor<1x2x3x4x5x1xi32>) -> tensor<1x2x3x4x5x6xi32>
   %0 = "tf.Div"(%arg0, %arg1) : (tensor<1x2x1x4x5x6xi32>, tensor<1x2x3x4x5x1xi32>) -> tensor<1x2x3x4x5x6xi32>
   func.return %0 : tensor<1x2x3x4x5x6xi32>
+}
+
+// CHECK-LABEL: testDivWithBroadcastToOps7D
+func.func @testDivWithBroadcastToOps7D(%arg0: tensor<1x2x1x4x5x6x7xi32>, %arg1: tensor<1x2x3x4x5x1x7xi32>) -> tensor<1x2x3x4x5x6x7xi32> {
+  // CHECK: [[CST:%.*]] = arith.constant dense<[1, 2, 3, 4, 5, 6, 7]> : tensor<7xi64>
+  // CHECK: [[BCAST:%.*]] = "tfl.broadcast_to"(%arg0, [[CST]])
+  // CHECK: [[BCAST_1:%.*]] = "tfl.broadcast_to"(%arg1, [[CST]])
+  // CHECK: tfl.div [[BCAST]], [[BCAST_1]] {fused_activation_function = "NONE"} : tensor<1x2x3x4x5x6x7xi32>
+  %0 = "tf.Div"(%arg0, %arg1) : (tensor<1x2x1x4x5x6x7xi32>, tensor<1x2x3x4x5x1x7xi32>) -> tensor<1x2x3x4x5x6x7xi32>
+  func.return %0 : tensor<1x2x3x4x5x6x7xi32>
 }
 
 // CHECK-LABEL: testFloorDivWithBroadcastToOps
@@ -2571,6 +2589,30 @@ func.func @dynamic_update_slice(%arg0: tensor<4x5xi32>, %arg1: tensor<1x5xi32>, 
 
 // CHECK-LABEL:dynamic_update_slice
 // CHECK: "tfl.dynamic_update_slice"(%arg0, %arg1, %arg2) : (tensor<4x5xi32>, tensor<1x5xi32>, tensor<2xi32>) -> tensor<4x5xi32>
+}
+
+func.func @dynamic_update_slice_i64_indice(%arg0: tensor<4x5xi32>, %arg1: tensor<1x5xi32>, %arg2: tensor<2xi64>) -> tensor<4x5xi32> {
+  %0 = "tf.XlaDynamicUpdateSlice"(%arg0, %arg1, %arg2) : (tensor<4x5xi32>, tensor<1x5xi32>, tensor<2xi64>) -> tensor<4x5xi32>
+  func.return %0 : tensor<4x5xi32>
+
+// CHECK-LABEL:dynamic_update_slice_i64_indice
+// CHECK: "tfl.dynamic_update_slice"(%arg0, %arg1, %arg2) : (tensor<4x5xi32>, tensor<1x5xi32>, tensor<2xi64>) -> tensor<4x5xi32>
+}
+
+func.func @dynamic_update_slice_f16_arg(%arg0: tensor<4x5xf16>, %arg1: tensor<1x5xf16>, %arg2: tensor<2xi32>) -> tensor<4x5xf16> {
+  %0 = "tf.XlaDynamicUpdateSlice"(%arg0, %arg1, %arg2) : (tensor<4x5xf16>, tensor<1x5xf16>, tensor<2xi32>) -> tensor<4x5xf16>
+  func.return %0 : tensor<4x5xf16>
+
+// CHECK-LABEL:dynamic_update_slice_f16_arg
+// CHECK: "tfl.dynamic_update_slice"(%arg0, %arg1, %arg2) : (tensor<4x5xf16>, tensor<1x5xf16>, tensor<2xi32>) -> tensor<4x5xf16>
+}
+
+func.func @dynamic_update_slice_i16(%arg0: tensor<4x5xi16>, %arg1: tensor<1x5xi16>, %arg2: tensor<2xi32>) -> tensor<4x5xi16> {
+  %0 = "tf.XlaDynamicUpdateSlice"(%arg0, %arg1, %arg2) : (tensor<4x5xi16>, tensor<1x5xi16>, tensor<2xi32>) -> tensor<4x5xi16>
+  func.return %0 : tensor<4x5xi16>
+
+// CHECK-LABEL:dynamic_update_slice_i16
+// CHECK: "tfl.dynamic_update_slice"(%arg0, %arg1, %arg2) : (tensor<4x5xi16>, tensor<1x5xi16>, tensor<2xi32>) -> tensor<4x5xi16>
 }
 
 func.func @testReluI32(%arg0: tensor<1xi32>) -> tensor<1xi32> {

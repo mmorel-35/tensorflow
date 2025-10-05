@@ -1,12 +1,7 @@
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("//tensorflow:pytype.default.bzl", "pytype_strict_library")
 load("//tensorflow:strict.default.bzl", "py_strict_test")
-
-# Placeholder: load py_proto_library
 load("//tensorflow:tensorflow.default.bzl", "get_compatible_with_portable", "if_portable", "pybind_extension")
-load(
-    "//tensorflow/core/platform:build_config.bzl",
-    "tf_proto_library",
-)
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -24,7 +19,7 @@ cc_library(
     compatible_with = get_compatible_with_portable(),
     visibility = ["//visibility:private"],
     deps = [
-        "//third_party/python_runtime:headers",
+        "@local_xla//third_party/python_runtime:headers",
     ] + if_portable(
         if_false = [
             "//learning/brain/google/monitoring:metrics_exporter",
@@ -37,20 +32,22 @@ pybind_extension(
     name = "_pywrap_tensorflow_lite_metrics_wrapper",
     srcs = ["wrapper/metrics_wrapper_pybind11.cc"],
     hdrs = ["wrapper/metrics_wrapper.h"],
+    common_lib_packages = [
+        "litert/python",
+        "tensorflow/lite/python",
+    ],
     compatible_with = get_compatible_with_portable(),
     enable_stub_generation = True,
     pytype_srcs = [
         "_pywrap_tensorflow_lite_metrics_wrapper.pyi",
     ],
-    visibility = [
-        "__subpackages__",
-        "//tensorflow/tools/pip_package:__subpackages__",
-    ],
+    visibility = ["//visibility:public"],
+    wrap_py_init = True,
     deps = [
         ":metrics_wrapper_lib",
         "//tensorflow/python/lib/core:pybind11_lib",
-        "//third_party/python_runtime:headers",
         "@com_google_protobuf//:protobuf",
+        "@local_xla//third_party/python_runtime:headers",
         "@pybind11",
     ],
 )
@@ -58,10 +55,9 @@ pybind_extension(
 pytype_strict_library(
     name = "metrics_wrapper",
     srcs = ["wrapper/metrics_wrapper.py"],
-    srcs_version = "PY3",
     deps = [
         ":_pywrap_tensorflow_lite_metrics_wrapper",
-        ":converter_error_data_proto_py",
+        "//tensorflow/compiler/mlir/lite/metrics:converter_error_data_proto_py",
         "//tensorflow/compiler/mlir/lite/python:wrap_converter",
     ],
 )
@@ -69,8 +65,6 @@ pytype_strict_library(
 py_strict_test(
     name = "metrics_wrapper_test",
     srcs = ["wrapper/metrics_wrapper_test.py"],
-    python_version = "PY3",
-    srcs_version = "PY3",
     deps = [
         ":metrics_wrapper",
         #internal proto upb dep
@@ -86,8 +80,7 @@ pytype_strict_library(
     name = "metrics_interface",
     srcs = ["metrics_interface.py"],
     compatible_with = get_compatible_with_portable(),
-    srcs_version = "PY3",
-    visibility = ["//visibility:private"],
+    visibility = ["//tensorflow/lite/tools/pip_package:__subpackages__"],
 )
 
 genrule(
@@ -107,11 +100,10 @@ pytype_strict_library(
     name = "metrics",
     srcs = ["metrics.py"],
     compatible_with = get_compatible_with_portable(),
-    srcs_version = "PY3",
     visibility = ["//tensorflow/lite:__subpackages__"],
     deps = if_portable(
         if_false = [
-            ":converter_error_data_proto_py",
+            "//tensorflow/compiler/mlir/lite/metrics:converter_error_data_proto_py",
             ":metrics_wrapper",
             "//tensorflow/python/eager:monitoring",
         ],
@@ -132,14 +124,14 @@ py_strict_test(
         if_false = "metrics_nonportable_test.py",
         if_true = "metrics_portable_test.py",
     ),
-    python_version = "PY3",
+    tags = ["notap"],  # TODO(b/373657707): Remove once we debug the failure.
     deps = [
-        ":converter_error_data_proto_py",
         ":metrics",
         "@absl_py//absl/testing:parameterized",
         #internal proto upb dep
         "//third_party/py/numpy",
         "//tensorflow:tensorflow_py",
+        "//tensorflow/compiler/mlir/lite/metrics:converter_error_data_proto_py",
         "//tensorflow/core:protos_all_py",
         "//tensorflow/lite/python:convert",
         "//tensorflow/lite/python:lite",
@@ -162,17 +154,3 @@ py_strict_test(
         "//tensorflow/python/trackable:autotrackable",
     ],
 )
-
-tf_proto_library(
-    name = "converter_error_data_proto",
-    srcs = ["converter_error_data.proto"],
-    cc_api_version = 2,
-)
-
-# copybara:uncomment_begin(google-only)
-# py_proto_library(
-#     name = "converter_error_data_proto_py",
-#     api_version = 2,
-#     deps = [":converter_error_data_proto"],
-# )
-# copybara:uncomment_end

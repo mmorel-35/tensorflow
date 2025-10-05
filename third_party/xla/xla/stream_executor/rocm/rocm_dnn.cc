@@ -18,24 +18,42 @@ limitations under the License.
 #include <hip/hip_bfloat16.h>
 #include <hip/hip_fp16.h>
 
-#include <functional>
+#include <algorithm>
+#include <array>
+#include <cassert>
+#include <cstddef>
+#include <cstdint>
+#include <iterator>
+#include <map>
 #include <memory>
+#include <optional>
+#include <set>
+#include <string>
+#include <type_traits>
+#include <utility>
+#include <vector>
 
 #include "absl/algorithm/container.h"
+#include "absl/base/optimization.h"
 #include "absl/base/thread_annotations.h"
+#include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
+#include "absl/synchronization/mutex.h"
+#include "absl/time/time.h"
 #include "absl/types/span.h"
-#include "Eigen/Core"  // from @eigen_archive
+#include "Eigen/Core"
+#include "rocm/include/hip/amd_detail/amd_hip_bfloat16.h"
+#include "rocm/include/hip/amd_detail/hip_fp16_gcc.h"
 #include "rocm/include/miopen/miopen.h"
 #include "rocm/rocm_config.h"
+#include "xla/stream_executor/activate_context.h"
+#include "xla/stream_executor/blas.h"
+#include "xla/stream_executor/device_memory.h"
+#include "xla/stream_executor/device_memory_allocator.h"
 #include "xla/stream_executor/dnn.h"
-#include "xla/stream_executor/gpu/gpu_activation.h"
-#include "xla/stream_executor/gpu/gpu_driver.h"
-#include "xla/stream_executor/gpu/gpu_executor.h"
-#include "xla/stream_executor/gpu/gpu_stream.h"
-#include "xla/stream_executor/gpu/gpu_timer.h"
-#include "xla/stream_executor/platform/dso_loader.h"
+#include "xla/stream_executor/event_based_timer.h"
+#include "xla/stream_executor/numeric_options.h"
 #include "xla/stream_executor/platform/initialize.h"
 #include "xla/stream_executor/plugin_registry.h"
 #include "xla/stream_executor/rocm/rocm_diagnostics.h"
@@ -43,12 +61,19 @@ limitations under the License.
 #include "xla/stream_executor/scratch_allocator.h"
 #include "xla/stream_executor/stream.h"
 #include "xla/stream_executor/stream_executor.h"
+#include "xla/tsl/platform/errors.h"
+#include "xla/tsl/platform/logging.h"
+#include "xla/tsl/platform/macros.h"
+#include "xla/tsl/platform/status.h"
+#include "xla/tsl/platform/statusor.h"
 #include "xla/tsl/util/determinism.h"
 #include "xla/tsl/util/env_var.h"
-#include "tsl/platform/env.h"
-#include "tsl/platform/errors.h"
 #include "tsl/platform/hash.h"
-#include "tsl/platform/logging.h"
+
+#ifndef PLATFORM_GOOGLE
+#include "xla/tsl/platform/env.h"
+#include "tsl/platform/dso_loader.h"
+#endif
 
 namespace {
 
@@ -79,7 +104,7 @@ namespace gpu {
 
 // Populates the profile result if not empty.
 static absl::Status PopulateProfileFromTimer(
-    std::optional<GpuTimer>& timer, const dnn::AlgorithmDesc& algorithm,
+    EventBasedTimer* timer, const dnn::AlgorithmDesc& algorithm,
     dnn::ProfileResult* profile_result,
     std::optional<uint64_t> scratch_size = std::nullopt) {
   if (profile_result) {
@@ -215,16 +240,18 @@ class MIOpenHandle {
  public:
   // Takes ownership of the executor context and the lock to access MIOpen
   // using handle.
-  MIOpenHandle(GpuExecutor* executor, std::unique_ptr<absl::MutexLock> lock,
+  MIOpenHandle(StreamExecutor* executor, std::unique_ptr<absl::MutexLock> lock,
                miopenHandle_t handle)
-      : context_(executor), lock_(std::move(lock)), handle_(handle) {}
+      : context_(executor->Activate()),
+        lock_(std::move(lock)),
+        handle_(handle) {}
 
   // Returns MIOpen handle. To be passed directly to MIOpen APIs, don't keep
   // a copy.
   miopenHandle_t handle() const { return handle_; }
 
  private:
-  gpu::ScopedActivateExecutorContext context_;
+  std::unique_ptr<ActivateContext> context_;
   std::unique_ptr<absl::MutexLock> lock_;
   miopenHandle_t handle_;  // Not owned.
 };
@@ -248,7 +275,7 @@ namespace wrap {
     static const char* kName;                                            \
     using FuncPtrT = std::add_pointer<decltype(::__name)>::type;         \
     static void* GetDsoHandle() {                                        \
-      auto s = internal::CachedDsoLoader::GetMiopenDsoHandle();          \
+      auto s = tsl::internal::CachedDsoLoader::GetMiopenDsoHandle();     \
       return s.value();                                                  \
     }                                                                    \
     static FuncPtrT LoadOrDie() {                                        \
@@ -524,6 +551,10 @@ namespace wrap {
 // clang-format on
 #endif
 
+#if (MIOPEN_BETA_API && TF_ROCM_VERSION >= 60300)
+STREAM_EXECUTOR_MIOPEN_WRAP(miopenSetTensorDescriptorV2)
+#endif
+
 MIOPEN_DNN_ROUTINE_EACH(STREAM_EXECUTOR_MIOPEN_WRAP)
 
 #undef MIOPEN_DNN_ROUTINE_EACH
@@ -597,7 +628,7 @@ class CachedFusionPlans {
                            miopenFusionPlanDescriptor_t* fusion_plan,
                            miopenFusionDirection_t fusion_direction,
                            miopenTensorDescriptor_t input_descriptor) {
-    absl::MutexLock lock{&cached_plans_mutex};
+    absl::MutexLock lock{cached_plans_mutex};
 
     bool found_cached_plan = false;
 
@@ -623,7 +654,7 @@ class CachedFusionPlans {
 
   // Need to figure out the right place to call this routine
   static void Clear() {
-    absl::MutexLock lock{&cached_plans_mutex};
+    absl::MutexLock lock{cached_plans_mutex};
 
     for (auto it : cached_plans) {
       auto status = wrap::miopenDestroyFusionPlan(it.second);
@@ -640,13 +671,13 @@ class CachedFusionPlans {
 
   // Is the Fusion plan corresponding to this hash unsupported
   static bool IsUnsupportedFusionPlan(uint64_t hash) {
-    absl::MutexLock lock{&cached_plans_mutex};
+    absl::MutexLock lock{cached_plans_mutex};
     return unsupported_plans.count(hash) > 0;
   }
 
   // Mark the given hash value as corresponding to an unsupported fusion plan
   static void MarkFusionPlanUnsupported(uint64_t hash) {
-    absl::MutexLock lock{&cached_plans_mutex};
+    absl::MutexLock lock{cached_plans_mutex};
     unsupported_plans.insert(hash);
   }
 
@@ -716,7 +747,7 @@ class MIOpenAccess {
   explicit MIOpenAccess(miopenHandle_t handle) : handle_(handle) {}
 
   ~MIOpenAccess() {
-    absl::MutexLock lock(&mutex_);
+    absl::MutexLock lock(mutex_);
     wrap::miopenDestroy(handle_);
   }
 
@@ -734,10 +765,13 @@ class MIOpenAccess {
   // The null stream synchronizes with all other streams and it is
   // therefore a bad idea (performance wise) to call any MIOpen APIs that
   // enqueue work in the stream.
-  MIOpenHandle GetHandle(GpuExecutor* executor, Stream* stream) {
+  MIOpenHandle GetHandle(StreamExecutor* executor, Stream* stream) {
     auto lock = std::make_unique<absl::MutexLock>(&mutex_);
     mutex_.AssertHeld();
-    hipStream_t hip_stream = stream ? AsGpuStreamValue(stream) : nullptr;
+    hipStream_t hip_stream =
+        stream ? static_cast<hipStream_t>(
+                     stream->platform_specific_handle().stream)
+               : nullptr;
     auto status = wrap::miopenSetStream(handle_, hip_stream);
     CHECK_EQ(status, miopenStatusSuccess) << "Failed to set MIOpen stream.";
     return MIOpenHandle(executor, std::move(lock), handle_);
@@ -751,7 +785,7 @@ class MIOpenAccess {
   miopenHandle_t handle_ ABSL_GUARDED_BY(mutex_);  // Owned.
 };
 
-MIOpenSupport::MIOpenSupport(GpuExecutor* parent) : parent_(parent) {
+MIOpenSupport::MIOpenSupport(StreamExecutor* parent) : parent_(parent) {
   // by default, the Get*Algorithm API will return the list of all applicable
   // algorithms
   return_best_algo_only_ = false;
@@ -774,12 +808,12 @@ MIOpenSupport::MIOpenSupport(GpuExecutor* parent) : parent_(parent) {
 }
 
 absl::Status MIOpenSupport::Init() {
-  ScopedActivateExecutorContext context(parent_);
+  std::unique_ptr<ActivateContext> context = parent_->Activate();
   miopenHandle_t miopen_handle = nullptr;
   auto status = wrap::miopenCreateWithStream(
-      reinterpret_cast<miopenHandle_t*>(&miopen_handle), (hipStream_t)(0));
+      reinterpret_cast<miopenHandle_t*>(&miopen_handle), (hipStream_t) nullptr);
   if (status == miopenStatusSuccess) {
-    miopen_.reset(new MIOpenAccess(miopen_handle));
+    miopen_ = std::make_unique<MIOpenAccess>(miopen_handle);
     return absl::OkStatus();
   }
 
@@ -842,7 +876,7 @@ struct ScopedDescriptor {
   }
 
   ~ScopedDescriptor() {
-    if (handle_ != nullptr) return;
+    if (handle_ == nullptr) return;
 
     auto status = miDestroyObject(
         handle_);  // wrap::miopenDestroyTensorDescriptor(handle_);
@@ -887,6 +921,11 @@ absl::StatusOr<ScopedTensorDescriptor> scope(
       std::vector<int64_t> dims64 =
           batch_descriptor.full_dims(dnn::DataLayout::kBatchDepthYX);
 
+#if (MIOPEN_BETA_API && TF_ROCM_VERSION >= 60300)
+      status = wrap::miopenSetTensorDescriptorV2(
+          obj.handle_, data_type, nd, (const size_t*)dims64.data(),
+          (const size_t*)strides64.data());
+#else
       // MIOpen requires arrays of ints.
       std::vector<int> strides(nd);
       std::vector<int> dims(nd);
@@ -896,7 +935,7 @@ absl::StatusOr<ScopedTensorDescriptor> scope(
                      &CheckedNarrowing<int64_t, int>);
       status = wrap::miopenSetTensorDescriptor(obj.handle_, data_type, nd,
                                                dims.data(), strides.data());
-
+#endif
       if (status != miopenStatusSuccess) {
         return absl::InternalError(
             "could not convert BatchDescriptor " + batch_descriptor.ToString() +
@@ -964,6 +1003,11 @@ absl::StatusOr<ScopedFilterDescriptor> scope(
       std::vector<int64_t> dims64 =
           filter_descriptor.full_dims(dnn::FilterLayout::kOutputInputYX);
 
+#if (MIOPEN_BETA_API && TF_ROCM_VERSION >= 60300)
+      status = wrap::miopenSetTensorDescriptorV2(
+          obj.handle_, data_type, nd, (const size_t*)dims64.data(),
+          (const size_t*)strides64.data());
+#else
       // MIOpen requires arrays of ints.
       std::vector<int> strides;
       std::vector<int> dims;
@@ -973,7 +1017,7 @@ absl::StatusOr<ScopedFilterDescriptor> scope(
                         &CheckedNarrowing<int64_t, int>);
       status = wrap::miopenSetTensorDescriptor(obj.handle_, data_type, nd,
                                                dims.data(), strides.data());
-
+#endif
       if (status != miopenStatusSuccess) {
         LOG(FATAL) << "could not convert FilterDescriptor "
                    << filter_descriptor.ToString()
@@ -998,10 +1042,6 @@ absl::StatusOr<ScopedConvolutionDescriptor> scope(
   }
   const auto& strides64 = convolution_descriptor.strides();
   const auto& padding64 = convolution_descriptor.padding();
-  if (convolution_descriptor.pad_alignment() ==
-      dnn::PadAlignment::kTensorFlowPadding) {
-    LOG(ERROR) << "TensorFlow padding alignment is not supported.";
-  }
 
   // MIOpen requires arrays of ints.
   std::vector<int> strides(convolution_descriptor.ndims());
@@ -1966,7 +2006,7 @@ class MixinBase<void> {};
 }  // namespace
 
 #define RETURN_IF_MIOPEN_ERROR(STATUS, ...)                                   \
-  if (!SE_PREDICT_TRUE((STATUS) == miopenStatusSuccess)) {                    \
+  if (!ABSL_PREDICT_TRUE((STATUS) == miopenStatusSuccess)) {                  \
     std::string error_msg = absl::StrCat(ToString(STATUS), " ", __VA_ARGS__); \
     SetFailure(::absl::UnknownError(error_msg));                              \
     LOG(ERROR) << error_msg;                                                  \
@@ -2102,8 +2142,8 @@ class MIOpenRnnDescriptor : public MIOpenDescriptorCommon<dnn::RnnDescriptor> {
         data_type_(data_type),
         algorithm_config_(algorithm_config) {
     // Create the dropout handle
-    miopen_dropout_desc_.reset(new MIOpenDropoutDescriptor(
-        miopen_handle, dropout, seed, state_allocator));
+    miopen_dropout_desc_ = std::make_unique<MIOpenDropoutDescriptor>(
+        miopen_handle, dropout, seed, state_allocator);
     // Create the RNN handle
     auto status = wrap::miopenCreateRNNDescriptor(&rnn_desc_);
     RETURN_IF_MIOPEN_ERROR(status, "Unable to create RNN descriptor");
@@ -2116,8 +2156,8 @@ class MIOpenRnnDescriptor : public MIOpenDescriptorCommon<dnn::RnnDescriptor> {
         miopenRNNdefault /*algo*/, data_type /*dataType*/);
     RETURN_IF_MIOPEN_ERROR(status, "Unable to update RNN descriptor");
     // Create the params handle.
-    miopen_params_desc_.reset(
-        new MIOpenRnnParamsDescriptor(miopen_handle, *this));
+    miopen_params_desc_ =
+        std::make_unique<MIOpenRnnParamsDescriptor>(miopen_handle, *this);
     if (!miopen_params_desc_->ok()) {
       SetFailure(miopen_params_desc_->Status());
       return;
@@ -2388,7 +2428,7 @@ bool CreateRnnWorkspace(Stream* stream, miopenHandle_t miopen_handle,
                         const MIOpenRnnDescriptor& rnn_desc,
                         const MIOpenRnnSequenceTensorDescriptor& input_desc,
                         ScratchAllocator* workspace_allocator,
-                        DeviceMemory<uint8>* workspace) {
+                        DeviceMemory<uint8_t>* workspace) {
   // Query the workspace size.
   size_t workspace_size_in_bytes = 0;
   auto status = wrap::miopenGetRNNWorkspaceSize(
@@ -2412,7 +2452,7 @@ bool CreateRnnWorkspace(Stream* stream, miopenHandle_t miopen_handle,
       return false;
     }
   } else {
-    *workspace = DeviceMemory<uint8>();
+    *workspace = DeviceMemory<uint8_t>();
   }
   return true;
 }
@@ -2459,7 +2499,7 @@ absl::Status MIOpenSupport::DoRnnForwardImpl(
   }
 
   // create the workspace
-  DeviceMemory<uint8> workspace;
+  DeviceMemory<uint8_t> workspace;
   if (!CreateRnnWorkspace(stream, miopen.handle(), rnn_desc, input_desc,
                           workspace_allocator, &workspace)) {
     LOG(ERROR) << "Unable to create rnn workspace";
@@ -2468,7 +2508,7 @@ absl::Status MIOpenSupport::DoRnnForwardImpl(
 
   // query the reserve space size
   // allocate the reserve space
-  DeviceMemory<uint8> reserve_space;
+  DeviceMemory<uint8_t> reserve_space;
   if (is_training) {
     size_t reserve_space_size_in_bytes = 0;
     auto status = wrap::miopenGetRNNTrainingReserveSize(
@@ -2494,13 +2534,13 @@ absl::Status MIOpenSupport::DoRnnForwardImpl(
   }
 
   const bool is_profiling = output_profile_result != nullptr;
+  std::unique_ptr<EventBasedTimer> timer;
 
-  TF_ASSIGN_OR_RETURN(
-      std::optional<GpuTimer> timer,
-      GpuTimer::CreateIfNeeded(
-          stream,
-          output_profile_result && output_profile_result->warmup_run_executed(),
-          is_profiling));
+  if (is_profiling) {
+    TF_ASSIGN_OR_RETURN(timer,
+                        stream->CreateEventBasedTimer(
+                            output_profile_result->warmup_run_executed()));
+  }
 
   // make the forward call
   if (!is_training) {
@@ -2544,7 +2584,7 @@ absl::Status MIOpenSupport::DoRnnForwardImpl(
 
   if (is_profiling) {
     TF_RETURN_IF_ERROR(PopulateProfileFromTimer(
-        timer, *rnn_desc.algorithm_config().algorithm(),
+        timer.get(), *rnn_desc.algorithm_config().algorithm(),
         output_profile_result));
   }
 
@@ -2573,7 +2613,7 @@ absl::Status MIOpenSupport::DoRnnBackwardImpl(
     DeviceMemory<T>* input_h_backprop_data,
     DeviceMemory<T>* input_c_backprop_data,
     DeviceMemory<T>* params_backprop_data,
-    DeviceMemory<uint8>* reserve_space_data,
+    DeviceMemory<uint8_t>* reserve_space_data,
     ScratchAllocator* workspace_allocator,
     dnn::ProfileResult* output_profile_result) {
   // extract model parameters
@@ -2597,7 +2637,7 @@ absl::Status MIOpenSupport::DoRnnBackwardImpl(
   }
 
   // create the workspace
-  DeviceMemory<uint8> workspace;
+  DeviceMemory<uint8_t> workspace;
   if (!CreateRnnWorkspace(stream, miopen.handle(), rnn_desc, input_desc,
                           workspace_allocator, &workspace)) {
     LOG(ERROR) << "Unable to create rnn workspace";
@@ -2626,13 +2666,13 @@ absl::Status MIOpenSupport::DoRnnBackwardImpl(
         stream->MemZero(input_c_backprop_data, size_data * type_size));
 
   const bool is_profiling = output_profile_result != nullptr;
+  std::unique_ptr<EventBasedTimer> timer;
 
-  TF_ASSIGN_OR_RETURN(
-      std::optional<GpuTimer> timer,
-      GpuTimer::CreateIfNeeded(
-          stream,
-          output_profile_result && output_profile_result->warmup_run_executed(),
-          is_profiling));
+  if (is_profiling) {
+    TF_ASSIGN_OR_RETURN(timer,
+                        stream->CreateEventBasedTimer(
+                            output_profile_result->warmup_run_executed()));
+  }
 
   // make the backward data call
   auto status = wrap::miopenRNNBackwardData(
@@ -2683,7 +2723,7 @@ absl::Status MIOpenSupport::DoRnnBackwardImpl(
 
   if (is_profiling) {
     TF_RETURN_IF_ERROR(PopulateProfileFromTimer(
-        timer, *rnn_desc.algorithm_config().algorithm(),
+        timer.get(), *rnn_desc.algorithm_config().algorithm(),
         output_profile_result));
   }
 
@@ -2774,7 +2814,7 @@ absl::Status MIOpenSupport::DoPrepareForCtcLoss(
     absl::Span<const int> labels_lengths_data,
     absl::Span<const int> input_lengths_data,
     const NumericOptions& numeric_options, ScratchAllocator* scratch_allocator,
-    DeviceMemory<uint8>* scratch_memory, int* ctc_loss_algo_id) {
+    DeviceMemory<uint8_t>* scratch_memory, int* ctc_loss_algo_id) {
   auto miopen = miopen_->GetHandle(parent_, stream);
 
   MIOpenCTCLossDescriptor miopen_ctc_loss_desc(ToMIOpenDataType(element_type));
@@ -2801,7 +2841,7 @@ absl::Status MIOpenSupport::DoPrepareForCtcLoss(
         "Failed to determine scratch memory size for MIOpen CTC Loss");
   }
 
-  *scratch_memory = DeviceMemory<uint8>();
+  *scratch_memory = DeviceMemory<uint8_t>();
 
   // Allocate the workspace.
   if (workspace_size_in_bytes != 0) {
@@ -2836,7 +2876,7 @@ absl::Status MIOpenSupport::DoCtcLossImpl(
     absl::Span<const int> input_lengths_data, DeviceMemoryBase costs_data,
     const MIOpenRnnStateTensorDescriptor& grads_desc,
     DeviceMemoryBase grads_data, const MIOpenCTCLossDescriptor& ctc_loss_desc,
-    DeviceMemory<uint8> scratch_memory, int ctc_loss_algo_id) {
+    DeviceMemory<uint8_t> scratch_memory, int ctc_loss_algo_id) {
   auto miopen = miopen_->GetHandle(parent_, stream);
 
   int kNumTimestamps = probs_desc.num_layers();
@@ -2866,7 +2906,7 @@ absl::Status MIOpenSupport::DoCtcLoss(
     absl::Span<const int> labels_lengths_data,
     absl::Span<const int> input_lengths_data, DeviceMemoryBase costs_data,
     const dnn::RnnStateTensorDescriptor& grads_desc,
-    DeviceMemoryBase grads_data, DeviceMemory<uint8> scratch_memory,
+    DeviceMemoryBase grads_data, DeviceMemory<uint8_t> scratch_memory,
     int ctc_loss_algo_id) {
   // Current MIOPen CTC Loss only supports the float datatype
   if (element_type != dnn::DataType::kFloat) {
@@ -3085,7 +3125,7 @@ bool MIOpenSupport::DoRnnBackward(
     DeviceMemory<Eigen::half>* input_h_backprop_data,
     DeviceMemory<Eigen::half>* input_c_backprop_data,
     DeviceMemory<Eigen::half>* params_backprop_data,
-    DeviceMemory<uint8>* reserve_space_data,
+    DeviceMemory<uint8_t>* reserve_space_data,
     ScratchAllocator* workspace_allocator,
     dnn::ProfileResult* output_profile_result) {
   const MIOpenRnnDescriptor& miopen_rnn_desc =
@@ -3138,7 +3178,7 @@ bool MIOpenSupport::DoRnnBackward(
     DeviceMemory<float>* input_h_backprop_data,
     DeviceMemory<float>* input_c_backprop_data,
     DeviceMemory<float>* params_backprop_data,
-    DeviceMemory<uint8>* reserve_space_data,
+    DeviceMemory<uint8_t>* reserve_space_data,
     ScratchAllocator* workspace_allocator,
     dnn::ProfileResult* output_profile_result) {
   const MIOpenRnnDescriptor& miopen_rnn_desc =
@@ -3192,7 +3232,7 @@ bool MIOpenSupport::DoRnnBackward(
     DeviceMemory<double>* input_h_backprop_data,
     DeviceMemory<double>* input_c_backprop_data,
     DeviceMemory<double>* params_backprop_data,
-    DeviceMemory<uint8>* reserve_space_data,
+    DeviceMemory<uint8_t>* reserve_space_data,
     ScratchAllocator* workspace_allocator,
     dnn::ProfileResult* output_profile_result) {
   LOG(ERROR) << "miopen does not support half type RNN bwd yet";
@@ -3212,7 +3252,7 @@ void* MIOpenAllocatorCallback(void* ctx, size_t size_in_bytes) {
   auto* mac = static_cast<MIOpenAllocatorContext*>(ctx);
   auto allocated = mac->scratch_allocator_->AllocateBytes(size_in_bytes);
 
-  DeviceMemory<uint8> scratch;
+  DeviceMemory<uint8_t> scratch;
   if (allocated.ok()) {
     scratch = allocated.value();
     return scratch.opaque();
@@ -3235,7 +3275,7 @@ absl::Status MIOpenSupport::DoPrepareForConvolution(
     const dnn::ConvolutionDescriptor& convolution_descriptor,
     const dnn::AlgorithmConfig& algorithm_config,
     ScratchAllocator* scratch_allocator, dnn::AlgorithmDesc* algorithm_desc,
-    DeviceMemory<uint8>* scratch_memory) {
+    DeviceMemory<uint8_t>* scratch_memory) {
   std::optional<dnn::AlgorithmDesc> input_algo_desc =
       algorithm_config.algorithm();
 
@@ -3275,7 +3315,7 @@ absl::Status MIOpenSupport::DoPrepareForConvolution(
 
 class RocmConvRunner : public dnn::ConvRunner {
  public:
-  RocmConvRunner(GpuExecutor* parent, MIOpenAccess* miopen, int64_t algo_id,
+  RocmConvRunner(StreamExecutor* parent, MIOpenAccess* miopen, int64_t algo_id,
                  size_t workspace_size, dnn::ConvolutionKind kind,
                  dnn::DataType input_type, dnn::DataType output_type,
                  bool use_immediate_mode,
@@ -3326,12 +3366,12 @@ class RocmConvRunner : public dnn::ConvRunner {
     float beta = 0.0;
 
     const bool is_profiling = output_profile_result != nullptr;
-    TF_ASSIGN_OR_RETURN(std::optional<GpuTimer> timer,
-                        GpuTimer::CreateIfNeeded(
-                            stream,
-                            output_profile_result &&
-                                output_profile_result->warmup_run_executed(),
-                            is_profiling));
+    std::unique_ptr<EventBasedTimer> timer;
+    if (is_profiling) {
+      TF_ASSIGN_OR_RETURN(timer,
+                          stream->CreateEventBasedTimer(
+                              output_profile_result->warmup_run_executed()));
+    }
 
     miopenStatus_t status = miopenStatusSuccess;
     switch (kind_) {
@@ -3420,7 +3460,7 @@ class RocmConvRunner : public dnn::ConvRunner {
   }
 
  private:
-  GpuExecutor* parent_;
+  StreamExecutor* parent_;
   MIOpenAccess* miopen_;
   int64_t algo_id_;
   size_t workspace_size_;
@@ -3441,7 +3481,7 @@ absl::Status MIOpenSupport::DoConvolve(
     DeviceMemoryBase filter_data, const dnn::BatchDescriptor& output_descriptor,
     DeviceMemoryBase output_data,
     const dnn::ConvolutionDescriptor& convolution_descriptor,
-    dnn::AlgorithmDesc algorithm_desc, DeviceMemory<uint8> scratch_memory,
+    dnn::AlgorithmDesc algorithm_desc, DeviceMemory<uint8_t> scratch_memory,
     dnn::ProfileResult* output_profile_result) {
   TF_ASSIGN_OR_RETURN(
       auto runner,
@@ -3454,8 +3494,8 @@ absl::Status MIOpenSupport::DoConvolve(
 }
 
 absl::Status MIOpenSupport::GetConvolveRunners(
-    bool use_cudnn_frontend, dnn::ConvolutionKind kind,
-    dnn::DataType input_type, dnn::DataType output_type, Stream* stream,
+    dnn::ConvolutionKind kind, dnn::DataType input_type,
+    dnn::DataType output_type, Stream* stream,
     const dnn::BatchDescriptor& input_descriptor, DeviceMemoryBase input_data,
     const dnn::FilterDescriptor& filter_descriptor,
     DeviceMemoryBase filter_data, const dnn::BatchDescriptor& output_descriptor,
@@ -3828,7 +3868,7 @@ absl::Status MIOpenSupport::GetMIOpenConvolveAlgorithmsFindMode(
   }
 
   // allocate scratch memory
-  DeviceMemory<uint8> scratch_memory;
+  DeviceMemory<uint8_t> scratch_memory;
   if (scratch_memory_size != 0) {
     if (scratch_allocator == nullptr) {
       return absl::InternalError(
@@ -4082,7 +4122,7 @@ bool MIOpenSupport::DoBatchNormalizationBackward(
     dnn::ActivationMode activation_mode, DeviceMemory<Eigen::half>* x_backprop,
     DeviceMemory<float>* scale_backprop, DeviceMemory<float>* offset_backprop,
     DeviceMemory<Eigen::half>* side_input_backprop,
-    DeviceMemory<uint8>* reserve_space_data,
+    DeviceMemory<uint8_t>* reserve_space_data,
     ScratchAllocator* workspace_allocator) {
   return DoBatchNormalizationBackwardImpl<Eigen::half, float>(
              stream, miopenHalf, miopenFloat, y_backprop, x, scale, mean,
@@ -4101,7 +4141,7 @@ bool MIOpenSupport::DoBatchNormalizationBackward(
     dnn::ActivationMode activation_mode, DeviceMemory<float>* x_backprop,
     DeviceMemory<float>* scale_backprop, DeviceMemory<float>* offset_backprop,
     DeviceMemory<float>* side_input_backprop,
-    DeviceMemory<uint8>* reserve_space_data,
+    DeviceMemory<uint8_t>* reserve_space_data,
     ScratchAllocator* workspace_allocator) {
   return DoBatchNormalizationBackwardImpl<float, float>(
              stream, miopenFloat, miopenFloat, y_backprop, x, scale, mean,
@@ -4261,8 +4301,9 @@ absl::Status InplaceBiasActivation(
       typename std::conditional<std::is_same_v<Tbias, Eigen::bfloat16>,
                                 hip_bfloat16, Tbias>::type>::type CTbias;
   launchInplaceBiasActivation<CT, CTbias>(
-      AsGpuStreamValue(stream), c_data.opaque(), bias_data.opaque(),
-      side_input_data.opaque(), side_input_scale,
+      static_cast<hipStream_t>(stream->platform_specific_handle().stream),
+      c_data.opaque(), bias_data.opaque(), side_input_data.opaque(),
+      side_input_scale,
       static_cast<int>(activation_mode) + (transpose ? 10 : 0), batch, m, n,
       ldc, param);
   return absl::OkStatus();
@@ -4316,7 +4357,7 @@ absl::Status ROCmFusedMatmulRunner::operator()(
 }
 
 absl::Status MIOpenSupport::GetFusedMatmulRunners(
-    bool use_cudnn_frontend, dnn::DataType input_type, dnn::DataType bias_type,
+    dnn::DataType input_type, dnn::DataType bias_type,
     dnn::DataType output_type, Stream* stream, bool trans_a, bool trans_b,
     uint64_t m, uint64_t n, uint64_t k, int64_t lda, int64_t ldb, int64_t ldc,
     dnn::ActivationMode activation_mode, bool use_fallback,
@@ -4324,12 +4365,14 @@ absl::Status MIOpenSupport::GetFusedMatmulRunners(
     std::vector<std::unique_ptr<const dnn::FusedMatmulRunner>>*
         out_exec_plans) {
   out_exec_plans->clear();
-  if (input_type != output_type)
+  if (input_type != output_type) {
     return absl::InvalidArgumentError(
         "ROCm fused matmul does not support input/output type mismatch");
-  if (input_type != bias_type)
+  }
+  if (input_type != bias_type) {
     return absl::InvalidArgumentError(
         "ROCm fused matmul does not support input/bias type mismatch");
+  }
   auto runner_ptr = new ROCmFusedMatmulRunner(
       stream, input_type, bias_type, output_type, trans_a, trans_b, m, n, k,
       lda, ldb, ldc, activation_mode);
@@ -4393,7 +4436,7 @@ absl::Status MIOpenSupport::DoPoolForward(
   TF_ASSIGN_OR_RETURN(auto pooling_desc, scope(pooling_dimensions));
 
   bool do_backward = false;
-  uint8* workspace = nullptr;
+  uint8_t* workspace = nullptr;
   size_t workspace_size = 0;
   if (m_pooling_cache_enabled && element_type == dnn::DataType::kFloat) {
     do_backward = true;
@@ -4405,7 +4448,7 @@ absl::Status MIOpenSupport::DoPoolForward(
           ToString(status)));
     }
     if (workspace_size != 0) {
-      PoolingWorkspaceDescriptor* pdesc = 0;
+      PoolingWorkspaceDescriptor* pdesc = nullptr;
       bool cache_hit =
           m_pooling_cache_allowed &&
           m_pooling_cache.find(input_data.opaque(), input_dimensions,
@@ -4413,11 +4456,12 @@ absl::Status MIOpenSupport::DoPoolForward(
                                miopenFloat, pdesc);
       if (cache_hit) {
         // reusing the same buffer
-        workspace = reinterpret_cast<uint8*>(pdesc->workspace.ptr()->opaque());
+        workspace =
+            reinterpret_cast<uint8_t*>(pdesc->workspace.ptr()->opaque());
       } else {
         TF_ASSIGN_OR_RETURN(auto allocated,
                             workspace_allocator->AllocateBytes(workspace_size));
-        workspace = reinterpret_cast<uint8*>(allocated.opaque());
+        workspace = reinterpret_cast<uint8_t*>(allocated.opaque());
       }
     }
   }
@@ -4453,7 +4497,7 @@ bool PoolingWorkspaceCache::find(
     const dnn::BatchDescriptor& output_dimensions,
     const dnn::PoolingDescriptor& pooling_dimensions, int _type,
     PoolingWorkspaceDescriptor*& pdesc) {
-  pdesc = 0;
+  pdesc = nullptr;
   auto it = cache.find(p);
   if (it == cache.end()) {
     return false;
@@ -4470,9 +4514,9 @@ void PoolingWorkspaceCache::insert(
     const void* p, const dnn::BatchDescriptor& input_dimensions,
     const dnn::BatchDescriptor& output_dimensions,
     const dnn::PoolingDescriptor& pooling_dimensions, int _type,
-    ScopedDeviceMemory<uint8>& workspace, size_t wsp_size,
+    ScopedDeviceMemory<uint8_t>& workspace, size_t wsp_size,
     hipStream_t hip_stream) {
-  PoolingWorkspaceDescriptor* desc = 0;
+  PoolingWorkspaceDescriptor* desc = nullptr;
   auto it = cache.find(p);
   if (it != cache.end()) {
     // replacing an entry with the same pointer but different attributes
@@ -4546,9 +4590,9 @@ absl::Status MIOpenSupport::DoPoolBackward(
   TF_ASSIGN_OR_RETURN(auto dest_desc, scope(output_dimensions, miopen_dtype));
   TF_ASSIGN_OR_RETURN(auto pooling_desc, scope(pooling_dimensions));
 
-  uint8* workspace_ptr = 0;
-  DeviceMemory<uint8> workspace;
-  PoolingWorkspaceDescriptor* pdesc = 0;
+  uint8_t* workspace_ptr = nullptr;
+  DeviceMemory<uint8_t> workspace;
+  PoolingWorkspaceDescriptor* pdesc = nullptr;
 
   size_t workspace_size_in_bytes = 0;
   auto status = wrap::miopenPoolingGetWorkSpaceSizeV2(
@@ -4566,9 +4610,9 @@ absl::Status MIOpenSupport::DoPoolBackward(
                                           output_dimensions, pooling_dimensions,
                                           miopen_dtype, pdesc);
     if (cache_hit) {
-      assert(pdesc != 0);
+      assert(pdesc != nullptr);
       workspace_ptr =
-          reinterpret_cast<uint8*>(pdesc->workspace.ptr()->opaque());
+          reinterpret_cast<uint8_t*>(pdesc->workspace.ptr()->opaque());
       VLOG(1) << "Pooling cache hit";
     } else {
       VLOG(1) << "Pooling cache miss";
@@ -4579,7 +4623,7 @@ absl::Status MIOpenSupport::DoPoolBackward(
         return absl::InternalError(
             "Failed to allocate backward pooling workspace");
       }
-      DeviceMemory<uint8> dest2;  // duplicated dest from forward:
+      DeviceMemory<uint8_t> dest2;  // duplicated dest from forward:
       int64_t dest2_size = 0;
 
       // miopen requires the strides and dims to be ordered as BDYX.
@@ -4615,7 +4659,7 @@ absl::Status MIOpenSupport::DoPoolBackward(
             "Failed to enqueue forward pooling (before backward) on stream: ",
             ToString(status)));
       }
-      workspace_ptr = reinterpret_cast<uint8*>(workspace.opaque());
+      workspace_ptr = reinterpret_cast<uint8_t*>(workspace.opaque());
     }
   }
 
@@ -4704,7 +4748,7 @@ bool MIOpenSupport::DoNormalizeBackwardWithDimensions(
   float alpha = 1.0f;
   float beta = 0.0f;
 
-  DeviceMemory<uint8> workspace;
+  DeviceMemory<uint8_t> workspace;
   size_t workspace_size_in_bytes = 0;
   auto status =
       wrap::miopenLRNGetWorkSpaceSize(dims.handle(), &workspace_size_in_bytes);
@@ -4725,7 +4769,7 @@ bool MIOpenSupport::DoNormalizeBackwardWithDimensions(
     }
   }
 
-  DeviceMemory<uint8> dest2;  // duplicated dest from forward:
+  DeviceMemory<uint8_t> dest2;  // duplicated dest from forward:
   int dest2_size = 0;
 
   // miopen requires the strides and dims to be ordered as BDYX.
@@ -4850,14 +4894,10 @@ class RocmFusedConvRunner : public dnn::FusedConvRunner {
     if (activation_desc_.miopen_activation_mode_ != miopenActivationPASTHRU)
       fusion_plan_.SetActivationForwardArgs(activation_desc_);
 
-    std::optional<GpuTimer> timer;
+    std::unique_ptr<EventBasedTimer> timer;
     if (profile_result) {
-      auto timer_or_status = GpuTimer::Create(AsGpuStream(stream));
-      if (!timer_or_status.ok()) {
-        LOG(ERROR) << "Failed to create timer";
-        return absl::InternalError("Failed to start timer");
-      }
-      timer.emplace(std::move(*timer_or_status));
+      TF_ASSIGN_OR_RETURN(timer, stream->CreateEventBasedTimer(
+                                     /* use_delay_kernel=*/false));
     }
 
     miopenStatus_t status;
@@ -4892,7 +4932,7 @@ class RocmFusedConvRunner : public dnn::FusedConvRunner {
  public:
   // Queries the workspace size and constructs a 'RocmFusedConvRunner'.
   static absl::StatusOr<std::unique_ptr<const dnn::FusedConvRunner>> Create(
-      GpuExecutor* parent, Stream* stream, MIOpenAccess* miopen,
+      StreamExecutor* parent, Stream* stream, MIOpenAccess* miopen,
       const dnn::AlgorithmDesc& algo, dnn::DataType input_type,
       dnn::DataType bias_type, double conv_scale, double side_input_scale,
       double leakyrelu_alpha, BatchDescriptor input_nd,
@@ -4964,7 +5004,7 @@ class RocmFusedConvRunner : public dnn::FusedConvRunner {
  private:
   // Private to prevent passing in the wrong workspace_size.
   RocmFusedConvRunner(
-      GpuExecutor* parent, Stream* stream, MIOpenAccess* miopen,
+      StreamExecutor* parent, Stream* stream, MIOpenAccess* miopen,
       int64_t algo_id, size_t workspace_size, dnn::DataType input_type,
       dnn::DataType bias_type, double conv_scale, double side_input_scale,
       double leakyrelu_alpha, BatchDescriptor dnn_input_nd,
@@ -5080,7 +5120,7 @@ class RocmFusedConvRunner : public dnn::FusedConvRunner {
 
   std::string desc_;
 
-  GpuExecutor* parent_;
+  StreamExecutor* parent_;
   MIOpenAccess* miopen_;
   int64_t algo_id_;
   size_t workspace_size_;
@@ -5132,10 +5172,9 @@ MIOpenSupport::FusedConvolveRunnerFromDesc(
 }
 
 absl::Status MIOpenSupport::GetFusedConvolveRunners(
-    bool use_cudnn_frontend, dnn::ConvolutionKind kind,
-    dnn::DataType input_type, dnn::DataType bias_type,
-    dnn::DataType output_type, double conv_scale, double side_input_scale,
-    double leakyrelu_alpha, Stream* stream,
+    dnn::ConvolutionKind kind, dnn::DataType input_type,
+    dnn::DataType bias_type, dnn::DataType output_type, double conv_scale,
+    double side_input_scale, double leakyrelu_alpha, Stream* stream,
     const dnn::BatchDescriptor& input_descriptor,
     const dnn::FilterDescriptor& filter_descriptor,
     const dnn::BatchDescriptor& bias_descriptor,
@@ -5195,16 +5234,7 @@ void initialize_miopen() {
         PluginRegistry::Instance()->RegisterFactory<PluginRegistry::DnnFactory>(
             rocm::kROCmPlatformId, "MIOpen",
             [](StreamExecutor* parent) -> dnn::DnnSupport* {
-              gpu::GpuExecutor* rocm_executor =
-                  dynamic_cast<gpu::GpuExecutor*>(parent);
-              if (rocm_executor == nullptr) {
-                LOG(ERROR)
-                    << "Attempting to initialize an instance of the MIOpen "
-                    << "support library with a non-ROCM StreamExecutor";
-                return nullptr;
-              }
-
-              gpu::MIOpenSupport* dnn = new gpu::MIOpenSupport(rocm_executor);
+              gpu::MIOpenSupport* dnn = new gpu::MIOpenSupport(parent);
               if (!dnn->Init().ok()) {
                 // Note: Init() will log a more specific error.
                 delete dnn;

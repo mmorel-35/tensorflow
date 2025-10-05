@@ -22,9 +22,11 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include <gtest/gtest.h>
 #include "absl/functional/bind_front.h"
-#include "xla/test.h"
-#include "tsl/lib/core/status_test_util.h"
+#include "absl/log/log.h"
+#include "xla/hlo/testlib/test.h"
+#include "xla/tsl/lib/core/status_test_util.h"
 
 namespace xla {
 namespace {

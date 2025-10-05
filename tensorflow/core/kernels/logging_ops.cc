@@ -37,15 +37,15 @@ static mutex* file_mutex = new mutex();
 
 // Appends the given data to the specified file. It will create the file if it
 // doesn't already exist.
-Status AppendStringToFile(const std::string& fname, StringPiece data,
-                          Env* env) {
+absl::Status AppendStringToFile(const std::string& fname,
+                                absl::string_view data, Env* env) {
   // TODO(ckluk): If opening and closing on every log causes performance issues,
   // we can reimplement using reference counters.
   mutex_lock l(*file_mutex);
   std::unique_ptr<WritableFile> file;
   TF_RETURN_IF_ERROR(env->NewAppendableFile(fname, &file));
-  Status a = file->Append(data);
-  Status c = file->Close();
+  absl::Status a = file->Append(data);
+  absl::Status c = file->Close();
   return a.ok() ? c : a;
 }
 
@@ -66,9 +66,8 @@ void AssertOp::Compute(OpKernelContext* ctx) {
   }
   string msg = "assertion failed: ";
   for (int i = 1; i < ctx->num_inputs(); ++i) {
-    strings::StrAppend(&msg, "[", ctx->input(i).SummarizeValue(summarize_),
-                       "]");
-    if (i < ctx->num_inputs() - 1) strings::StrAppend(&msg, " ");
+    absl::StrAppend(&msg, "[", ctx->input(i).SummarizeValue(summarize_), "]");
+    if (i < ctx->num_inputs() - 1) absl::StrAppend(&msg, " ");
   }
   ctx->SetStatus(errors::InvalidArgument(msg));
 }
@@ -100,10 +99,9 @@ class PrintOp : public OpKernel {
       call_counter_++;
     }
     string msg;
-    strings::StrAppend(&msg, message_);
+    absl::StrAppend(&msg, message_);
     for (int i = 1; i < ctx->num_inputs(); ++i) {
-      strings::StrAppend(&msg, "[", ctx->input(i).SummarizeValue(summarize_),
-                         "]");
+      absl::StrAppend(&msg, "[", ctx->input(i).SummarizeValue(summarize_), "]");
     }
     std::cerr << msg << std::endl;
   }
@@ -132,10 +130,10 @@ class PrintV2Op : public OpKernel {
                   std::end(valid_output_streams_), output_stream_);
 
     if (output_stream_index == std::end(valid_output_streams_)) {
-      string error_msg = strings::StrCat(
-          "Unknown output stream: ", output_stream_, ", Valid streams are:");
+      string error_msg = absl::StrCat("Unknown output stream: ", output_stream_,
+                                      ", Valid streams are:");
       for (auto valid_stream : valid_output_streams_) {
-        strings::StrAppend(&error_msg, " ", valid_stream);
+        absl::StrAppend(&error_msg, " ", valid_stream);
       }
       OP_REQUIRES(ctx, false, errors::InvalidArgument(error_msg));
     }
@@ -150,7 +148,7 @@ class PrintV2Op : public OpKernel {
                                 input_->shape()));
     const string& msg = input_->scalar<tstring>()();
 
-    string ended_msg = strings::StrCat(msg, end_);
+    string ended_msg = absl::StrCat(msg, end_);
 
     if (!file_path_.empty()) {
       // Outputs to a file at the specified path.
@@ -174,12 +172,12 @@ class PrintV2Op : public OpKernel {
     } else if (output_stream_ == "log(error)") {
       LOG(ERROR) << ended_msg << std::flush;
     } else {
-      string error_msg = strings::StrCat(
-          "Unknown output stream: ", output_stream_, ", Valid streams are:");
+      string error_msg = absl::StrCat("Unknown output stream: ", output_stream_,
+                                      ", Valid streams are:");
       for (auto valid_stream : valid_output_streams_) {
-        strings::StrAppend(&error_msg, " ", valid_stream);
+        absl::StrAppend(&error_msg, " ", valid_stream);
       }
-      strings::StrAppend(&error_msg, ", or file://<filename>");
+      absl::StrAppend(&error_msg, ", or file://<filename>");
       OP_REQUIRES(ctx, false, errors::InvalidArgument(error_msg));
     }
   }

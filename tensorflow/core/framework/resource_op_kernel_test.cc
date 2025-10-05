@@ -57,12 +57,12 @@ class StubResourceOpKernel : public ResourceOpKernel<StubResource> {
   using ResourceOpKernel::ResourceOpKernel;
 
  private:
-  Status CreateResource(StubResource** resource) override {
+  absl::Status CreateResource(StubResource** resource) override {
     *resource = CHECK_NOTNULL(new StubResource);
     return GetNodeAttr(def(), "code", &(*resource)->code);
   }
 
-  Status VerifyResource(StubResource* resource) override {
+  absl::Status VerifyResource(StubResource* resource) override {
     int code;
     TF_RETURN_IF_ERROR(GetNodeAttr(def(), "code", &code));
     if (code != resource->code) {
@@ -88,12 +88,12 @@ class ResourceOpKernelTest : public ::testing::Test {
                                                  const string& shared_name) {
     static std::atomic<int64_t> count(0);
     NodeDef node_def;
-    TF_CHECK_OK(NodeDefBuilder(strings::StrCat("test-node", count.fetch_add(1)),
+    TF_CHECK_OK(NodeDefBuilder(absl::StrCat("test-node", count.fetch_add(1)),
                                "StubResourceOp")
                     .Attr("code", code)
                     .Attr("shared_name", shared_name)
                     .Finalize(&node_def));
-    Status status;
+    absl::Status status;
     std::unique_ptr<OpKernel> op(CreateOpKernel(
         DEVICE_CPU, &device_, device_.GetAllocator(AllocatorAttributes()),
         node_def, TF_GRAPH_DEF_VERSION, &status));
@@ -110,7 +110,7 @@ class ResourceOpKernelTest : public ::testing::Test {
     return resource_op;
   }
 
-  Status RunOpKernel(OpKernel* op) {
+  absl::Status RunOpKernel(OpKernel* op) {
     OpKernelContext::Params params;
 
     params.device = &device_;
@@ -148,7 +148,7 @@ TEST_F(ResourceOpKernelTest, PrivateResource) {
 
   // Destroy the op kernel. Expect the resource to be released.
   op = nullptr;
-  Status s =
+  absl::Status s =
       mgr_.Lookup<StubResource>(mgr_.default_container(), key, &resource);
 
   EXPECT_FALSE(s.ok());

@@ -98,16 +98,16 @@ class GraphPropertiesTest : public ::testing::Test {
   // Returns a string form of <p>, suitable for comparing type and shape.
   // Example output for 4-d float tensor: "float: [10,2,30,4]"
   string PropToString(const OpInfo::TensorProperties& p) {
-    string s = strings::StrCat(DataTypeString(p.dtype()), ": ");
+    string s = absl::StrCat(DataTypeString(p.dtype()), ": ");
     if (p.shape().unknown_rank()) {
-      strings::StrAppend(&s, "?");
+      absl::StrAppend(&s, "?");
     } else {
-      strings::StrAppend(&s, "[");
+      absl::StrAppend(&s, "[");
       for (int i = 0; i < p.shape().dim_size(); ++i) {
-        strings::StrAppend(&s, i == 0 ? "" : ",",
-                           std::max<int64_t>(p.shape().dim(i).size(), -1));
+        absl::StrAppend(&s, i == 0 ? "" : ",",
+                        std::max<int64_t>(p.shape().dim(i).size(), -1));
       }
-      strings::StrAppend(&s, "]");
+      absl::StrAppend(&s, "]");
     }
     return s;
   }
@@ -157,7 +157,7 @@ TEST_F(GraphPropertiesTest, StaticProperties) {
   CHECK(fake_input.NextItem(&item));
 
   GraphProperties properties(item);
-  Status s = properties.InferStatically(true);
+  absl::Status s = properties.InferStatically(true);
   TF_ASSERT_OK(s);
 
   for (const auto& node : item.graph.node()) {
@@ -198,7 +198,7 @@ TEST_F(GraphPropertiesTest, ClearProperties) {
   CHECK(fake_input.NextItem(&item));
 
   GraphProperties properties(item);
-  Status s = properties.InferStatically(true);
+  absl::Status s = properties.InferStatically(true);
   TF_ASSERT_OK(s);
 
   for (const auto& node : item.graph.node()) {
@@ -225,7 +225,7 @@ TEST_F(GraphPropertiesTest, Clear) {
   CHECK(fake_input.NextItem(&item));
 
   GraphProperties properties(item);
-  Status s = properties.InferStatically(true);
+  absl::Status s = properties.InferStatically(true);
   TF_ASSERT_OK(s);
 
   EXPECT_TRUE(properties.has_properties());
@@ -241,7 +241,7 @@ TEST_F(GraphPropertiesTest, DynamicProperties) {
 
   GraphProperties properties(item);
   TF_ASSERT_OK(cluster_->Initialize(item));
-  Status s = properties.InferDynamically(cluster_.get());
+  absl::Status s = properties.InferDynamically(cluster_.get());
   TF_ASSERT_OK(s);
 
   for (const auto& node : item.graph.node()) {
@@ -2066,7 +2066,7 @@ TEST_F(GraphPropertiesTest, FedNodes) {
   {
     // Conservative shape analysis: the shape of fed ports should be unknown
     GraphProperties properties(item);
-    Status s = properties.InferStatically(false);
+    absl::Status s = properties.InferStatically(false);
     TF_ASSERT_OK(s);
     for (const auto& node : item.graph.node()) {
       if (node.op() == "Const") {
@@ -2097,7 +2097,7 @@ TEST_F(GraphPropertiesTest, FedNodes) {
     // Optimistic shape analysis: the shape of fed ports should be derived from
     // the shape of the fanin.
     GraphProperties properties(item);
-    Status s = properties.InferStatically(true);
+    absl::Status s = properties.InferStatically(true);
     TF_ASSERT_OK(s);
     for (const auto& node : item.graph.node()) {
       if (node.op() == "Square" || node.op() == "AddN") {

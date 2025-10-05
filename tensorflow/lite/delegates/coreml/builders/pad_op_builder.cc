@@ -14,9 +14,10 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/delegates/coreml/builders/pad_op_builder.h"
 
+#include <cstdint>
 #include <string>
 
-#include "tensorflow/lite/builtin_ops.h"
+#include "mlmodel/format/NeuralNetwork.pb.h"
 #include "tensorflow/lite/core/c/builtin_op_data.h"
 #include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/delegates/coreml/builders/op_factory.h"

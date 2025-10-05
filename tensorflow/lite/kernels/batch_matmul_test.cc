@@ -36,7 +36,6 @@ namespace ops {
 namespace builtin {
 
 TfLiteRegistration* Register_BATCH_MATMUL_REF();
-TfLiteRegistration* Register_BATCH_MATMUL_GENERIC_OPTIMIZED();
 
 }  // namespace builtin
 }  // namespace ops
@@ -85,20 +84,7 @@ class BatchMatMulOpModel : public SingleOpModel {
   int output_id_;
 };
 
-const auto kKernelMap = new std::map<string, TfLiteRegistration*>({
-    {"Reference", ops::builtin::Register_BATCH_MATMUL_REF()},
-    {"GenericOptimized",
-     ops::builtin::Register_BATCH_MATMUL_GENERIC_OPTIMIZED()},
-});
-
-class BatchMatMulOpTest : public SingleOpTest {
- protected:
-  const std::map<string, TfLiteRegistration*>& GetKernelMap() override {
-    return *kKernelMap;
-  }
-};
-
-TEST_P(BatchMatMulOpTest, Float32Test_Ones) {
+TEST(BatchMatMulOpTest, Float32Test_Ones) {
   BatchMatMulOpModel<float> model({TensorType_FLOAT32, {3, 2, 1, 4}},
                                   {TensorType_FLOAT32, {3, 1, 4, 1}});
   std::vector<float> lhs(24);
@@ -113,7 +99,7 @@ TEST_P(BatchMatMulOpTest, Float32Test_Ones) {
   EXPECT_THAT(model.GetOutputShape(), ElementsAreArray({3, 2, 1, 1}));
 }
 
-TEST_P(BatchMatMulOpTest, Float32Test_Flatten) {
+TEST(BatchMatMulOpTest, Float32Test_Flatten) {
   BatchMatMulOpModel<float> model({TensorType_FLOAT32, {3, 2, 2, 4}},
                                   {TensorType_FLOAT32, {3, 1, 4, 1}});
   std::vector<float> lhs(48);
@@ -129,7 +115,7 @@ TEST_P(BatchMatMulOpTest, Float32Test_Flatten) {
   EXPECT_THAT(model.GetOutputShape(), ElementsAreArray({3, 2, 2, 1}));
 }
 
-TEST_P(BatchMatMulOpTest, Float32Test_Simple) {
+TEST(BatchMatMulOpTest, Float32Test_Simple) {
   BatchMatMulOpModel<float> model({TensorType_FLOAT32, {1, 2, 3}},
                                   {TensorType_FLOAT32, {1, 3, 4}});
   model.PopulateTensor<float>(model.lhs(), {1, 2, 3, 4, 5, 6});
@@ -137,11 +123,12 @@ TEST_P(BatchMatMulOpTest, Float32Test_Simple) {
                               {7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18});
   ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(model.GetOutput(),
-              ElementsAreArray({74., 80., 86., 92., 173., 188., 203., 218.}));
+              Pointwise(FloatingPointEq(),
+                        {74., 80., 86., 92., 173., 188., 203., 218.}));
   EXPECT_THAT(model.GetOutputShape(), ElementsAreArray({1, 2, 4}));
 }
 
-TEST_P(BatchMatMulOpTest, Int8Test_Simple) {
+TEST(BatchMatMulOpTest, Int8Test_Simple) {
   BatchMatMulOpModel<int32_t> model({TensorType_INT8, {1, 2, 3}},
                                     {TensorType_INT8, {1, 3, 4}});
   model.PopulateTensor<int8_t>(model.lhs(), {1, 2, 3, 4, 5, 6});
@@ -153,7 +140,7 @@ TEST_P(BatchMatMulOpTest, Int8Test_Simple) {
   EXPECT_THAT(model.GetOutputShape(), ElementsAreArray({1, 2, 4}));
 }
 
-TEST_P(BatchMatMulOpTest, Int8Test_LargeElement) {
+TEST(BatchMatMulOpTest, Int8Test_LargeElement) {
   BatchMatMulOpModel<int32_t> model({TensorType_INT8, {1, 2, 3}},
                                     {TensorType_INT8, {1, 3, 4}});
   model.PopulateTensor<int8_t>(model.lhs(), {121, 122, 123, 124, 125, 126});
@@ -166,7 +153,7 @@ TEST_P(BatchMatMulOpTest, Int8Test_LargeElement) {
   EXPECT_THAT(model.GetOutputShape(), ElementsAreArray({1, 2, 4}));
 }
 
-TEST_P(BatchMatMulOpTest, Float32Test_SimpleRHSAdjoint) {
+TEST(BatchMatMulOpTest, Float32Test_SimpleRHSAdjoint) {
   BatchMatMulOpModel<float> model({TensorType_FLOAT32, {1, 2, 3}},
                                   {TensorType_FLOAT32, {1, 4, 3}}, false, true);
   model.PopulateTensor<float>(model.lhs(), {1, 2, 3, 4, 5, 6});
@@ -174,11 +161,12 @@ TEST_P(BatchMatMulOpTest, Float32Test_SimpleRHSAdjoint) {
                               {7, 11, 15, 8, 12, 16, 9, 13, 17, 10, 14, 18});
   ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(model.GetOutput(),
-              ElementsAreArray({74., 80., 86., 92., 173., 188., 203., 218.}));
+              Pointwise(FloatingPointEq(),
+                        {74., 80., 86., 92., 173., 188., 203., 218.}));
   EXPECT_THAT(model.GetOutputShape(), ElementsAreArray({1, 2, 4}));
 }
 
-TEST_P(BatchMatMulOpTest, Float32Test_SimpleLHSAdjoint) {
+TEST(BatchMatMulOpTest, Float32Test_SimpleLHSAdjoint) {
   BatchMatMulOpModel<float> model({TensorType_FLOAT32, {1, 3, 2}},
                                   {TensorType_FLOAT32, {1, 3, 4}}, true, false);
   model.PopulateTensor<float>(model.lhs(), {1, 4, 2, 5, 3, 6});
@@ -186,11 +174,12 @@ TEST_P(BatchMatMulOpTest, Float32Test_SimpleLHSAdjoint) {
                               {7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18});
   ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(model.GetOutput(),
-              ElementsAreArray({74., 80., 86., 92., 173., 188., 203., 218.}));
+              Pointwise(FloatingPointEq(),
+                        {74., 80., 86., 92., 173., 188., 203., 218.}));
   EXPECT_THAT(model.GetOutputShape(), ElementsAreArray({1, 2, 4}));
 }
 
-TEST_P(BatchMatMulOpTest, Float32Test_BatchSizeTwo) {
+TEST(BatchMatMulOpTest, Float32Test_BatchSizeTwo) {
   BatchMatMulOpModel<float> model({TensorType_FLOAT32, {2, 2, 3}},
                                   {TensorType_FLOAT32, {2, 3, 4}});
   model.PopulateTensor<float>(model.lhs(),
@@ -199,14 +188,14 @@ TEST_P(BatchMatMulOpTest, Float32Test_BatchSizeTwo) {
                               {7,  8,  9,  10, 11, 12, 13, 14, 15, 16, 17, 18,
                                19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30});
   ASSERT_EQ(model.Invoke(), kTfLiteOk);
-  EXPECT_THAT(
-      model.GetOutput(),
-      ElementsAreArray({74., 80., 86., 92., 173., 188., 203., 218., 560., 584.,
-                        608., 632., 767., 800., 833., 866.}));
+  EXPECT_THAT(model.GetOutput(),
+              Pointwise(FloatingPointEq(),
+                        {74., 80., 86., 92., 173., 188., 203., 218., 560., 584.,
+                         608., 632., 767., 800., 833., 866.}));
   EXPECT_THAT(model.GetOutputShape(), ElementsAreArray({2, 2, 4}));
 }
 
-TEST_P(BatchMatMulOpTest, Float32Test_Broadcast) {
+TEST(BatchMatMulOpTest, Float32Test_Broadcast) {
   BatchMatMulOpModel<float> model({TensorType_FLOAT32, {2, 2, 3}},
                                   {TensorType_FLOAT32, {3, 4}});
   model.PopulateTensor<float>(model.lhs(),
@@ -215,14 +204,14 @@ TEST_P(BatchMatMulOpTest, Float32Test_Broadcast) {
                               {7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18});
 
   ASSERT_EQ(model.Invoke(), kTfLiteOk);
-  EXPECT_THAT(
-      model.GetOutput(),
-      ElementsAreArray({74., 80., 86., 92., 173., 188., 203., 218., 272., 296.,
-                        320., 344., 371., 404., 437., 470.}));
+  EXPECT_THAT(model.GetOutput(),
+              Pointwise(FloatingPointEq(),
+                        {74., 80., 86., 92., 173., 188., 203., 218., 272., 296.,
+                         320., 344., 371., 404., 437., 470.}));
   EXPECT_THAT(model.GetOutputShape(), ElementsAreArray({2, 2, 4}));
 }
 
-TEST_P(BatchMatMulOpTest, Float32Test_BroadcastLHSAdjoint) {
+TEST(BatchMatMulOpTest, Float32Test_BroadcastLHSAdjoint) {
   BatchMatMulOpModel<float> model({TensorType_FLOAT32, {2, 3, 2}},
                                   {TensorType_FLOAT32, {3, 4}}, true, false);
   model.PopulateTensor<float>(model.lhs(),
@@ -231,14 +220,14 @@ TEST_P(BatchMatMulOpTest, Float32Test_BroadcastLHSAdjoint) {
                               {7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18});
 
   ASSERT_EQ(model.Invoke(), kTfLiteOk);
-  EXPECT_THAT(
-      model.GetOutput(),
-      ElementsAreArray({74., 80., 86., 92., 173., 188., 203., 218., 272., 296.,
-                        320., 344., 371., 404., 437., 470.}));
+  EXPECT_THAT(model.GetOutput(),
+              Pointwise(FloatingPointEq(),
+                        {74., 80., 86., 92., 173., 188., 203., 218., 272., 296.,
+                         320., 344., 371., 404., 437., 470.}));
   EXPECT_THAT(model.GetOutputShape(), ElementsAreArray({2, 2, 4}));
 }
 
-TEST_P(BatchMatMulOpTest, Float32Test_Broadcast2) {
+TEST(BatchMatMulOpTest, Float32Test_Broadcast2) {
   BatchMatMulOpModel<float> model({TensorType_FLOAT32, {2, 1, 3, 2}},
                                   {TensorType_FLOAT32, {3, 2, 4}});
   model.PopulateTensor<float>(model.lhs(),
@@ -250,19 +239,20 @@ TEST_P(BatchMatMulOpTest, Float32Test_Broadcast2) {
   ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(
       model.GetOutput(),
-      ElementsAreArray({29.,  32.,  35.,  38.,  65.,  72.,  79.,  86.,  101.,
-                        112., 123., 134., 53.,  56.,  59.,  62.,  121., 128.,
-                        135., 142., 189., 200., 211., 222., 77.,  80.,  83.,
-                        86.,  177., 184., 191., 198., 277., 288., 299., 310.,
-                        137., 152., 167., 182., 173., 192., 211., 230., 209.,
-                        232., 255., 278., 257., 272., 287., 302., 325., 344.,
-                        363., 382., 393., 416., 439., 462., 377., 392., 407.,
-                        422., 477., 496., 515., 534., 577., 600., 623., 646.}));
+      Pointwise(
+          FloatingPointEq(),
+          {29.,  32.,  35.,  38.,  65.,  72.,  79.,  86.,  101., 112., 123.,
+           134., 53.,  56.,  59.,  62.,  121., 128., 135., 142., 189., 200.,
+           211., 222., 77.,  80.,  83.,  86.,  177., 184., 191., 198., 277.,
+           288., 299., 310., 137., 152., 167., 182., 173., 192., 211., 230.,
+           209., 232., 255., 278., 257., 272., 287., 302., 325., 344., 363.,
+           382., 393., 416., 439., 462., 377., 392., 407., 422., 477., 496.,
+           515., 534., 577., 600., 623., 646.}));
 
   EXPECT_THAT(model.GetOutputShape(), ElementsAreArray({2, 3, 3, 4}));
 }
 
-TEST_P(BatchMatMulOpTest, Float32Test_Broadcast2LHSAdjoint) {
+TEST(BatchMatMulOpTest, Float32Test_Broadcast2LHSAdjoint) {
   BatchMatMulOpModel<float> model({TensorType_FLOAT32, {2, 1, 2, 3}},
                                   {TensorType_FLOAT32, {3, 2, 4}}, true, false);
   model.PopulateTensor<float>(model.lhs(),
@@ -274,19 +264,20 @@ TEST_P(BatchMatMulOpTest, Float32Test_Broadcast2LHSAdjoint) {
   ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(
       model.GetOutput(),
-      ElementsAreArray({29.,  32.,  35.,  38.,  65.,  72.,  79.,  86.,  101.,
-                        112., 123., 134., 53.,  56.,  59.,  62.,  121., 128.,
-                        135., 142., 189., 200., 211., 222., 77.,  80.,  83.,
-                        86.,  177., 184., 191., 198., 277., 288., 299., 310.,
-                        137., 152., 167., 182., 173., 192., 211., 230., 209.,
-                        232., 255., 278., 257., 272., 287., 302., 325., 344.,
-                        363., 382., 393., 416., 439., 462., 377., 392., 407.,
-                        422., 477., 496., 515., 534., 577., 600., 623., 646.}));
+      Pointwise(
+          FloatingPointEq(),
+          {29.,  32.,  35.,  38.,  65.,  72.,  79.,  86.,  101., 112., 123.,
+           134., 53.,  56.,  59.,  62.,  121., 128., 135., 142., 189., 200.,
+           211., 222., 77.,  80.,  83.,  86.,  177., 184., 191., 198., 277.,
+           288., 299., 310., 137., 152., 167., 182., 173., 192., 211., 230.,
+           209., 232., 255., 278., 257., 272., 287., 302., 325., 344., 363.,
+           382., 393., 416., 439., 462., 377., 392., 407., 422., 477., 496.,
+           515., 534., 577., 600., 623., 646.}));
 
   EXPECT_THAT(model.GetOutputShape(), ElementsAreArray({2, 3, 3, 4}));
 }
 
-TEST_P(BatchMatMulOpTest, Float32Test_Broadcast2RHSAdjoint) {
+TEST(BatchMatMulOpTest, Float32Test_Broadcast2RHSAdjoint) {
   BatchMatMulOpModel<float> model({TensorType_FLOAT32, {2, 1, 3, 2}},
                                   {TensorType_FLOAT32, {3, 4, 2}}, false, true);
   model.PopulateTensor<float>(model.lhs(),
@@ -297,19 +288,20 @@ TEST_P(BatchMatMulOpTest, Float32Test_Broadcast2RHSAdjoint) {
   ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(
       model.GetOutput(),
-      ElementsAreArray({29.,  32.,  35.,  38.,  65.,  72.,  79.,  86.,  101.,
-                        112., 123., 134., 53.,  56.,  59.,  62.,  121., 128.,
-                        135., 142., 189., 200., 211., 222., 77.,  80.,  83.,
-                        86.,  177., 184., 191., 198., 277., 288., 299., 310.,
-                        137., 152., 167., 182., 173., 192., 211., 230., 209.,
-                        232., 255., 278., 257., 272., 287., 302., 325., 344.,
-                        363., 382., 393., 416., 439., 462., 377., 392., 407.,
-                        422., 477., 496., 515., 534., 577., 600., 623., 646.}));
+      Pointwise(
+          FloatingPointEq(),
+          {29.,  32.,  35.,  38.,  65.,  72.,  79.,  86.,  101., 112., 123.,
+           134., 53.,  56.,  59.,  62.,  121., 128., 135., 142., 189., 200.,
+           211., 222., 77.,  80.,  83.,  86.,  177., 184., 191., 198., 277.,
+           288., 299., 310., 137., 152., 167., 182., 173., 192., 211., 230.,
+           209., 232., 255., 278., 257., 272., 287., 302., 325., 344., 363.,
+           382., 393., 416., 439., 462., 377., 392., 407., 422., 477., 496.,
+           515., 534., 577., 600., 623., 646.}));
 
   EXPECT_THAT(model.GetOutputShape(), ElementsAreArray({2, 3, 3, 4}));
 }
 
-TEST_P(BatchMatMulOpTest, Float32Test_Broadcast2BothAdjoint) {
+TEST(BatchMatMulOpTest, Float32Test_Broadcast2BothAdjoint) {
   BatchMatMulOpModel<float> model({TensorType_FLOAT32, {2, 1, 2, 3}},
                                   {TensorType_FLOAT32, {3, 4, 2}}, true, true);
   model.PopulateTensor<float>(model.lhs(),
@@ -320,19 +312,20 @@ TEST_P(BatchMatMulOpTest, Float32Test_Broadcast2BothAdjoint) {
   ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(
       model.GetOutput(),
-      ElementsAreArray({29.,  32.,  35.,  38.,  65.,  72.,  79.,  86.,  101.,
-                        112., 123., 134., 53.,  56.,  59.,  62.,  121., 128.,
-                        135., 142., 189., 200., 211., 222., 77.,  80.,  83.,
-                        86.,  177., 184., 191., 198., 277., 288., 299., 310.,
-                        137., 152., 167., 182., 173., 192., 211., 230., 209.,
-                        232., 255., 278., 257., 272., 287., 302., 325., 344.,
-                        363., 382., 393., 416., 439., 462., 377., 392., 407.,
-                        422., 477., 496., 515., 534., 577., 600., 623., 646.}));
+      Pointwise(
+          FloatingPointEq(),
+          {29.,  32.,  35.,  38.,  65.,  72.,  79.,  86.,  101., 112., 123.,
+           134., 53.,  56.,  59.,  62.,  121., 128., 135., 142., 189., 200.,
+           211., 222., 77.,  80.,  83.,  86.,  177., 184., 191., 198., 277.,
+           288., 299., 310., 137., 152., 167., 182., 173., 192., 211., 230.,
+           209., 232., 255., 278., 257., 272., 287., 302., 325., 344., 363.,
+           382., 393., 416., 439., 462., 377., 392., 407., 422., 477., 496.,
+           515., 534., 577., 600., 623., 646.}));
 
   EXPECT_THAT(model.GetOutputShape(), ElementsAreArray({2, 3, 3, 4}));
 }
 
-TEST_P(BatchMatMulOpTest, Float32Test_BroadcastFromRHS) {
+TEST(BatchMatMulOpTest, Float32Test_BroadcastFromRHS) {
   BatchMatMulOpModel<float> model({TensorType_FLOAT32, {4, 5}},
                                   {TensorType_FLOAT32, {3, 1, 5, 2}});
   model.PopulateTensor<float>(
@@ -346,15 +339,12 @@ TEST_P(BatchMatMulOpTest, Float32Test_BroadcastFromRHS) {
   ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(
       model.GetOutput(),
-      ElementsAreArray({185., 200., 460.,  500.,  735.,  800.,  1010., 1100.,
-                        335., 350., 860.,  900.,  1385., 1450., 1910., 2000.,
-                        485., 500., 1260., 1300., 2035., 2100., 2810., 2900.}));
+      Pointwise(FloatingPointEq(),
+                {185., 200., 460.,  500.,  735.,  800.,  1010., 1100.,
+                 335., 350., 860.,  900.,  1385., 1450., 1910., 2000.,
+                 485., 500., 1260., 1300., 2035., 2100., 2810., 2900.}));
   EXPECT_THAT(model.GetOutputShape(), ElementsAreArray({3, 1, 4, 2}));
 }
-
-INSTANTIATE_TEST_SUITE_P(
-    BatchMatMulOpTest, BatchMatMulOpTest,
-    ::testing::ValuesIn(SingleOpTest::GetKernelTags(*kKernelMap)));
 
 class ConstRHSBatchMatMulOpModel : public MultiOpModel {
  public:
@@ -483,14 +473,7 @@ class HybridBatchMatMulOpModel : public SingleOpModel {
   int input_size_;
 };
 
-class HybridAsymmetricBatchMatMulOpTest : public SingleOpTest {
- protected:
-  const std::map<string, TfLiteRegistration*>& GetKernelMap() override {
-    return *kKernelMap;
-  }
-};
-
-TEST_P(HybridAsymmetricBatchMatMulOpTest, SimpleTestQuantizedInt8) {
+TEST(HybridAsymmetricBatchMatMulOpTest, SimpleTestQuantizedInt8) {
   HybridBatchMatMulOpModel m(
       /*units=*/3, /*batches=*/2,
       /*lhs=*/{TensorType_FLOAT32, {2, 10}},
@@ -517,11 +500,11 @@ TEST_P(HybridAsymmetricBatchMatMulOpTest, SimpleTestQuantizedInt8) {
                                      247,
                                      247,
                                  },
-                                 /*max_abs_error=*/3.f)));
+                                 /*max_abs_err=*/3.f)));
   EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({2, 3}));
 }
 
-TEST_P(HybridAsymmetricBatchMatMulOpTest, MultipleNumBatchQuantizedInt8) {
+TEST(HybridAsymmetricBatchMatMulOpTest, MultipleNumBatchQuantizedInt8) {
   // need 4 scale factors
   HybridBatchMatMulOpModel m(
       /*units=*/10, /*batches=*/4,
@@ -549,11 +532,11 @@ TEST_P(HybridAsymmetricBatchMatMulOpTest, MultipleNumBatchQuantizedInt8) {
                       73, 73, 73, 73, 73, 73, 73, 73, 73, 73, 73, 73, 73, 73,
                       73, 73, 73, 73, 73, 73, 73, 73, 73, 73, 73, 73,
                   },
-                  /*max_abs_error=*/0.64f)));
+                  /*max_abs_err=*/0.64f)));
   EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({1, 2, 2, 10}));
 }
 
-TEST_P(HybridAsymmetricBatchMatMulOpTest, RegressionTestQuantizedInt8) {
+TEST(HybridAsymmetricBatchMatMulOpTest, RegressionTestQuantizedInt8) {
   HybridBatchMatMulOpModel m(
       /*units=*/10, /*batches=*/2,
       /*lhs=*/{TensorType_FLOAT32, {2, 3}},
@@ -576,7 +559,7 @@ TEST_P(HybridAsymmetricBatchMatMulOpTest, RegressionTestQuantizedInt8) {
                                      73, 73, 73, 73, 73, 73, 73, 73, 73, 73,
                                      73, 73, 73, 73, 73, 73, 73, 73, 73, 73,
                                  },
-                                 /*max_abs_error=*/0.64f)));
+                                 /*max_abs_err=*/0.64f)));
   EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({2, 10}));
 }
 
@@ -586,8 +569,8 @@ TEST_P(HybridAsymmetricBatchMatMulOpTest, RegressionTestQuantizedInt8) {
 // batches/units), scratch scaling_factors/accum_scratch will be allocated to
 // smaller size than required and make wrong operation result, so that we can
 // check this thoroughly.
-TEST_P(HybridAsymmetricBatchMatMulOpTest,
-       TestQuantizedInt8BatchesAndUnitsGreaterThanAccumDimSize) {
+TEST(HybridAsymmetricBatchMatMulOpTest,
+     TestQuantizedInt8BatchesAndUnitsGreaterThanAccumDimSize) {
   HybridBatchMatMulOpModel m(
       /*units=*/8, /*batches=*/6,
       /*lhs=*/{TensorType_FLOAT32, {6, 3}},
@@ -613,14 +596,14 @@ TEST_P(HybridAsymmetricBatchMatMulOpTest,
           {74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74,
            74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74,
            74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74},
-          /*max_abs_error=*/0.15f)));
+          /*max_abs_err=*/0.15f)));
   EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({6, 8}));
 }
 
 // Test if batch_size and num_units are set correctly in InitializeTemporaries,
 // where adj_x is true.
-TEST_P(HybridAsymmetricBatchMatMulOpTest,
-       TestQuantizedInt8BatchesAndUnitsGreaterThanAccumDimSizeAdjX) {
+TEST(HybridAsymmetricBatchMatMulOpTest,
+     TestQuantizedInt8BatchesAndUnitsGreaterThanAccumDimSizeAdjX) {
   HybridBatchMatMulOpModel m(
       /*units=*/8, /*batches=*/6,
       /*lhs=*/{TensorType_FLOAT32, {3, 6}},
@@ -643,14 +626,14 @@ TEST_P(HybridAsymmetricBatchMatMulOpTest,
           {74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74,
            74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74,
            74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74},
-          /*max_abs_error=*/0.15f)));
+          /*max_abs_err=*/0.15f)));
   EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({6, 8}));
 }
 
-// // Test if batch_size and num_units are set correctly in
+// Test if batch_size and num_units are set correctly in
 // InitializeTemporaries, where adj_y is true.
-TEST_P(HybridAsymmetricBatchMatMulOpTest,
-       TestQuantizedInt8BatchesAndUnitsGreaterThanAccumDimSizeAdjY) {
+TEST(HybridAsymmetricBatchMatMulOpTest,
+     TestQuantizedInt8BatchesAndUnitsGreaterThanAccumDimSizeAdjY) {
   HybridBatchMatMulOpModel m(
       /*units=*/8, /*batches=*/6,
       /*lhs=*/{TensorType_FLOAT32, {6, 3}},
@@ -680,14 +663,14 @@ TEST_P(HybridAsymmetricBatchMatMulOpTest,
           {74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74,
            74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74,
            74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74},
-          /*max_abs_error=*/0.15f)));
+          /*max_abs_err=*/0.15f)));
   EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({6, 8}));
 }
 
-// // Test if batch_size and num_units are set correctly in
+// Test if batch_size and num_units are set correctly in
 // InitializeTemporaries, where both adj_x and adj_y are true.
-TEST_P(HybridAsymmetricBatchMatMulOpTest,
-       TestQuantizedInt8BatchesAndUnitsGreaterThanAccumDimSizeAdjXAdjY) {
+TEST(HybridAsymmetricBatchMatMulOpTest,
+     TestQuantizedInt8BatchesAndUnitsGreaterThanAccumDimSizeAdjXAdjY) {
   HybridBatchMatMulOpModel m(
       /*units=*/8, /*batches=*/6,
       /*lhs=*/{TensorType_FLOAT32, {3, 6}},
@@ -711,11 +694,11 @@ TEST_P(HybridAsymmetricBatchMatMulOpTest,
           {74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74,
            74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74,
            74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74},
-          /*max_abs_error=*/0.15f)));
+          /*max_abs_err=*/0.15f)));
   EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({6, 8}));
 }
 
-TEST_P(HybridAsymmetricBatchMatMulOpTest, QuantizedInt8BroadcastWeights) {
+TEST(HybridAsymmetricBatchMatMulOpTest, QuantizedInt8BroadcastWeights) {
   HybridBatchMatMulOpModel m(
       /*units=*/3, /*batches=*/2,
       /*lhs=*/{TensorType_FLOAT32, {2, 2, 10}},
@@ -742,11 +725,11 @@ TEST_P(HybridAsymmetricBatchMatMulOpTest, QuantizedInt8BroadcastWeights) {
                                      193, 193, 193,  //
                                      247, 247, 247,  //
                                  },
-                                 /*max_abs_error=*/3.f)));
+                                 /*max_abs_err=*/3.f)));
   EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({2, 2, 3}));
 }
 
-TEST_P(HybridAsymmetricBatchMatMulOpTest, QuantizedInt8BroadcastBigWeights) {
+TEST(HybridAsymmetricBatchMatMulOpTest, QuantizedInt8BroadcastBigWeights) {
   HybridBatchMatMulOpModel m(
       /*units=*/9, /*batches=*/2,
       /*lhs=*/{TensorType_FLOAT32, {2, 2, 10}},
@@ -782,11 +765,11 @@ TEST_P(HybridAsymmetricBatchMatMulOpTest, QuantizedInt8BroadcastBigWeights) {
                       193, 193, 193, 1425, 1425, 1425, 2118, 2118, 2118,  //
                       247, 247, 247, 1511, 1511, 1511, 2222, 2222, 2222   //
                   },
-                  /*max_abs_error=*/10.0f)));
+                  /*max_abs_err=*/10.0f)));
   EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({2, 2, 9}));
 }
 
-TEST_P(HybridAsymmetricBatchMatMulOpTest, QuantizedInt8BroadcastInputs) {
+TEST(HybridAsymmetricBatchMatMulOpTest, QuantizedInt8BroadcastInputs) {
   HybridBatchMatMulOpModel m(
       /*units=*/3, /*batches=*/2,
       /*lhs=*/{TensorType_FLOAT32, {2, 10}},
@@ -830,22 +813,11 @@ TEST_P(HybridAsymmetricBatchMatMulOpTest, QuantizedInt8BroadcastInputs) {
                                      23, 23, 23,   //
                                      57, 57, 57,   //
                                  },
-                                 /*max_abs_error=*/1.5f)));
+                                 /*max_abs_err=*/1.5f)));
   EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({2, 2, 3}));
 }
 
-INSTANTIATE_TEST_SUITE_P(
-    HybridAsymmetricBatchMatMulOpTest, HybridAsymmetricBatchMatMulOpTest,
-    ::testing::ValuesIn(SingleOpTest::GetKernelTags(*kKernelMap)));
-
-class HybridSymmetricBatchMatMulOpTest : public SingleOpTest {
- protected:
-  const std::map<string, TfLiteRegistration*>& GetKernelMap() override {
-    return *kKernelMap;
-  }
-};
-
-TEST_P(HybridSymmetricBatchMatMulOpTest, SimpleTestQuantizedInt8) {
+TEST(HybridSymmetricBatchMatMulOpTest, SimpleTestQuantizedInt8) {
   HybridBatchMatMulOpModel m(
       /*units=*/3, /*batches=*/2,
       /*lhs=*/{TensorType_FLOAT32, {2, 10}},
@@ -873,11 +845,11 @@ TEST_P(HybridSymmetricBatchMatMulOpTest, SimpleTestQuantizedInt8) {
                                      247,
                                      247,
                                  },
-                                 /*max_abs_error=*/1.5f)));
+                                 /*max_abs_err=*/1.5f)));
   EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({2, 3}));
 }
 
-TEST_P(HybridSymmetricBatchMatMulOpTest, QuantizedInt8BroadcastWeights) {
+TEST(HybridSymmetricBatchMatMulOpTest, QuantizedInt8BroadcastWeights) {
   HybridBatchMatMulOpModel m(
       /*units=*/3, /*batches=*/2,
       /*lhs=*/{TensorType_FLOAT32, {2, 2, 10}},
@@ -905,11 +877,11 @@ TEST_P(HybridSymmetricBatchMatMulOpTest, QuantizedInt8BroadcastWeights) {
                                      193, 193, 193,  //
                                      247, 247, 247,  //
                                  },
-                                 /*max_abs_error=*/1.5f)));
+                                 /*max_abs_err=*/1.5f)));
   EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({2, 2, 3}));
 }
 
-TEST_P(HybridSymmetricBatchMatMulOpTest, QuantizedInt8BroadcastBigWeights) {
+TEST(HybridSymmetricBatchMatMulOpTest, QuantizedInt8BroadcastBigWeights) {
   HybridBatchMatMulOpModel m(
       /*units=*/9, /*batches=*/2,
       /*lhs=*/{TensorType_FLOAT32, {2, 2, 10}},
@@ -946,11 +918,11 @@ TEST_P(HybridSymmetricBatchMatMulOpTest, QuantizedInt8BroadcastBigWeights) {
                       193, 193, 193, 1425, 1425, 1425, 2118, 2118, 2118,  //
                       247, 247, 247, 1511, 1511, 1511, 2222, 2222, 2222   //
                   },
-                  /*max_abs_error=*/10.0f)));
+                  /*max_abs_err=*/10.0f)));
   EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({2, 2, 9}));
 }
 
-TEST_P(HybridSymmetricBatchMatMulOpTest, QuantizedInt8BroadcastInputs) {
+TEST(HybridSymmetricBatchMatMulOpTest, QuantizedInt8BroadcastInputs) {
   HybridBatchMatMulOpModel m(
       /*units=*/3, /*batches=*/2,
       /*lhs=*/{TensorType_FLOAT32, {2, 10}},
@@ -995,13 +967,9 @@ TEST_P(HybridSymmetricBatchMatMulOpTest, QuantizedInt8BroadcastInputs) {
                                      23, 23, 23,   //
                                      57, 57, 57,   //
                                  },
-                                 /*max_abs_error=*/1.5f)));
+                                 /*max_abs_err=*/1.5f)));
   EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({2, 2, 3}));
 }
-
-INSTANTIATE_TEST_SUITE_P(
-    HybridSymmetricBatchMatMulOpTest, HybridSymmetricBatchMatMulOpTest,
-    ::testing::ValuesIn(SingleOpTest::GetKernelTags(*kKernelMap)));
 
 class QuantizedBatchMatMulOpModel : public SingleOpModel {
  public:
@@ -1063,14 +1031,7 @@ class QuantizedBatchMatMulOpModel : public SingleOpModel {
   int input_size_;
 };
 
-class QuantizedBatchMatMulOpTest : public SingleOpTest {
- protected:
-  const std::map<string, TfLiteRegistration*>& GetKernelMap() override {
-    return *kKernelMap;
-  }
-};
-
-TEST_P(QuantizedBatchMatMulOpTest, SimpleTestQuantizedInt8) {
+TEST(QuantizedBatchMatMulOpTest, SimpleTestQuantizedInt8) {
   QuantizedBatchMatMulOpModel m(
       /*units=*/3, /*batches*/ 2,
       /*lhs=*/{TensorType_INT8, {2, 10}, -63.5, 64},
@@ -1093,7 +1054,7 @@ TEST_P(QuantizedBatchMatMulOpTest, SimpleTestQuantizedInt8) {
   EXPECT_THAT(m.GetOutput<int8_t>(), ElementsAre(22, 22, 22, 56, 56, 56));
 }
 
-TEST_P(QuantizedBatchMatMulOpTest, SimpleTestQuantizedInt8AdjRHS) {
+TEST(QuantizedBatchMatMulOpTest, SimpleTestQuantizedInt8AdjRHS) {
   QuantizedBatchMatMulOpModel m(
       /*units=*/3, /*batches*/ 2,
       /*lhs=*/{TensorType_INT8, {2, 10}, -63.5, 64},
@@ -1116,7 +1077,7 @@ TEST_P(QuantizedBatchMatMulOpTest, SimpleTestQuantizedInt8AdjRHS) {
   EXPECT_THAT(m.GetOutput<int8_t>(), ElementsAre(13, 64, 127, 19, 94, 127));
 }
 
-TEST_P(QuantizedBatchMatMulOpTest, SimpleTestQuantizedInt16) {
+TEST(QuantizedBatchMatMulOpTest, SimpleTestQuantizedInt16) {
   const float inputs_scale = 10.0 / std::numeric_limits<int16_t>::max();
   const float output_scale = 1.0;
   const int32_t zero_point = 0;
@@ -1144,10 +1105,6 @@ TEST_P(QuantizedBatchMatMulOpTest, SimpleTestQuantizedInt16) {
               ElementsAreArray(ArrayFloatNear({23, 23, 23, 57, 57, 57})));
   EXPECT_THAT(m.GetOutput<int16_t>(), ElementsAre(23, 23, 23, 57, 57, 57));
 }
-
-INSTANTIATE_TEST_SUITE_P(
-    QuantizedBatchMatMulOpTest, QuantizedBatchMatMulOpTest,
-    ::testing::ValuesIn(SingleOpTest::GetKernelTags(*kKernelMap)));
 
 }  // namespace
 }  // namespace tflite

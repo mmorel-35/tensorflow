@@ -18,7 +18,6 @@ limitations under the License.
 #include <stdint.h>
 
 #include <algorithm>
-#include <iterator>
 #include <map>
 #include <memory>
 #include <string>
@@ -333,10 +332,16 @@ absl::Status GraphFloat32::MakeExactCopy(GraphFloat32* model) const {
   model->nodes_.clear();
   model->execution_plan_.clear();
   model->values_.clear();
+  model->known_graph_outputs_.clear();
   for (auto& value_def : values_) {
     model->values_.push_back({});
     if (value_def.value) {
       model->values_.back().value = std::make_unique<Value>(*value_def.value);
+      if (std::find(known_graph_outputs_.begin(), known_graph_outputs_.end(),
+                    value_def.value.get()) != known_graph_outputs_.end()) {
+        model->known_graph_outputs_.push_back(
+            model->values_.back().value.get());
+      }
     }
   }
   // Add all nodes first.
@@ -526,16 +531,26 @@ absl::Status ConnectTwoNodes(GraphFloat32* graph, const Node* from_node,
 }
 
 absl::Status CheckBatchSizeForAllValues(const GraphFloat32& model) {
-  if (model.values().empty()) return absl::OkStatus();
-  const int32_t b = model.values()[0]->tensor.shape.b;
-  for (auto value : model.values()) {
+  std::vector<Value*> values = model.values();
+  if (values.empty()) return absl::OkStatus();
+  std::vector<Value*> offending_values;
+  const int32_t b = values[0]->tensor.shape.b;
+  for (auto value : values) {
     if (value->tensor.shape.b != b) {
-      return absl::InvalidArgumentError(
-          absl::StrCat("Batch size mismatch, expected ", b, " but got ",
-                       value->tensor.shape.b));
+      offending_values.push_back(value);
     }
   }
-  return absl::OkStatus();
+  if (offending_values.empty()) return absl::OkStatus();
+
+  std::string error_message = absl::StrCat(
+      "Batch size mismatch, expected ", b, " but got ", offending_values.size(),
+      " values with divergent batch sizes: ");
+  for (const Value* value : offending_values) {
+    absl::StrAppend(&error_message, "\n  id:", value->id, " shape:[",
+                    value->tensor.shape.b, ", ", value->tensor.shape.h, ", ",
+                    value->tensor.shape.w, ", ", value->tensor.shape.c, "]");
+  }
+  return absl::InvalidArgumentError(error_message);
 }
 
 }  // namespace gpu

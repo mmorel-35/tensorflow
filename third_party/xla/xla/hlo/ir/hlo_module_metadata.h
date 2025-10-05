@@ -16,15 +16,20 @@ limitations under the License.
 #ifndef XLA_HLO_IR_HLO_MODULE_METADATA_H_
 #define XLA_HLO_IR_HLO_MODULE_METADATA_H_
 
+#include <cstdint>
 #include <functional>
 #include <optional>
 #include <string>
 #include <vector>
 
+#include "absl/functional/function_ref.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "xla/service/hlo.pb.h"
 #include "xla/status_macros.h"
+#include "xla/tsl/platform/env.h"
+#include "xla/tsl/platform/statusor.h"
 #include "xla/util.h"
-#include "tsl/platform/env.h"
 #include "tsl/platform/protobuf.h"
 
 namespace xla {
@@ -64,6 +69,9 @@ class HloModuleMetadata {
     module_metadata_.add_partitioned_module_ids(id);
   }
   absl::Status set_custom_metadata(const ::tsl::protobuf::Message& message);
+  // Adds a (key, value) pair metric if none was already set. Otherwise, it
+  // updates the existing value.
+  absl::Status set_key_value_metric(const std::string& key, int64_t value);
 
   absl::StatusOr<int64_t> current_pass_id() {
     TF_ASSIGN_OR_RETURN(HloPassMetadata * pass_metadata,
@@ -110,6 +118,9 @@ class HloModuleMetadata {
           pass_metadata->add_module_group_module_ids(module_id);
         });
   }
+
+  // Clears all pass metadata.
+  void ClearPassMetadata() { module_metadata_.clear_pass_metadata(); }
 
  private:
   // Gets mutable metadata for the currently running pass. If passes are nested,

@@ -19,6 +19,7 @@ limitations under the License.
 
 #include "absl/strings/match.h"
 #include "absl/strings/string_view.h"
+#include "google/protobuf/io/tokenizer.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/platform/casts.h"
@@ -30,12 +31,13 @@ namespace {
 // Error collector that simply ignores errors reported.
 class NoOpErrorCollector : public protobuf::io::ErrorCollector {
  public:
-  void AddError(int line, int column, const std::string& message) override {}
+  void RecordError(int line, tsl::protobuf::io::ColumnNumber column,
+                   absl::string_view message) override {}
 };
 }  // namespace
 
-Status ConsumePrefix(absl::string_view str, absl::string_view prefix,
-                     absl::string_view* output) {
+absl::Status ConsumePrefix(absl::string_view str, absl::string_view prefix,
+                           absl::string_view* output) {
   if (absl::StartsWith(str, prefix)) {
     *output = str.substr(prefix.size());
     return absl::OkStatus();
@@ -43,9 +45,9 @@ Status ConsumePrefix(absl::string_view str, absl::string_view prefix,
   return errors::NotFound("No prefix \"", prefix, "\" in \"", str, "\"");
 }
 
-Status ParseTextProto(absl::string_view text_proto,
-                      absl::string_view prefix_to_strip,
-                      protobuf::Message* parsed_proto) {
+absl::Status ParseTextProto(absl::string_view text_proto,
+                            absl::string_view prefix_to_strip,
+                            protobuf::Message* parsed_proto) {
   protobuf::TextFormat::Parser parser;
   // Don't produce errors when attempting to parse text format as it would fail
   // when the input is actually a binary file.

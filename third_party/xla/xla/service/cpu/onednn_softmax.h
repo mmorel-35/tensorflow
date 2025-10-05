@@ -15,18 +15,17 @@ limitations under the License.
 
 #ifndef XLA_SERVICE_CPU_ONEDNN_SOFTMAX_H_
 #define XLA_SERVICE_CPU_ONEDNN_SOFTMAX_H_
-#if defined(INTEL_MKL) && defined(ENABLE_ONEDNN_V3)
 
 namespace xla {
 namespace cpu {
 
 extern "C" {
 extern void __xla_cpu_runtime_OneDnnSoftmax(const void* run_options_ptr,
-                                            void* input, void* result);
+                                            void* input, void* result,
+                                            void* softmax_config_ptr);
 }  // extern "C"
 
 }  // namespace cpu
 }  // namespace xla
 
-#endif  // INTEL_MKL && && ENABLE_ONEDNN_V3
 #endif  // XLA_SERVICE_CPU_ONEDNN_SOFTMAX_H_

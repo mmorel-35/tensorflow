@@ -17,11 +17,13 @@ limitations under the License.
 
 #include <vector>
 
-#include "tsl/lib/core/status_test_util.h"
-#include "tsl/platform/errors.h"
+#include "absl/strings/ascii.h"
+#include "absl/strings/match.h"
+#include "xla/tsl/lib/core/status_test_util.h"
+#include "xla/tsl/platform/errors.h"
+#include "xla/tsl/platform/test.h"
+#include "xla/tsl/platform/test_benchmark.h"
 #include "tsl/platform/strcat.h"
-#include "tsl/platform/test.h"
-#include "tsl/platform/test_benchmark.h"
 
 namespace tsl {
 
@@ -42,25 +44,24 @@ bool RoundTripPartialName(int parts_to_test, const std::vector<string>& parts,
                           bool explicitDevice) {
   string original, expected;
   if (parts_to_test & kJob) {
-    strings::StrAppend(&original, "/job:", parts[0]);
-    strings::StrAppend(&expected, "/job:", parts[0]);
+    absl::StrAppend(&original, "/job:", parts[0]);
+    absl::StrAppend(&expected, "/job:", parts[0]);
   }
   if (parts_to_test & kReplica) {
-    strings::StrAppend(&original, "/replica:", parts[1]);
-    strings::StrAppend(&expected, "/replica:", parts[1]);
+    absl::StrAppend(&original, "/replica:", parts[1]);
+    absl::StrAppend(&expected, "/replica:", parts[1]);
   }
   if (parts_to_test & kTask) {
-    strings::StrAppend(&original, "/task:", parts[2]);
-    strings::StrAppend(&expected, "/task:", parts[2]);
+    absl::StrAppend(&original, "/task:", parts[2]);
+    absl::StrAppend(&expected, "/task:", parts[2]);
   }
   if (parts_to_test & kDevice) {
     if (explicitDevice) {
-      strings::StrAppend(&original, "/device:", parts[3]);
-      strings::StrAppend(&expected, "/device:", parts[3]);
+      absl::StrAppend(&original, "/device:", parts[3]);
+      absl::StrAppend(&expected, "/device:", parts[3]);
     } else {
-      strings::StrAppend(&original, "/", parts[3]);
-      strings::StrAppend(&expected,
-                         "/device:", absl::AsciiStrToUpper(parts[3]));
+      absl::StrAppend(&original, "/", parts[3]);
+      absl::StrAppend(&expected, "/device:", absl::AsciiStrToUpper(parts[3]));
     }
   }
   return RoundTripParsedName(original, expected);
@@ -298,7 +299,7 @@ TEST(DeviceNameUtilsTest, Basic) {
   }
 }
 
-static bool IsCSHelper(StringPiece pattern, StringPiece actual) {
+static bool IsCSHelper(absl::string_view pattern, absl::string_view actual) {
   DeviceNameUtils::ParsedName p, a;
   EXPECT_TRUE(DeviceNameUtils::ParseFullName(pattern, &p));
   EXPECT_TRUE(DeviceNameUtils::ParseFullName(actual, &a));
@@ -323,7 +324,7 @@ TEST(DeviceNameUtilsTest, IsCompleteSpecification) {
       IsCSHelper("/gpu:*", "/job:worker/replica:1/task:2/device:GPU:3"));
 }
 
-static bool IsSpecHelper(StringPiece pattern, StringPiece actual) {
+static bool IsSpecHelper(absl::string_view pattern, absl::string_view actual) {
   DeviceNameUtils::ParsedName p, a;
   EXPECT_TRUE(DeviceNameUtils::ParseFullName(pattern, &p));
   EXPECT_TRUE(DeviceNameUtils::ParseFullName(actual, &a));

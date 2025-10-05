@@ -254,6 +254,40 @@ TEST(Tensor_Float8_E4m3fn, Simple) {
   TestCopies<float8_e4m3fn>(t);
 }
 
+TEST(Tensor_Float8_E4m3fnuz, Simple) {
+  Tensor t(DT_FLOAT8_E4M3FNUZ, TensorShape({5, 7}));
+  EXPECT_TRUE(t.shape().IsSameSize(TensorShape({5, 7})));
+  for (int64_t a = 0; a < t.shape().dim_size(0); a++) {
+    for (int64_t b = 0; b < t.shape().dim_size(1); b++) {
+      t.matrix<float8_e4m3fnuz>()(a, b) = static_cast<float8_e4m3fnuz>(a * b);
+    }
+  }
+  TestCopies<float8_e4m3fnuz>(t);
+}
+
+TEST(Tensor_Float8_E4m3b11fnuz, Simple) {
+  Tensor t(DT_FLOAT8_E4M3B11FNUZ, TensorShape({5, 7}));
+  EXPECT_TRUE(t.shape().IsSameSize(TensorShape({5, 7})));
+  for (int64_t a = 0; a < t.shape().dim_size(0); a++) {
+    for (int64_t b = 0; b < t.shape().dim_size(1); b++) {
+      t.matrix<float8_e4m3b11fnuz>()(a, b) =
+          static_cast<float8_e4m3b11fnuz>(a * b);
+    }
+  }
+  TestCopies<float8_e4m3b11fnuz>(t);
+}
+
+TEST(Tensor_Float8_E5m2fnuz, Simple) {
+  Tensor t(DT_FLOAT8_E5M2FNUZ, TensorShape({5, 7}));
+  EXPECT_TRUE(t.shape().IsSameSize(TensorShape({5, 7})));
+  for (int64_t a = 0; a < t.shape().dim_size(0); a++) {
+    for (int64_t b = 0; b < t.shape().dim_size(1); b++) {
+      t.matrix<float8_e5m2fnuz>()(a, b) = static_cast<float8_e5m2fnuz>(a * b);
+    }
+  }
+  TestCopies<float8_e5m2fnuz>(t);
+}
+
 TEST(Tensor_Float, Simple) {
   Tensor t(DT_FLOAT, TensorShape({10, 20}));
   EXPECT_TRUE(t.shape().IsSameSize(TensorShape({10, 20})));
@@ -1231,7 +1265,7 @@ TEST(Tensor_String, SimpleWithHelper) {
   Tensor t2(DT_STRING, {2, 3});
   for (int i = 0; i < 2; ++i) {
     for (int j = 0; j < 3; ++j) {
-      t2.matrix<tstring>()(i, j) = strings::StrCat(i * 3 + j);
+      t2.matrix<tstring>()(i, j) = absl::StrCat(i * 3 + j);
     }
   }
 
@@ -1628,7 +1662,7 @@ TEST(SummarizeValue, Uninitialized) {
   Tensor x(DT_INT32);
   TensorTestHelper::set_shape(&x, TensorShape({4, 4}));
   EXPECT_EQ(
-      strings::StrCat("uninitialized Tensor of 16 elements of type ", DT_INT32),
+      absl::StrCat("uninitialized Tensor of 16 elements of type ", DT_INT32),
       x.SummarizeValue(16));
 }
 

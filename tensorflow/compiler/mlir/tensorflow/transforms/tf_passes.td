@@ -334,6 +334,8 @@ def TensorFlowShapeInferencePass : Pass<"tf-shape-inference", "ModuleOp"> {
            "Maximum shape inference iterations">,
     Option<"input_arg_shapes_", "input-arg-shapes", "std::string", /*default=*/"",
            "Input tensor shapes. Shapes for different tensors are separated by ':', and dimension sizes for the same tensor are separated by ','">,
+    Option<"enable_stablehlo_propagation_", "enable-stablehlo-propagation", "bool", /*default=*/"false",
+           "Enables refined shape propagation to the StableHLO module inside XlaCallModule ops.">,
   ];
 }
 
@@ -835,18 +837,6 @@ def TPUPartitionedOpConversionPass : Pass<"tf-tpu-partitioned-op-conversion", "m
   let summary = "Rewrite all TPU Partitioned ops into their V2 counterparts.";
 
   let constructor = "TFTPU::CreateTPUPartitionedOpConversionPass()";
-}
-
-def TPUValidateInputsPass : Pass<"tf-tpu-validate-inputs", "ModuleOp"> {
-  let summary = "Validates inputs to the TPU TF/XLA bridge";
-
-  let description = [{
-    This pass checks that the IR has valid input to TPU TF/XLA bridge.
-    It checks the relations of multiple ops. Properties of single ops are
-    checked by the 'verify' method of ops.
-  }];
-
-  let constructor = "TFTPU::CreateTPUValidateInputsPass()";
 }
 
 def ClusterConstantSinkingPass : Pass<"tf-device-constant-sinking", "mlir::func::FuncOp"> {
@@ -2225,7 +2215,8 @@ def XlaCallModuleDeserializationPass
     "shape::ShapeDialect",
     "stablehlo::StablehloDialect",
     "vhlo::VhloDialect",
-    "quant::QuantizationDialect",
+    "quant::QuantDialect",
+    "sdy::SdyDialect",
   ];
 
   let constructor = "TF::CreateXlaCallModuleDeserializationPass()";
@@ -2304,4 +2295,48 @@ def MoveTpuCompileToFrontPass : Pass<"tf-move-tpu-compile-to-front", "mlir::func
     where they are.
   }];
   let constructor = "TF::CreateMoveTpuCompileToFrontPass()";
+}
+
+def DecomposeOptionalsPass : Pass<"tf-decompose-optionals", "ModuleOp"> {
+  let summary = "Decomposes ops of the 'Optional' family";
+  let description = [{
+    Turns OptionalFromValue, OptionalGetValue, OptionalNone,
+    and OptionalHasValue into identities.
+
+    For example, if we have:
+
+      %1 = "tf.OptionalFromValue"(%0) : (tensor<f32>) -> !tf_type.variant
+      %2 = "tf.OptionalGetValue"(%1) : (tensor<!tf_type.variant>) -> tensor<f32>
+
+    then after the pass, this will have been transformed to:
+
+      %1 = "tf.Identity"(%0) : (tensor<f32>) -> tensor<f32>
+      %2 = "tf.Identity"(%1) : (tensor<f32>) -> tensor<f32>
+
+  }];
+  let constructor = "TF::CreateDecomposeOptionalsPass()";
+}
+
+def OrderForProgramKeyPass : Pass<"tf-order-for-program-key", "ModuleOp"> {
+  let summary = "Move TPUCompile ops as early as possible.";
+  let description = [{
+      Reorders blocks so that TPUCompileMlir ops (and launches that contain
+      TPUCompileMlir ops) are placed as early as possible.
+
+      For example, the code
+
+        "SomeOp"() : () -> tensor<i64>
+        %0, %1 = "tf._TPUCompileMlir"(...)
+
+      would be reordered to
+
+        %0, %1 = "tf._TPUCompileMlir"(...)
+        "SomeOp"() : () -> tensor<i64>
+
+      This helps the "-tf-embedding-program-key" pass. The latter connects
+      certain ops to the output of the nearest CompileMlir op. But if there's
+      no preceding CompileMlir op, it tries to reorder, but breaks things in
+      the process. Sorting the ops before the pass helps.
+  }];
+  let constructor = "TF::CreateOrderForProgramKeyPass()";
 }

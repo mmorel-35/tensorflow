@@ -1,7 +1,7 @@
 #include "third_party/absl/strings/str_cat.h"
 #DTensor C++ runtime and libraries.
 
-load("//tensorflow:tensorflow.bzl", "if_google", "if_libtpu")
+load("//tensorflow:tensorflow.bzl", "tf_cc_test")
 load("//tensorflow:tensorflow.default.bzl", "tf_kernel_library")
 load(
     "//tensorflow/core/platform:build_config.bzl",
@@ -10,6 +10,7 @@ load(
 load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 
 default_visibility = [
+    "//smartass/brain/jax/embeddings:__pkg__",
     "//tensorflow/dtensor:dtensor-internal",
     "//tensorflow:__pkg__",
 ]
@@ -149,10 +150,10 @@ cc_library(
         "@com_google_absl//absl/types:span",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
-        "@local_tsl//tsl/platform:logging",
         "@local_tsl//tsl/platform:refcount",
-        "@local_tsl//tsl/platform:status",
         "@local_xla//xla:status_macros",
+        "@local_xla//xla/tsl/platform:logging",
+        "@local_xla//xla/tsl/platform:status",
     ],
 )
 
@@ -267,8 +268,7 @@ cc_library(
         "//tensorflow/compiler/mlir/tensorflow:convert_type",
         "//tensorflow/compiler/mlir/tensorflow:device_util",
         "//tensorflow/compiler/mlir/tensorflow:error_util",
-        "//tensorflow/compiler/mlir/tensorflow:import_model",
-        "//tensorflow/compiler/mlir/tf2xla:compile_mlir_util",
+        "//tensorflow/compiler/mlir/tf2xla/api/v2:graph_to_tf_executor",
         "//tensorflow/core:core_cpu",
         "//tensorflow/core:framework",
         "//tensorflow/core:lib",
@@ -282,21 +282,16 @@ cc_library(
         "@llvm-project//mlir:AllExtensions",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:RegisterAllExtensions",
         "@llvm-project//mlir:Support",
-        "@local_tsl//tsl/platform:status",
         "@local_xla//xla:status_macros",
+        "@local_xla//xla/tsl/platform:status",
     ],
 )
 
 cc_library(
     name = "default_parallel_executor_lib",
-    deps = if_libtpu(
-        if_false = if_google(
-            google_value = ["//tensorflow/dtensor/cc/google:default_parallel_executor"],
-            oss_value = [":default_parallel_executor"],
-        ),
-        if_true = [":default_parallel_executor"],
-    ),
+    deps = [":default_parallel_executor"],
 )
 
 cc_library(
@@ -305,7 +300,7 @@ cc_library(
     deps = [
         ":parallel_executor_interface",
         "//tensorflow/core/platform:logging",
-        "@local_tsl//tsl/platform:statusor",
+        "@local_xla//xla/tsl/platform:statusor",
     ],
 )
 
@@ -351,8 +346,8 @@ cc_library(
         "//tensorflow/c/eager:tfe_op_attrs_internal",
         "//tensorflow/c/eager:tfe_tensorhandle_internal",
         "//tensorflow/c/eager/parallel_device:parallel_device_lib",
-        "//tensorflow/compiler/mlir/tensorflow:export_graphdef",
         "//tensorflow/compiler/mlir/tensorflow:mlir_roundtrip_flags",
+        "//tensorflow/compiler/mlir/tf2xla/api/v2:tf_executor_to_graph",
         "//tensorflow/core:core_cpu",
         "//tensorflow/core:framework",
         "//tensorflow/core:lib",
@@ -373,11 +368,11 @@ cc_library(
         "@com_google_absl//absl/strings",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
-        "@local_tsl//tsl/platform:status",
         "@local_xla//xla:status_macros",
         "@local_xla//xla/stream_executor/tpu:c_api_decl",
         "@local_xla//xla/stream_executor/tpu:tpu_platform_interface",
         "@local_xla//xla/stream_executor/tpu:tpu_topology_external",
+        "@local_xla//xla/tsl/platform:status",
         "@local_xla//xla/tsl/util:env_var",
     ] + tf_dtensor_tpu_dependencies(),
 )
@@ -416,5 +411,20 @@ cc_library(
         ":tensor_layout",
         "//tensorflow/core:lib",
         "@llvm-project//mlir:IR",
+    ],
+)
+
+tf_cc_test(
+    name = "small_constant_optimization_test",
+    srcs = ["small_constant_optimization_test.cc"],
+    deps = [
+        "//tensorflow/core:lib",
+        "//tensorflow/core:protos_all_cc",
+        "//tensorflow/core:test",
+        "//tensorflow/core:test_main",
+        "//tensorflow/dtensor/cc:small_constant_optimization",
+        "//tensorflow/dtensor/cc:tensor_layout",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
     ],
 )

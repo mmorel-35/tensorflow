@@ -16,9 +16,9 @@ limitations under the License.
 #ifndef XLA_SERVICE_TPU_COMPUTATION_PLACER_H_
 #define XLA_SERVICE_TPU_COMPUTATION_PLACER_H_
 
+#include "absl/status/statusor.h"
 #include "xla/service/computation_placer.h"
-#include "xla/statusor.h"
-#include "xla/stream_executor/tpu/tpu_executor_c_api.h"
+#include "xla/stream_executor/tpu/c_api_decl.h"
 #include "xla/stream_executor/tpu/tpu_topology.h"
 
 namespace tensorflow {
@@ -28,9 +28,6 @@ class TpuComputationPlacer : public xla::ComputationPlacer {
  public:
   TpuComputationPlacer();
   ~TpuComputationPlacer() override;
-
-  absl::StatusOr<int> DeviceId(int replica, int computation, int replica_count,
-                               int computation_count) override;
 
   absl::StatusOr<xla::DeviceAssignment> AssignDevices(
       int replica_count, int computation_count) override;

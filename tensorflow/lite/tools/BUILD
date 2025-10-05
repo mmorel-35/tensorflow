@@ -1,6 +1,8 @@
+load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_cc//cc:cc_test.bzl", "cc_test")
+load("@rules_python//python:proto.bzl", "py_proto_library")
 load("//tensorflow:strict.default.bzl", "py_strict_binary", "py_strict_library", "py_strict_test")
-
-# Placeholder: load py_proto_library
 load("//tensorflow:tensorflow.bzl", "tf_cc_binary", "tf_cc_test")
 load("//tensorflow:tensorflow.default.bzl", "get_compatible_with_portable")
 load(
@@ -26,8 +28,6 @@ exports_files([
 py_strict_binary(
     name = "visualize",
     srcs = ["visualize.py"],
-    python_version = "PY3",
-    srcs_version = "PY3",
     deps = [
         "//tensorflow/lite/python:schema_py",
         "//third_party/py/numpy",
@@ -37,7 +37,6 @@ py_strict_binary(
 py_strict_library(
     name = "visualize_lib",
     srcs = ["visualize.py"],
-    srcs_version = "PY3",
     deps = [
         "//tensorflow/lite/python:schema_py",
         "//third_party/py/numpy",
@@ -47,8 +46,6 @@ py_strict_library(
 py_strict_test(
     name = "visualize_test",
     srcs = ["visualize_test.py"],
-    python_version = "PY3",
-    srcs_version = "PY3",
     deps = [
         ":test_utils",
         ":visualize_lib",
@@ -61,8 +58,6 @@ py_strict_test(
 py_strict_binary(
     name = "convert_image_to_csv",
     srcs = ["convert_image_to_csv.py"],
-    python_version = "PY3",
-    srcs_version = "PY3",
     deps = [
         "//tensorflow/python/client:session",
         "//tensorflow/python/framework:errors",
@@ -77,7 +72,6 @@ py_strict_binary(
 py_strict_library(
     name = "convert_image_to_csv_lib",
     srcs = ["convert_image_to_csv.py"],
-    srcs_version = "PY3",
     deps = [
         "//tensorflow/python/client:session",
         "//tensorflow/python/framework:errors",
@@ -93,8 +87,6 @@ py_strict_test(
     name = "convert_image_to_csv_test",
     srcs = ["convert_image_to_csv_test.py"],
     data = ["//tensorflow/core:image_testdata"],
-    python_version = "PY3",
-    srcs_version = "PY3",
     deps = [
         ":convert_image_to_csv_lib",
         #internal proto upb dep
@@ -109,8 +101,6 @@ py_strict_test(
 py_strict_binary(
     name = "strip_strings",
     srcs = ["strip_strings.py"],
-    python_version = "PY3",
-    srcs_version = "PY3",
     deps = [
         ":flatbuffer_utils",
         "@absl_py//absl:app",
@@ -121,8 +111,6 @@ py_strict_binary(
 py_strict_binary(
     name = "reverse_xxd_dump_from_cc",
     srcs = ["reverse_xxd_dump_from_cc.py"],
-    python_version = "PY3",
-    srcs_version = "PY3",
     deps = [
         ":flatbuffer_utils",
         "@absl_py//absl:app",
@@ -133,8 +121,6 @@ py_strict_binary(
 py_strict_binary(
     name = "randomize_weights",
     srcs = ["randomize_weights.py"],
-    python_version = "PY3",
-    srcs_version = "PY3",
     deps = [
         ":flatbuffer_utils",
         "@absl_py//absl:app",
@@ -145,7 +131,6 @@ py_strict_binary(
 py_strict_library(
     name = "flatbuffer_utils",
     srcs = ["flatbuffer_utils.py"],
-    srcs_version = "PY3",
     deps = [
         "//tensorflow/lite/python:schema_py",
         "//tensorflow/lite/python:schema_util",
@@ -157,12 +142,11 @@ py_strict_library(
 py_strict_test(
     name = "flatbuffer_utils_test",
     srcs = ["flatbuffer_utils_test.py"],
-    python_version = "PY3",
-    srcs_version = "PY3",
     deps = [
         ":flatbuffer_utils",
         ":test_utils",
         #internal proto upb dep
+        "//tensorflow/lite/python:schema_py",
         "//tensorflow/python/framework:test_lib",
         "//tensorflow/python/platform:client_testlib",
     ],
@@ -171,7 +155,6 @@ py_strict_test(
 py_strict_library(
     name = "test_utils",
     srcs = ["test_utils.py"],
-    srcs_version = "PY3",
     deps = [
         "//tensorflow/lite/python:schema_py",
         "@flatbuffers//:runtime_py",
@@ -265,6 +248,7 @@ cc_library(
     name = "tool_params",
     srcs = ["tool_params.cc"],
     hdrs = ["tool_params.h"],
+    compatible_with = get_compatible_with_portable(),
     copts = tflite_copts(),
     deps = [":logging"],
 )
@@ -284,6 +268,7 @@ cc_library(
     name = "command_line_flags",
     srcs = ["command_line_flags.cc"],
     hdrs = ["command_line_flags.h"],
+    compatible_with = get_compatible_with_portable(),
     copts = tflite_copts(),
     deps = [
         ":logging",
@@ -396,7 +381,6 @@ tf_cc_test(
 py_strict_binary(
     name = "zip_files",
     srcs = ["zip_files.py"],
-    python_version = "PY3",
     visibility = ["//visibility:public"],
     deps = [
         "@absl_py//absl:app",
@@ -414,6 +398,20 @@ cc_library(
         "//tensorflow/lite/c:common",
         "//tensorflow/lite/core/c:common",
         "//tensorflow/lite/kernels:kernel_util",
+        "@com_google_absl//absl/types:span",
+        "@eigen_archive//:eigen3",
+    ],
+)
+
+cc_test(
+    name = "utils_test",
+    srcs = ["utils_test.cc"],
+    copts = tflite_copts(),
+    deps = [
+        ":utils",
+        "//tensorflow/lite/c:common",
+        "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -452,7 +450,6 @@ tflite_portable_test_suite()
 #
 # py_proto_library(
 #     name = "op_kernel_set_py_pb2",
-#     api_version = 2,
 #     deps = [":op_kernel_set_proto"],
 # )
 # copybara:uncomment_end

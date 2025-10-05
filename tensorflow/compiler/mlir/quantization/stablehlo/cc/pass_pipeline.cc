@@ -19,6 +19,7 @@ limitations under the License.
 #include "mlir/Pass/PassManager.h"  // from @llvm-project
 #include "mlir/Pass/PassRegistry.h"  // from @llvm-project
 #include "mlir/Transforms/Passes.h"  // from @llvm-project
+#include "stablehlo/transforms/Passes.h"  // from @stablehlo
 #include "tensorflow/compiler/mlir/quantization/stablehlo/passes/bridge/passes.h"
 #include "tensorflow/compiler/mlir/quantization/stablehlo/passes/passes.h"
 #include "tensorflow/compiler/mlir/quantization/stablehlo/quantization_config.pb.h"
@@ -115,21 +116,20 @@ void AddXlaCallModuleOpDeserializationPasses(OpPassManager& pm) {
 }
 
 void AddShapeLegalizationPasses(OpPassManager& pm) {
-  pm.addPass(mhlo::createStablehloLegalizeToHloPass());
+  // TODO: We may need to make a parent pass here that does
+  // shape->StableHLO+cstr because the stablehlo pass requires that the ops made
+  // by cstr are legal.
   pm.addNestedPass<func::FuncOp>(
-      mhlo::createShapeLegalizeToHloPass(/*legalizeConstraints=*/true));
-  // The following 2 passes are used to clean up the spurious UnrealizedCast ops
-  // and shape.assuming regions leftover from the ShapeLegalizeToHlo pass. See
-  // pass definition for details.
+      createConvertShapeToStablehloWithConstraintsPass());
   pm.addPass(createReconcileUnrealizedCastsPass());
   pm.addNestedPass<func::FuncOp>(mlir::createCanonicalizerPass());
-  pm.addPass(mhlo::createHloLegalizeToStablehloPass());
 }
 
 void AddStablehloQuantToIntPasses(OpPassManager& pm) {
+  pm.addNestedPass<func::FuncOp>(
+      mlir::stablehlo::createStablehloLegalizeQuantToMathPass());
   // StableHLO -> MHLO legalization.
   pm.addPass(mhlo::createStablehloLegalizeToHloPass());
-  pm.addNestedPass<func::FuncOp>(mhlo::createMhloQuantLegalizeToIntPass());
   pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
   // Integer graph optimization relies on chlo broadcast ops for easier handling
   // of dynamic shapes. Therefore we lower chlo ops after optimization.

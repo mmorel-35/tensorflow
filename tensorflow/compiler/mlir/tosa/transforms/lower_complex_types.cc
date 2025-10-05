@@ -30,7 +30,7 @@ limitations under the License.
 // any remaining "unrealized_conversion_cast" operations and ensures the
 // resulting graph is free of illegal complex tensors.
 
-#include <iterator>
+#include <cstdint>
 #include <memory>
 #include <utility>
 
@@ -106,7 +106,7 @@ class GenericTypeConvert : public ConversionPattern {
       TypeConverter::SignatureConversion result(newRegion->getNumArguments());
       (void)getTypeConverter()->convertSignatureArgs(
           newRegion->getArgumentTypes(), result);
-      rewriter.applySignatureConversion(newRegion, result);
+      rewriter.applySignatureConversion(&newRegion->front(), result);
     }
     Operation* newOp = rewriter.create(state);
     rewriter.replaceOp(op, newOp->getResults());
@@ -157,7 +157,7 @@ void LowerComplexTypes::runOnOperation() {
 
   // We need to run folders post rewrite to cleanup conversion casts.
   RewritePatternSet emptyRewriters(ctx);
-  if (failed(applyPatternsAndFoldGreedily(func, std::move(emptyRewriters)))) {
+  if (failed(applyPatternsGreedily(func, std::move(emptyRewriters)))) {
     signalPassFailure();
   }
 }

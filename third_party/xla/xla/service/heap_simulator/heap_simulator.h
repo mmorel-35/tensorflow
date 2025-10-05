@@ -24,10 +24,11 @@ limitations under the License.
 #include <list>
 #include <memory>
 #include <optional>
-#include <set>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "absl/base/nullability.h"
 
 // TODO(b/210891274): Use btree_map after build issue in Windows is resolved.
 #if defined(__GNUC__) || defined(__clang__)
@@ -35,24 +36,23 @@ limitations under the License.
 #endif
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/container/inlined_vector.h"
 #include "absl/functional/any_invocable.h"
+#include "absl/functional/function_ref.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "xla/hlo/analysis/alias_info.h"
+#include "xla/hlo/analysis/hlo_alias_analysis.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_schedule.h"
 #include "xla/hlo/utils/hlo_live_range.h"
 #include "xla/service/buffer_value.h"
-#include "xla/service/buffer_value_containers.h"
 #include "xla/service/heap_simulator/allocation_block.h"
 #include "xla/service/hlo.pb.h"
-#include "xla/service/hlo_alias_analysis.h"
-#include "xla/service/hlo_buffer.h"
-#include "xla/service/hlo_dataflow_analysis.h"
-#include "xla/service/hlo_ordering.h"
 #include "xla/service/hlo_value.h"
-#include "xla/service/memory_space_assignment/repacking.h"
-#include "xla/service/tuple_points_to_analysis.h"
-#include "xla/statusor.h"
+#include "xla/service/logical_buffer.h"
 
 namespace xla {
 
@@ -146,23 +146,16 @@ class HeapSimulator {
   // computations have been scheduled (represented by the given
   // schedule), assuming no fragmentation.
   static absl::StatusOr<int64_t> MinimumMemoryForModule(
-      const HloSchedule& schedule,
-      const LogicalBuffer::SizeFunction& size_function);
+      const HloSchedule& schedule, const HloAliasAnalysis& alias_analysis,
+      const AliasInfo* alias_info,
+      const LogicalBuffer::SizeFunction* absl_nonnull size_function);
 
   // Returns the minimum memory required to compute the given computation,
   // assuming no fragmentation.
   static absl::StatusOr<int64_t> MinimumMemoryForComputation(
       const HloComputation& computation, const HloInstructionSequence& sequence,
-      const HloAliasAnalysis& alias_analysis,
-      const LogicalBuffer::SizeFunction& size_function,
-      const absl::flat_hash_map<const HloComputation*, int64_t>*
-          memory_by_computation = nullptr);
-
-  static absl::StatusOr<int64_t> MinimumMemoryForComputation(
-      const HloComputation& computation, const HloInstructionSequence& sequence,
-      const HloAliasAnalysis& alias_analysis,
-      const LogicalBuffer::SizeFunction& size_function,
-      const HloSchedule* schedule);
+      const HloAliasAnalysis& alias_analysis, const AliasInfo* alias_info,
+      const LogicalBuffer::SizeFunction* absl_nonnull size_function);
 
   // Run the heap simulation with the given algorithm, assuming the given
   // schedule, which must contain a topologically-consistent total
@@ -176,8 +169,8 @@ class HeapSimulator {
   static absl::StatusOr<Result<HloValue>> Run(
       std::unique_ptr<HeapAlgorithm<HloValue>> algorithm,
       const HloModule& module, const HloSchedule& schedule,
-      const HloAliasAnalysis& alias_analysis,
-      const BufferValue::SizeFunction& size_fn,
+      const HloAliasAnalysis& alias_analysis, const AliasInfo* alias_info,
+      const BufferValue::SizeFunction* absl_nonnull size_fn,
       const Options& options = Options());
 
   // Same as above, but runs on a single computation. The 'instruction_sequence'
@@ -188,11 +181,9 @@ class HeapSimulator {
       std::unique_ptr<HeapAlgorithm<HloValue>> algorithm,
       const HloComputation& computation,
       const HloInstructionSequence& instruction_sequence,
-      const HloAliasAnalysis& alias_analysis,
-      const BufferValue::SizeFunction& size_fn,
-      const Options& options = Options(),
-      const absl::flat_hash_map<const HloComputation*, int64_t>*
-          memory_by_computation = nullptr);
+      const HloAliasAnalysis& alias_analysis, const AliasInfo* alias_info,
+      const BufferValue::SizeFunction* absl_nonnull size_fn,
+      const Options& options = Options());
 
   // Same as above, but runs on with a schedule that covers all nested
   // computations.
@@ -200,25 +191,24 @@ class HeapSimulator {
       std::unique_ptr<HeapAlgorithm<HloValue>> algorithm,
       const HloComputation& computation,
       const HloInstructionSequence& instruction_sequence,
-      const HloAliasAnalysis& alias_analysis,
-      const BufferValue::SizeFunction& size_fn, const HloSchedule* schedule,
-      const Options& options = Options());
+      const HloAliasAnalysis& alias_analysis, const AliasInfo* alias_info,
+      const BufferValue::SizeFunction* absl_nonnull size_fn,
+      const HloSchedule* schedule, const Options& options = Options());
 
  private:
   // If 'schedule' is non-null, it is used to find kCall and kWhile
   // sub-computations, and the heap simulation for those sub-computations will
   // be run recursively. I.e. the simulation is run over the whole module.
   HeapSimulator(std::unique_ptr<HeapAlgorithm<HloValue>> algorithm,
-                const BufferValue::SizeFunction& size_fn,
-                const Options& options, const HloSchedule* schedule = nullptr,
-                const absl::flat_hash_map<const HloComputation*, int64_t>*
-                    memory_by_computation = nullptr);
+                const BufferValue::SizeFunction* absl_nonnull size_fn,
+                const Options& options, const HloSchedule* schedule = nullptr);
   ~HeapSimulator();
 
   absl::Status RunComputation(
       const HloComputation& computation,
       const HloInstructionSequence& instruction_sequence,
-      const HloAliasAnalysis& alias_analysis, HloLiveRange* live_range);
+      const HloAliasAnalysis& alias_analysis, const AliasInfo* alias_info,
+      HloLiveRange* live_range);
 
   bool IgnoreBuffer(const HloValue* buffer) const;
   void Alloc(const HloValue* buffer, const HloInstruction* instruction);
@@ -248,15 +238,12 @@ class HeapSimulator {
   const std::unique_ptr<NoFragmentationStatsHeap<HloValue>>
       no_fragmentation_stats_;
   const std::unique_ptr<HeapAlgorithm<HloValue>> algorithm_;
-  const BufferValue::SizeFunction size_fn_;
+  const BufferValue::SizeFunction* absl_nonnull size_fn_;
   const Options options_;
-  // schedule_ is set by buffer assignment, and memory_by_computation_ is
-  // set by hlo scheduling. Then, in RunComputation, we check both in order to
-  // handle subcomputations. It would be good to unify the handling of
-  // subcomputations, but it's not clear how.
+  // schedule_ is set by buffer assignment. Then, in RunComputation, we check
+  // both in order to handle subcomputations. It would be good to unify the
+  // handling of subcomputations, but it's not clear how.
   const HloSchedule* schedule_;
-  const absl::flat_hash_map<const HloComputation*, int64_t>*
-      memory_by_computation_;
 
   // Hold some sets for error-checking the sequence of Alloc and Free calls.
   absl::flat_hash_set<const HloValue*> allocated_buffers_;
@@ -296,9 +283,7 @@ class HeapAlgorithm {
   virtual void AccountForSubcomputationMemory(
       const HloInstruction* instruction,
       // The total number of bytes allocated by instruction.
-      int64_t alloc_size_by_instruction,
-      const absl::flat_hash_map<const HloComputation*, int64_t>&
-          memory_by_computation) {}
+      int64_t alloc_size_by_instruction) {}
 
   // Free de-allocates a previously allocated buffer.
   virtual void Free(const BufferType* buffer, int64_t size) = 0;
@@ -334,9 +319,8 @@ class NoFragmentationStatsHeap : public HeapAlgorithm<BufferType> {
   void Alloc(const BufferType* buffer, int64_t size) override;
 
   void AccountForSubcomputationMemory(
-      const HloInstruction* instruction, int64_t alloc_size_by_instruction,
-      const absl::flat_hash_map<const HloComputation*, int64_t>&
-          memory_by_computation) override;
+      const HloInstruction* instruction,
+      int64_t alloc_size_by_instruction) override;
 
   void Free(const BufferType* buffer, int64_t size) override;
 
@@ -364,6 +348,8 @@ struct BufferIntervalTreeNode {
   BufferIntervalTreeNode* right;
   // parent
   BufferIntervalTreeNode* parent;
+
+  std::string ToString() const;
 };
 
 // An interval tree that can query buffers overlapping in time.
@@ -377,13 +363,84 @@ class BufferIntervalTree {
   // Remove the interval from the tree. Returns true if the chunk is removed.
   bool Remove(int64_t start, int64_t end, const Chunk& chunk);
 
+  // Apply fn to the nodes that overlap with the given time interval. It is
+  // guaranteed that fn is called for non-null nodes.
+  void ApplyToNodesOverlappingInTime(
+      int64_t start, int64_t end,
+      absl::FunctionRef<void(const BufferIntervalTreeNode*)> fn) const;
+
+  // Apply fn to the nodes that overlap with the given time interval. It is
+  // guaranteed that fn is called for non-null nodes in order of non-decreasing
+  // start time. If fn returns true, then no more nodes are visited.
+  void ApplyToSortedNodesOverlapping(
+      int64_t start, int64_t end,
+      absl::FunctionRef<bool(const BufferIntervalTreeNode*)> fn) const;
+
+  // Returns the number of allocated chunks that overlap with the given time
+  // interval.
+  int NumChunksOverlappingInTime(int64_t start, int64_t end) const;
+
   // Returns vector of allocated chunks that overlap with the given time
   // interval.
   std::vector<Chunk> ChunksOverlappingInTime(int64_t start, int64_t end) const;
 
   BufferIntervalTreeNode* GetRoot() { return root_; }
 
+  // Returns a compact 2D view of memory usage over time.
+  // X axis is time, Y axis is memory.
+  //
+  // Say there are 3 buffers in the heap:
+  // - Buffer 1: memory block [0, 16), time interval [15, 25]
+  // - Buffer 2: memory block [16, 48), time interval [15, 19]
+  // - Buffer 3: memory block [32, 64), time interval [20, 22]
+  //
+  // NodesOverlappingInTimeToAsciiArt(/*start=*/18, /*end=*/23,
+  // /*group_size=*/3) returns:
+  //
+  // Memory map for time: [18,23], memory_block_size: 16, group_size: 3
+  //
+  //  ..# ##. 64
+  //  ### ##. 48
+  //  ##. ... 32
+  //  ### ### 16
+  //  890 123
+  //
+  // Explanation:
+  //
+  // The functions decides a memory block size of 16 would be most compact to
+  // display all the buffers.
+  // '#' indicates used and '.' indicates free memory.
+  //
+  // ..# ##. 64      "64" indicates memory block [48,64)
+  // ### ##. 48      "48" indicates memory block [32,48)
+  // ##. ... 32      "32" indicates memory block [16,32)
+  // ### ### 16      "16" indicates memory block [0,16)
+  // 890 123
+  //
+  // "890 123" indicate the last digits of time instants 18, 19, 20, 21, 22, 23.
+  // Only the last digit is shown for compactness.
+  // `group_size=3` inserts spaces after every 3 columns (time instants).
+  // All the memory blocks beyond 64 are free for time interval [18,23].
+  std::string NodesOverlappingInTimeToAsciiArt(int64_t start, int64_t end,
+                                               int64_t group_size = 0) const;
+
+  // Returns a vector of size `end - start + 1` where the element at index i is
+  // the memory used at the time instant `start + i`. Both `start` and `end` are
+  // inclusive.
+  std::vector<int64_t> MemoryUsedInInterval(int64_t start, int64_t end) const;
+
+  // Returns an integer denoting the largest occupied memory location in the
+  // heap within the time interval [start, end].
+  int64_t HeapSizeInInterval(int64_t start, int64_t end) const;
+
+  void Clear();
+
  private:
+  // The BufferIntervalTreeNode objects inside the result vector are guaranteed
+  // to be non-null.
+  std::vector<const BufferIntervalTreeNode*> NodesOverlappingInTime(
+      int64_t start, int64_t end) const;
+
   BufferIntervalTreeNode* root_ = nullptr;
   std::list<BufferIntervalTreeNode> node_storage_;
 };
@@ -414,7 +471,7 @@ class SliceTimePermutationIterator {
   enum class Ty : std::int8_t {
     // Include all valid permutations
     kAll,
-    // Only include perferred valid permutations. Heap simulator is trying to
+    // Only include preferred valid permutations. Heap simulator is trying to
     // optimize fitting allocations into a grid of (heap) space by time. The
     // preferred permutation iterator only allows the following triagular
     // shapes:
@@ -850,6 +907,11 @@ class GlobalDecreasingSizeBestFitHeap : public HeapAlgorithm<BufferType> {
   FreeChunks MakeFreeChunks(const BufferInterval& buffer_interval,
                             int64_t max_colocation_size) const;
 
+  // Finds the latest value <= buffer_interval.end such that that no chunk
+  // intersects [preferred_offset, preferred_offset + buffer_interval.size).
+  int64_t FindLatestEndWithFreeChunkAtPreferredOffset(
+      const BufferInterval& buffer_interval, int64_t preferred_offset) const;
+
   // These two methods below are exposed to other heap algorithms that inherit
   // from this class. The Finish() method tries to find a candidate chunk for
   // each BufferInterval, after calling GetSortedBufferIntervals. If a
@@ -921,6 +983,9 @@ class GlobalDecreasingSizeBestFitHeap : public HeapAlgorithm<BufferType> {
   // returns all three of them.
   absl::flat_hash_set<const BufferType*> GetTransitiveColocations(
       const BufferInterval& interval) const;
+
+  // Returns the aligned chunk end.
+  int64_t ComputeAlignedChunkEnd(int64_t chunk_end) const;
 };
 
 // This class implements an algorithm that will produce multiple heaps, where
@@ -996,6 +1061,34 @@ class ChooseBestHeapAlgorithm : public HeapAlgorithm<BufferType> {
 
  private:
   std::vector<std::unique_ptr<HeapAlgorithm<BufferType>>> algorithms_;
+};
+
+// An iterator that produces every integer in [start, end], starting with the
+// midpoint of [start, end], followed by the midpoint of [start, midpoint-1],
+// and then the midpoint of [midpoint+1, end]. This is useful for constructing
+// a balanced BufferIntervalTree.
+class BreadthFirstMidpointIterator {
+ public:
+  BreadthFirstMidpointIterator(int start, int end);
+
+  int value() const;
+
+  void Begin();
+
+  void Next();
+
+  bool End() const { return !value_.has_value(); }
+
+ private:
+  struct WorkItem {
+    int start;
+    int end;
+  };
+
+  WorkItem initial_work_item_;
+  std::optional<int> value_ = std::nullopt;
+
+  std::list<WorkItem> work_items_;
 };
 
 extern template class GlobalDecreasingSizeBestFitHeap<HloValue>;

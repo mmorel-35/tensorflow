@@ -16,15 +16,24 @@ limitations under the License.
 // This pass inserts corert.transfer op to make sure any argument of any op is
 // on the same device of the op itself.
 
-#include "llvm/ADT/SmallVector.h"
+#include <memory>
+#include <string>
+#include <utility>
+
 #include "llvm/ADT/StringMap.h"
+#include "llvm/Support/Casting.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/IR/Attributes.h"  // from @llvm-project
 #include "mlir/IR/Builders.h"  // from @llvm-project
+#include "mlir/IR/OpDefinition.h"  // from @llvm-project
 #include "mlir/IR/Types.h"  // from @llvm-project
+#include "mlir/IR/Value.h"  // from @llvm-project
+#include "mlir/IR/Visitors.h"  // from @llvm-project
+#include "mlir/Pass/Pass.h"  // from @llvm-project
 #include "mlir/Pass/PassManager.h"  // from @llvm-project
+#include "mlir/Pass/PassRegistry.h"  // from @llvm-project
 #include "mlir/Support/LLVM.h"  // from @llvm-project
-#include "mlir/Transforms/Passes.h"  // from @llvm-project
+#include "mlir/Support/TypeID.h"  // from @llvm-project
 #include "tensorflow/core/util/device_name_utils.h"
 #include "tfrt/basic_kernels/opdefs/basic_kernels.h"  // from @tf_runtime
 #include "tfrt/basic_kernels/opdefs/types.h"  // from @tf_runtime
@@ -165,13 +174,13 @@ void CrossDeviceTransferPass::runOnOperation() {
       }
 
       mlir::Value chain_in = func_op.getArgument(0);
-      auto get_device_op = builder.create<tfrt::compiler::GetDeviceOp>(
-          op->getLoc(), device_type, chain_in, dst_device);
-      auto get_tensor_type_op =
-          builder.create<tfrt::corert::GetDstTensorTypeOp>(
-              op->getLoc(), tensor_type_type, arg, get_device_op.getResult());
-      auto transfer_op = builder.create<tfrt::corert::TransferOp>(
-          op->getLoc(), arg.getType(), arg, get_device_op.getResult(),
+      auto get_device_op = tfrt::compiler::GetDeviceOp::create(
+          builder, op->getLoc(), device_type, chain_in, dst_device);
+      auto get_tensor_type_op = tfrt::corert::GetDstTensorTypeOp::create(
+          builder, op->getLoc(), tensor_type_type, arg,
+          get_device_op.getResult());
+      auto transfer_op = tfrt::corert::TransferOp::create(
+          builder, op->getLoc(), arg.getType(), arg, get_device_op.getResult(),
           get_tensor_type_op.getResult());
       mlir::Value new_arg = transfer_op.getResult();
       transferred_value_by_device[dst_device] = new_arg;

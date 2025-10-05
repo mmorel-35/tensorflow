@@ -163,7 +163,7 @@ void AddReadControl(const std::vector<NodeDef*>& recvs,
                     const std::vector<string>& inputs) {
   for (NodeDef* recv : recvs) {
     for (const string& input : inputs) {
-      recv->add_input(strings::StrCat("^", input));
+      recv->add_input(absl::StrCat("^", input));
     }
   }
 }
@@ -184,7 +184,7 @@ void SetSendRecvAttrs(const PartitionOptions& opts, const Edge* edge,
 NodeDef* AddSend(const PartitionOptions& opts, const GraphInfo& g_info,
                  GraphDef* gdef, const Edge* edge,
                  NodeDefBuilder::NodeOut send_from, int64_t start_time,
-                 const string& tensor_name_attr, Status* status) {
+                 const string& tensor_name_attr, absl::Status* status) {
   const DataType dtype = send_from.data_type;
   const DataType cast_dtype = opts.should_cast ? opts.should_cast(edge) : dtype;
   const Node* src = edge->src();
@@ -241,7 +241,7 @@ NodeDef* AddSend(const PartitionOptions& opts, const GraphInfo& g_info,
 
 NodeDef* AddRecv(const PartitionOptions& opts, const GraphInfo& g_info,
                  GraphDef* gdef, const Edge* edge, NodeDef** real_recv,
-                 const string& tensor_name_attr, Status* status) {
+                 const string& tensor_name_attr, absl::Status* status) {
   const DataType dtype = EdgeType(edge);
   const Node* src = edge->src();
   const Node* dst = edge->dst();
@@ -324,25 +324,25 @@ NodeDef* AddRecv(const PartitionOptions& opts, const GraphInfo& g_info,
 }
 
 NodeDef* AddDummyConst(const PartitionOptions& opts, GraphDef* gdef,
-                       const Edge* edge, Status* status) {
+                       const Edge* edge, absl::Status* status) {
   const Node* src = edge->src();
   Tensor tensor(DT_FLOAT, TensorShape({0}));
   NodeDef* result = gdef->add_node();
-  *status = NodeDefBuilder(opts.new_name(strings::StrCat(src->name(), "/ctrl")),
-                           "Const")
-                .Device(src->assigned_device_name())
-                .Attr("dtype", DT_FLOAT)
-                .Attr("value", tensor)
-                .Finalize(result, /*consume=*/true);
+  *status =
+      NodeDefBuilder(opts.new_name(absl::StrCat(src->name(), "/ctrl")), "Const")
+          .Device(src->assigned_device_name())
+          .Attr("dtype", DT_FLOAT)
+          .Attr("value", tensor)
+          .Finalize(result, /*consume=*/true);
   return result;
 }
 
 // A dummy node for scheduling.
 NodeDef* AddControlTrigger(const PartitionOptions& opts, GraphDef* gdef,
                            const string& assigned_device_name, int64_t epoch,
-                           int64_t starttime, Status* status) {
+                           int64_t starttime, absl::Status* status) {
   NodeDef* result = gdef->add_node();
-  *status = NodeDefBuilder(opts.new_name(strings::StrCat("synch_", epoch)),
+  *status = NodeDefBuilder(opts.new_name(absl::StrCat("synch_", epoch)),
                            "ControlTrigger")
                 .Device(assigned_device_name)
                 .Attr("_start_time", starttime)
@@ -399,7 +399,7 @@ void OptimizeControlFlowColocation(Graph* graph) {
 }
 
 string ControlLoopName(const string& name) {
-  return strings::StrCat("_cloop", name);
+  return absl::StrCat("_cloop", name);
 }
 
 bool IsControlLoop(const Node* node) {
@@ -410,7 +410,7 @@ bool IsControlLoop(const Node* node) {
 // An enter node for control flow.
 Node* AddControlEnter(Graph* g, const string& node_name,
                       const string& device_name, const string& frame_name,
-                      const int parallel_iterations, Status* status) {
+                      const int parallel_iterations, absl::Status* status) {
   NodeBuilder node_builder(node_name, "Enter", g->op_registry());
   node_builder.Input({"dummy", 0, DT_FLOAT});
   node_builder.Attr("frame_name", frame_name);
@@ -425,7 +425,7 @@ Node* AddControlEnter(Graph* g, const string& node_name,
 // A merge node for control flow.
 Node* AddControlMerge(const string& in_name1, const string& in_name2, Graph* g,
                       const string& node_name, const string& device_name,
-                      Status* status) {
+                      absl::Status* status) {
   NodeBuilder node_builder(node_name, "Merge", g->op_registry());
   node_builder.Input({{in_name1, 0, DT_FLOAT}, {in_name2, 0, DT_FLOAT}});
   Node* res_node;
@@ -506,11 +506,11 @@ void AddControlFlowInfo(const Node* node, const Node* src,
 // switch node will be connected to the LoopCond node. The merge node will
 // be connected to all the recvs of the same frame by control edges when
 // the actual partitioning happens.
-Status AddControlLoop(const PartitionOptions& opts, Graph* g, const Node* src,
-                      const Edge* edge, Node* loop_cond,
-                      std::vector<ControlFlowInfo>* cf_info,
-                      ControlLoop* loop) {
-  Status status;
+absl::Status AddControlLoop(const PartitionOptions& opts, Graph* g,
+                            const Node* src, const Edge* edge, Node* loop_cond,
+                            std::vector<ControlFlowInfo>* cf_info,
+                            ControlLoop* loop) {
+  absl::Status status;
   GraphDefBuilder::Options bopts(g, &status);
   const ControlFlowInfo& src_info = (*cf_info)[src->id()];
   const string& device_name = edge->dst()->assigned_device_name();
@@ -562,7 +562,7 @@ Status AddControlLoop(const PartitionOptions& opts, Graph* g, const Node* src,
 // Build memory and device type info for every node in the graph.
 // TODO(yuanbyu): It might be simpler if we convert MemoryType to
 // DeviceType for the inputs/outputs of each node.
-Status BuildMemoryDeviceInfo(const Graph& g, GraphInfo* info) {
+absl::Status BuildMemoryDeviceInfo(const Graph& g, GraphInfo* info) {
   MemoryTypeVector input_memory_types;
   MemoryTypeVector output_memory_types;
 
@@ -621,9 +621,9 @@ const Node* OutputFrame(const Node* node,
 //
 // TODO(yuanbyu): The correctness of this construction is rather subtle. I got
 // it wrong many times so it would be nice to write a proof to be sure.
-Status AddControlFlow(const PartitionOptions& opts, Graph* g,
-                      GraphInfo* g_info) {
-  Status status;
+absl::Status AddControlFlow(const PartitionOptions& opts, Graph* g,
+                            GraphInfo* g_info) {
+  absl::Status status;
   GraphDefBuilder::Options bopts(g, &status);
   std::vector<ControlFlowInfo>& cf_info = g_info->cf_info;
 
@@ -700,7 +700,7 @@ Status AddControlFlow(const PartitionOptions& opts, Graph* g,
         break;
       }
 
-      const string& cl_key = strings::StrCat(curr_frame_name, "$$", dst_device);
+      const string& cl_key = absl::StrCat(curr_frame_name, "$$", dst_device);
       auto it = control_loops.find(cl_key);
       if (it != control_loops.end()) {
         if (child_loop.enter != nullptr) {
@@ -756,8 +756,7 @@ Status AddControlFlow(const PartitionOptions& opts, Graph* g,
       const string& src_frame_name = cf_info[src_frame->id()].frame_name;
       const string& dst_frame_name = cf_info[dst_frame->id()].frame_name;
       if (!src_frame_name.empty() && src_frame_name == dst_frame_name) {
-        const string& cl_key =
-            strings::StrCat(dst_frame_name, "$$", dst_device);
+        const string& cl_key = absl::StrCat(dst_frame_name, "$$", dst_device);
         ControlLoop loop = control_loops[cl_key];
         DCHECK(loop.enter != nullptr);
         // Note that we'll create multiple duplicate edges if dst has multiple
@@ -798,7 +797,7 @@ struct PriorityTopoSortNodeGreater {
 //
 // Note that graph_partition_test.cc accesses this function for testing, even
 // though it's not declared in the header.
-Status TopologicalSortNodesWithTimePriority(
+absl::Status TopologicalSortNodesWithTimePriority(
     const GraphDef* gdef,
     std::vector<std::pair<const NodeDef*, int64_t>>* nodes,
     std::unordered_map<const NodeDef*, int64_t>* node_to_start_time_out) {
@@ -873,9 +872,9 @@ Status TopologicalSortNodesWithTimePriority(
   return absl::OkStatus();
 }
 
-Status AddControlEdges(const PartitionOptions& opts,
-                       std::unordered_map<string, GraphDef>* partitions) {
-  Status status;
+absl::Status AddControlEdges(const PartitionOptions& opts,
+                             std::unordered_map<string, GraphDef>* partitions) {
+  absl::Status status;
   // TODO(yuanbyu): Very naive for now. To be improved.
   const int num_epochs = 100;
   const int prefetch = 6;
@@ -936,7 +935,7 @@ Status AddControlEdges(const PartitionOptions& opts,
 // If 'ndef' is a Send or Recv, fills its attr send_device_incarnation
 // if possible.
 void SetIncarnation(const PartitionOptions& opts, NodeDef* ndef) {
-  StringPiece op(ndef->op());
+  absl::string_view op(ndef->op());
   if (op != "_Send" && op != "_Recv") {
     // Not related to send/recv.
     return;
@@ -968,10 +967,10 @@ void SetIncarnation(const PartitionOptions& opts, GraphDef* gdef) {
   }
 }
 
-Status Partition(const PartitionOptions& opts, Graph* g,
-                 std::unordered_map<string, GraphDef>* partitions) {
+absl::Status Partition(const PartitionOptions& opts, Graph* g,
+                       std::unordered_map<string, GraphDef>* partitions) {
   // TODO(b/290689453) Refactor this into smaller functions
-  Status status;
+  absl::Status status;
   absl::flat_hash_map<string, std::unique_ptr<GraphDebugInfoBuilder>>
       debug_info_builders;
   partitions->clear();
@@ -1038,7 +1037,7 @@ Status Partition(const PartitionOptions& opts, Graph* g,
     if (opts.need_to_record_start_times) {
       int64_t start_time;
       status = GetNodeAttr(*dst_def, "_start_time", &start_time);
-      if (errors::IsNotFound(status)) {
+      if (absl::IsNotFound(status)) {
         start_time = opts.start_times[dst->id()].value();
         AddNodeAttr("_start_time", start_time, dst_def);
       } else if (!status.ok()) {
@@ -1101,14 +1100,14 @@ Status Partition(const PartitionOptions& opts, Graph* g,
       int64_t recv_start_time = 0;
       if (opts.scheduling_for_recvs) {
         status = GetNodeAttr(src->attrs(), "_start_time", &send_start_time);
-        if (errors::IsNotFound(status) && opts.need_to_record_start_times) {
+        if (absl::IsNotFound(status) && opts.need_to_record_start_times) {
           send_start_time = opts.start_times[src->id()].value();
         } else if (!status.ok()) {
           return status;
         }
 
         status = GetNodeAttr(dst->attrs(), "_start_time", &recv_start_time);
-        if (errors::IsNotFound(status) && opts.need_to_record_start_times) {
+        if (absl::IsNotFound(status) && opts.need_to_record_start_times) {
           recv_start_time = opts.start_times[dst->id()].value();
         } else if (!status.ok()) {
           return status;
@@ -1163,7 +1162,7 @@ Status Partition(const PartitionOptions& opts, Graph* g,
         tensor_name_attr = opts.get_tensor_name_attr(edge);
       } else {
         tensor_name_attr =
-            strings::StrCat("edge_", edge->id(), "_", edge->src()->name());
+            absl::StrCat("edge_", edge->id(), "_", edge->src()->name());
       }
 
       if (VLOG_IS_ON(1) && IsConstant(edge->src())) {
@@ -1297,8 +1296,8 @@ Status Partition(const PartitionOptions& opts, Graph* g,
   if (VLOG_IS_ON(2)) {
     for (auto& it : *partitions) {
       GraphDef* gdef = &it.second;
-      DumpGraphDefToFile(strings::StrCat("partition_", it.first, "_",
-                                         reinterpret_cast<uintptr_t>(gdef)),
+      DumpGraphDefToFile(absl::StrCat("partition_", it.first, "_",
+                                      reinterpret_cast<uintptr_t>(gdef)),
                          *gdef);
     }
   }

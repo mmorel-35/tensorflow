@@ -94,9 +94,9 @@ static const Tensor* const kEmptyTensor = new Tensor;
 namespace nodestats {
 inline int64_t NowInNsec() { return EnvTime::NowNanos(); }
 
-void SetScheduled(NodeExecStatsInterface* stats, int64_t micros) {
+void SetScheduled(NodeExecStatsInterface* stats, int64_t nanos) {
   if (!stats) return;
-  stats->SetScheduled(micros * EnvTime::kMicrosToNanos);
+  stats->SetScheduled(nanos);
 }
 
 void SetAllStart(NodeExecStatsInterface* stats) {
@@ -142,14 +142,14 @@ struct KernelTimer {
 };
 
 // TODO(b/152925936): Re-evaluate these constants with current usage patterns.
-typedef gtl::InlinedVector<TensorValue, 4> TensorValueVec;
-typedef gtl::InlinedVector<AllocatorAttributes, 4> AllocatorAttributeVec;
+typedef absl::InlinedVector<TensorValue, 4UL> TensorValueVec;
+typedef absl::InlinedVector<AllocatorAttributes, 4UL> AllocatorAttributeVec;
 
 class ExecutorImpl : public Executor {
  public:
   explicit ExecutorImpl(const LocalExecutorParams& p) : immutable_state_(p) {}
 
-  Status Initialize(const Graph& graph) {
+  absl::Status Initialize(const Graph& graph) {
     TF_RETURN_IF_ERROR(immutable_state_.Initialize(graph));
     kernel_stats_.Initialize(immutable_state_.graph_view());
     return absl::OkStatus();
@@ -304,8 +304,9 @@ class ExecutorState {
   void ProcessInline(TaggedNodeReadyQueue* inline_ready,
                      int64_t scheduled_nsec);
 
-  Status ProcessSync(const NodeItem& item, OpKernelContext::Params* params,
-                     EntryVector* outputs, NodeExecStatsInterface* stats);
+  absl::Status ProcessSync(const NodeItem& item,
+                           OpKernelContext::Params* params,
+                           EntryVector* outputs, NodeExecStatsInterface* stats);
   void ProcessAsync(const NodeItem& item, const OpKernelContext::Params& params,
                     const TaggedNode& tagged_node, Entry* first_input,
                     NodeExecStatsInterface* stats,
@@ -315,20 +316,20 @@ class ExecutorState {
                           NodeExecStatsInterface* stats);
 
   // Before invoking item->kernel, fills in its "inputs".
-  Status PrepareInputs(const NodeItem& item, Entry* first_input,
-                       TensorValueVec* inputs,
-                       AllocatorAttributeVec* input_alloc_attrs,
-                       bool* is_input_dead);
+  absl::Status PrepareInputs(const NodeItem& item, Entry* first_input,
+                             TensorValueVec* inputs,
+                             AllocatorAttributeVec* input_alloc_attrs,
+                             bool* is_input_dead);
 
   // After item->kernel computation is done, processes its outputs.
-  Status ProcessOutputs(const NodeItem& item, OpKernelContext* ctx,
-                        Entry* outputs, NodeExecStatsInterface* stats);
+  absl::Status ProcessOutputs(const NodeItem& item, OpKernelContext* ctx,
+                              Entry* outputs, NodeExecStatsInterface* stats);
 
   // Called after each node finishes. Takes ownership of "stats". Returns true
   // if execution has completed.
   //
   // This method will clear `*ready` before returning.
-  bool NodeDone(const Status& s, TaggedNodeSeq* ready,
+  bool NodeDone(const absl::Status& s, TaggedNodeSeq* ready,
                 NodeExecStatsInterface* stats,
                 TaggedNodeReadyQueue* inline_ready);
 
@@ -413,7 +414,7 @@ class ExecutorState {
       false;
 
   mutex mu_;
-  Status status_ TF_GUARDED_BY(mu_);
+  absl::Status status_ TF_GUARDED_BY(mu_);
 };
 
 template <class PropagatorStateType>
@@ -495,7 +496,7 @@ void ExecutorState<PropagatorStateType>::RunAsync(Executor::DoneCallback done) {
 
   // Ask the device to fill in the device context map.
   Device* device = immutable_state_.params().device;
-  const Status get_context_status =
+  const absl::Status get_context_status =
       device->TryGetDeviceContext(&device_context_);
   if (!get_context_status.ok()) {
     delete this;
@@ -583,10 +584,10 @@ bool MightTrace(const tsl::tracing::EventCollector* event_collector,
 }
 
 template <class PropagatorStateType>
-Status ExecutorState<PropagatorStateType>::ProcessSync(
+absl::Status ExecutorState<PropagatorStateType>::ProcessSync(
     const NodeItem& item, OpKernelContext::Params* params, EntryVector* outputs,
     NodeExecStatsInterface* stats) {
-  Status s;
+  absl::Status s;
   OpKernelContext ctx(params, item.num_outputs);
   nodestats::SetOpStart(stats);
 
@@ -647,9 +648,9 @@ void ExecutorState<PropagatorStateType>::ProcessAsync(
         tsl::profiler::GetTFTraceMeLevel(/*is_expensive=*/false));
 
     // Trace async op start.
-    profiler::TraceMeProducer producer(
+    tsl::profiler::TraceMeProducer producer(
         [&] {
-          return profiler::TraceMeEncode(
+          return tsl::profiler::TraceMeEncode(
               "ExecutorState::ProcessAsync::Start",
               {{"name", async_kernel->name()},
                {"kernel_type", async_kernel->type_string()},
@@ -659,7 +660,7 @@ void ExecutorState<PropagatorStateType>::ProcessAsync(
 
     auto done = [this, state, activity_id, ctx_id = producer.GetContextId()]() {
       // Trace async op done.
-      profiler::TraceMeConsumer consumer(
+      tsl::profiler::TraceMeConsumer consumer(
           [&] {
             return profiler::TraceMeEncode(
                 "ExecutorState::ProcessAsync::Done",
@@ -675,7 +676,7 @@ void ExecutorState<PropagatorStateType>::ProcessAsync(
 
       nodestats::SetOpEnd(stats);
       EntryVector outputs(state->item->num_outputs);
-      Status s =
+      absl::Status s =
           ProcessOutputs(*state->item, &state->ctx, outputs.data(), stats);
       nodestats::SetMemory(stats, &state->ctx);
       if (vlog_) {
@@ -740,7 +741,7 @@ template <class PropagatorStateType>
 void ExecutorState<PropagatorStateType>::ProcessInline(
     TaggedNodeReadyQueue* inline_ready, int64_t scheduled_nsec) {
   WithContext wc(context_);
-  auto ready = std::make_unique<TaggedNodeSeq>();
+  TaggedNodeSeq ready;
 
   // Parameters passed to OpKernel::Compute.
   auto inputs = std::make_unique<TensorValueVec>();
@@ -800,20 +801,20 @@ void ExecutorState<PropagatorStateType>::ProcessInline(
   // Set the device_context for this device, if it exists.
   params->op_device_context = device_context_;
 
-  Status s;
+  absl::Status s;
   NodeExecStatsInterface* stats = nullptr;
 
   EntryVector outputs(1);
 
   bool completed = false;
   int64_t last_iter_num = -1;
-  std::unique_ptr<profiler::TraceMeConsumer> iteration_scope;
+  std::unique_ptr<tsl::profiler::TraceMeConsumer> iteration_scope;
   while (!inline_ready->empty()) {
     TaggedNode tagged_node = inline_ready->front();
 
     int64_t current_iter_num = tagged_node.get_iter_num();
     if (current_iter_num != last_iter_num) {
-      iteration_scope = std::make_unique<profiler::TraceMeConsumer>(
+      iteration_scope = std::make_unique<tsl::profiler::TraceMeConsumer>(
           // From TraceMeProducer in DirectSession::RunInternal,
           // GraphMgr::ExecuteAsync, or FunctionLibraryRuntime::Run.
           [&] {
@@ -907,7 +908,7 @@ void ExecutorState<PropagatorStateType>::ProcessInline(
         propagator_.MaybeMarkCompleted(tagged_node);
         activity_watcher::ActivityEnd(activity_id);
         // Continue to process the nodes in 'inline_ready'.
-        completed = NodeDone(s, ready.get(), stats, inline_ready);
+        completed = NodeDone(s, &ready, stats, inline_ready);
         continue;
       }
 
@@ -948,7 +949,7 @@ void ExecutorState<PropagatorStateType>::ProcessInline(
       activity_watcher::ActivityEnd(activity_id);
       // Propagates outputs.
       if (s.ok()) {
-        propagator_.PropagateOutputs(tagged_node, &outputs, ready.get());
+        propagator_.PropagateOutputs(tagged_node, &outputs, &ready);
       }
 
       // Clear outputs without deallocating the `outputs` vector.
@@ -961,7 +962,7 @@ void ExecutorState<PropagatorStateType>::ProcessInline(
         scheduled_nsec = nodestats::NowInNsec();
       }
       // Postprocess.
-      completed = NodeDone(s, ready.get(), stats, inline_ready);
+      completed = NodeDone(s, &ready, stats, inline_ready);
     }
   }  // while !inline_ready.empty()
 
@@ -970,7 +971,7 @@ void ExecutorState<PropagatorStateType>::ProcessInline(
 }
 
 template <class PropagatorStateType>
-Status ExecutorState<PropagatorStateType>::PrepareInputs(
+absl::Status ExecutorState<PropagatorStateType>::PrepareInputs(
     const NodeItem& item, Entry* first_input, TensorValueVec* inputs,
     AllocatorAttributeVec* input_alloc_attrs, bool* is_input_dead) {
   inputs->resize(item.num_inputs);
@@ -1085,10 +1086,10 @@ Status ExecutorState<PropagatorStateType>::PrepareInputs(
 }
 
 template <class PropagatorStateType>
-Status ExecutorState<PropagatorStateType>::ProcessOutputs(
+absl::Status ExecutorState<PropagatorStateType>::ProcessOutputs(
     const NodeItem& item, OpKernelContext* ctx, Entry* outputs,
     NodeExecStatsInterface* stats) {
-  Status s = ctx->status();
+  absl::Status s = ctx->status();
   if (!s.ok()) {
     s = AttachDef(s, item.kernel->def());
     // TODO(misard) Replace with a finer-grain enabling flag once we
@@ -1186,7 +1187,7 @@ Status ExecutorState<PropagatorStateType>::ProcessOutputs(
 
 template <class PropagatorStateType>
 bool ExecutorState<PropagatorStateType>::NodeDone(
-    const Status& s, TaggedNodeSeq* ready, NodeExecStatsInterface* stats,
+    const absl::Status& s, TaggedNodeSeq* ready, NodeExecStatsInterface* stats,
     TaggedNodeReadyQueue* inline_ready) {
   if (stats) {
     nodestats::SetAllEnd(stats);
@@ -1212,7 +1213,7 @@ bool ExecutorState<PropagatorStateType>::NodeDone(
     }
   } else {
     bool abort_run = false;
-    Status maybe_derived_s(s);
+    absl::Status maybe_derived_s(s);
 
     // Some error happened. This thread of computation is done.
     {
@@ -1227,7 +1228,7 @@ bool ExecutorState<PropagatorStateType>::NodeDone(
         // trigger cancellation, and here we make sure the original error is
         // exposed to users and not buried as a derived error.
         if (cancellation_manager_ && cancellation_manager_->IsCancelled() &&
-            (errors::IsCancelled(s) || errors::IsAborted(s))) {
+            (absl::IsCancelled(s) || absl::IsAborted(s))) {
           status_ = StatusGroup::MakeDerived(s);
           maybe_derived_s = status_;
         } else {
@@ -1237,7 +1238,7 @@ bool ExecutorState<PropagatorStateType>::NodeDone(
     }
 
     if (abort_run) {
-      TRACEPRINTF("StartAbort: %s", s.ToString().c_str());
+      TRACEPRINTF("StartAbort: %s", s.ToString());
       if (cancellation_manager_) {
         // Use VLOG instead of LOG(warning) because error status is expected
         // when the executor is run under the grappler optimization phase or
@@ -1459,12 +1460,12 @@ void ExecutorState<PropagatorStateType>::Finish() {
     }
     delete this;
     runner([step_id, trace_id, status, done_cb = std::move(done_cb)]() {
-      profiler::TraceMeConsumer activity(
+      tsl::profiler::TraceMeConsumer activity(
           // From TraceMeProducer in KernelAndDeviceFunc::RunAsync,
           // DirectSession::RunInternal or GraphMgr::ExecuteAsync.
           [&] {
-            return profiler::TraceMeEncode("ExecutorDoneCallback",
-                                           {{"id", step_id}});
+            return tsl::profiler::TraceMeEncode("ExecutorDoneCallback",
+                                                {{"id", step_id}});
           },
           tsl::profiler::ContextType::kTfExecutor, trace_id,
           tsl::profiler::TraceMeLevel::kInfo);
@@ -1479,15 +1480,16 @@ void ExecutorState<PropagatorStateType>::Finish() {
     // methods have completed, this ensures that control is not returned to
     // the user until the step (and its side-effects) has actually completed.
     device->Sync([this, step_id, trace_id, runner = std::move(runner),
-                  done_cb = std::move(done_cb)](const Status& status) mutable {
+                  done_cb =
+                      std::move(done_cb)](const absl::Status& status) mutable {
       delete this;
       runner([step_id, trace_id, status, done_cb = std::move(done_cb)]() {
-        profiler::TraceMeConsumer activity(
+        tsl::profiler::TraceMeConsumer activity(
             // From TraceMeProducer in KernelAndDeviceFunc::RunAsync,
             // DirectSession::RunInternal or GraphMgr::ExecuteAsync.
             [&] {
-              return profiler::TraceMeEncode("ExecutorDoneCallback",
-                                             {{"id", step_id}});
+              return tsl::profiler::TraceMeEncode("ExecutorDoneCallback",
+                                                  {{"id", step_id}});
             },
             tsl::profiler::ContextType::kTfExecutor, trace_id,
             tsl::profiler::TraceMeLevel::kInfo);
@@ -1497,12 +1499,12 @@ void ExecutorState<PropagatorStateType>::Finish() {
   } else {
     delete this;
     runner([step_id, trace_id, status, done_cb = std::move(done_cb)]() {
-      profiler::TraceMeConsumer activity(
+      tsl::profiler::TraceMeConsumer activity(
           // From TraceMeProducer in KernelAndDeviceFunc::RunAsync,
           // DirectSession::RunInternal or GraphMgr::ExecuteAsync.
           [&] {
-            return profiler::TraceMeEncode("ExecutorDoneCallback",
-                                           {{"id", step_id}});
+            return tsl::profiler::TraceMeEncode("ExecutorDoneCallback",
+                                                {{"id", step_id}});
           },
           tsl::profiler::ContextType::kTfExecutor, trace_id,
           tsl::profiler::TraceMeLevel::kInfo);
@@ -1528,10 +1530,10 @@ void ExecutorImpl::RunAsyncInternal(const Args& args, DoneCallback done) {
 
 }  // namespace
 
-Status NewLocalExecutor(const LocalExecutorParams& params, const Graph& graph,
-                        Executor** executor) {
+absl::Status NewLocalExecutor(const LocalExecutorParams& params,
+                              const Graph& graph, Executor** executor) {
   ExecutorImpl* impl = new ExecutorImpl(params);
-  const Status s = impl->Initialize(graph);
+  const absl::Status s = impl->Initialize(graph);
   if (s.ok()) {
     *executor = impl;
   } else {
@@ -1540,9 +1542,10 @@ Status NewLocalExecutor(const LocalExecutorParams& params, const Graph& graph,
   return s;
 }
 
-Status CreateNonCachedKernel(Device* device, FunctionLibraryRuntime* flib,
-                             const std::shared_ptr<const NodeProperties>& props,
-                             int graph_def_version, OpKernel** kernel) {
+absl::Status CreateNonCachedKernel(
+    Device* device, FunctionLibraryRuntime* flib,
+    const std::shared_ptr<const NodeProperties>& props, int graph_def_version,
+    OpKernel** kernel) {
   const auto device_type = DeviceType(device->attributes().device_type());
   auto allocator = device->GetAllocator(AllocatorAttributes());
   return CreateOpKernel(device_type, device, allocator, flib,
@@ -1564,10 +1567,11 @@ class DefaultExecutorRegistrar {
 
  private:
   class Factory : public ExecutorFactory {
-    Status NewExecutor(const LocalExecutorParams& params, const Graph& graph,
-                       std::unique_ptr<Executor>* out_executor) override {
+    absl::Status NewExecutor(const LocalExecutorParams& params,
+                             const Graph& graph,
+                             std::unique_ptr<Executor>* out_executor) override {
       Executor* ret = nullptr;
-      TF_RETURN_IF_ERROR(NewLocalExecutor(params, std::move(graph), &ret));
+      TF_RETURN_IF_ERROR(NewLocalExecutor(params, graph, &ret));
       out_executor->reset(ret);
       return absl::OkStatus();
     }

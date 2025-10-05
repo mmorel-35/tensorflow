@@ -26,17 +26,22 @@ limitations under the License.
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
-#include "tensorflow/lite/builtin_op_data.h"
+#include "flatbuffers/base.h"  // from @flatbuffers
+#include "flatbuffers/buffer.h"  // from @flatbuffers
+#include "flatbuffers/flatbuffer_builder.h"  // from @flatbuffers
+#include "flatbuffers/string.h"  // from @flatbuffers
+#include "flatbuffers/vector.h"  // from @flatbuffers
+#include "tensorflow/compiler/mlir/lite/schema/schema_conversion_utils.h"
 #include "tensorflow/lite/context_util.h"
 #include "tensorflow/lite/core/c/common.h"
+#include "tensorflow/lite/interpreter.h"
 #if FLATBUFFERS_LITTLEENDIAN == 0
 #include "tensorflow/lite/core/model_builder.h"
 #endif
 #include "tensorflow/compiler/mlir/lite/schema/mutable/schema_generated.h"
+#include "tensorflow/compiler/mlir/lite/tools/versioning/op_version.h"
 #include "tensorflow/lite/core/subgraph.h"
-#include "tensorflow/lite/schema/schema_conversion_utils.h"
 #include "tensorflow/lite/tools/serialization/enum_mapping.h"
-#include "tensorflow/lite/tools/versioning/op_version.h"
 #include "tensorflow/lite/version.h"
 
 namespace tflite {
@@ -240,8 +245,14 @@ SubgraphWriter::ExportTensors(flatbuffers::FlatBufferBuilder* fbb) {
 
           std::vector<float> scale_vector(params->scale->data,
                                           params->scale->data + num_scales);
+          // Copy zero point by default.
           std::vector<int64_t> zero_point_vector(
-              params->zero_point->data, params->zero_point->data + num_scales);
+              params->zero_point->data,
+              params->zero_point->data + params->zero_point->size);
+          // If we have more zero points, copy them.
+          if (params->zero_point->size != params->scale->size) {
+            zero_point_vector.resize(params->scale->size, zero_point_vector[0]);
+          }
           scale_array = fbb->CreateVector<float>(scale_vector);
           zero_point_array = fbb->CreateVector<int64_t>(zero_point_vector);
           quantization_params = CreateQuantizationParameters(

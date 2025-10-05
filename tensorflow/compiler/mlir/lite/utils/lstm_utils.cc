@@ -16,21 +16,19 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/lite/utils/lstm_utils.h"
 
 #include <algorithm>
-#include <optional>
+#include <cstdint>
 #include <vector>
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/Support/Casting.h"
-#include "llvm/Support/raw_ostream.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"  // from @llvm-project
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/Dialect/Tensor/IR/Tensor.h"  // from @llvm-project
 #include "mlir/IR/Attributes.h"  // from @llvm-project
 #include "mlir/IR/Builders.h"  // from @llvm-project
 #include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
-#include "mlir/IR/BuiltinOps.h"  // from @llvm-project
 #include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
 #include "mlir/IR/Location.h"  // from @llvm-project
 #include "mlir/IR/MLIRContext.h"  // from @llvm-project
@@ -41,6 +39,7 @@ limitations under the License.
 #include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "mlir/Support/LogicalResult.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/lite/ir/tfl_ops.h"
+#include "tensorflow/compiler/mlir/lite/utils/utils.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/dynamic_shape_utils.h"
 
@@ -414,10 +413,10 @@ LogicalResult ConvertLSTMCellSimpleToFusedLSTM::RewriteFunc() {
   auto result_type = mlir::RankedTensorType::get(
       output_shape,
       mlir::cast<RankedTensorType>(input_.getType()).getElementType());
-  lstm_ = builder_.create<mlir::TFL::LSTMOp>(
-      fused_func_op_.getLoc(), result_type, input_, input2input_, input2forget_,
-      input2cell_, input2output_, rec2input_, rec2forget_, rec2cell_,
-      rec2output_, /*cell_to_input_weights*/ none_,
+  lstm_ = mlir::TFL::LSTMOp::create(
+      builder_, fused_func_op_.getLoc(), result_type, input_, input2input_,
+      input2forget_, input2cell_, input2output_, rec2input_, rec2forget_,
+      rec2cell_, rec2output_, /*cell_to_input_weights*/ none_,
       /*cell_to_forget_weights*/ none_,
       /*cell_to_output_weights*/ none_, bias2input_, bias2forget_, bias2cell_,
       bias2output_, proj_weight_, proj_bias_, input_activation_state_,
@@ -441,10 +440,10 @@ LogicalResult ConvertLSTMCellSimpleToFusedLSTM::RewriteFunc() {
       func_output_shape,
       mlir::cast<RankedTensorType>(input_.getType()).getElementType());
 
-  auto tensor_cast = builder_.create<mlir::tensor::CastOp>(
-      fused_func_op_.getLoc(), func_result_type, lstm_.getResult());
-  builder_.create<mlir::func::ReturnOp>(fused_func_op_.getLoc(),
-                                        tensor_cast.getResult());
+  auto tensor_cast = mlir::tensor::CastOp::create(
+      builder_, fused_func_op_.getLoc(), func_result_type, lstm_.getResult());
+  mlir::func::ReturnOp::create(builder_, fused_func_op_.getLoc(),
+                               tensor_cast.getResult());
   return success();
 }
 

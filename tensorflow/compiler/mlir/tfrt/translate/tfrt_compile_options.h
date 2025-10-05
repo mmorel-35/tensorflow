@@ -16,6 +16,7 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_MLIR_TFRT_TRANSLATE_TFRT_COMPILE_OPTIONS_H_
 #define TENSORFLOW_COMPILER_MLIR_TFRT_TRANSLATE_TFRT_COMPILE_OPTIONS_H_
 
+#include <cstdint>
 #include <iosfwd>
 #include <ostream>
 #include <string>
@@ -125,7 +126,7 @@ struct TfrtCompileOptions {
   // For TFRT, if true, tf.While's iterations will be parallelized on a
   // best-effort basis. This is currently experimental. MLRT attempts to convert
   // tf.while to tf_mlrt.map_fn regardless of this flag. For tf.While that
-  // cannot be onverted tf_mlrt.map_fn, MLRT try to parallerize tf.while's
+  // cannot be converted tf_mlrt.map_fn, MLRT try to parallelize tf.while's
   // iterations on a best-effort basis.
   bool enable_while_parallel_iterations = false;
 
@@ -149,7 +150,17 @@ struct TfrtCompileOptions {
   // resources.
   int64_t min_max_enqueued_batches = 1;
 
-  // If true, streams with inter data depenedencies will be preferred to be
+  // If non-zero, all models on this server are switched to use a prioritized
+  // batching function using this number of global threads.
+  int64_t batch_queue_global_prioritization_num_threads = 0;
+
+  // The policy used by a BatchScheduler to pad (or split) batches.
+  std::string batch_padding_policy;
+
+  // Batching parameters to be rewritten in the existing BatchFunction ops.
+  BatchingOptions batch_options;
+
+  // If true, streams with inter data dependencies will be preferred to be
   // merged for inline execution.
   bool merge_inter_dependent_streams = true;
 

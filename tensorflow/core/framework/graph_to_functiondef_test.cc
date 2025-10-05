@@ -136,7 +136,7 @@ TEST(GraphToFunctionDefTest, DuplicatedOutputNames) {
   // Duplicated output names.
   auto status = GraphToFunctionDef(*root.graph(), "test_fn", {"d", "d"}, &fdef);
 
-  EXPECT_THAT(status, tensorflow::testing::StatusIs(
+  EXPECT_THAT(status, absl_testing::StatusIs(
                           error::INVALID_ARGUMENT,
                           "Cannot have duplicate output names. Name 'd' "
                           "appears more than once in 'output_names' array."));
@@ -229,7 +229,7 @@ TEST(GraphToFunctionDefTest, ArgAttrConstInput) {
       args_or_retvals->resize(index + 1);
     }
     (*args_or_retvals)[index].node = node;
-    return OkStatus();
+    return absl::OkStatus();
   };
   for (Node* node : root.graph()->op_nodes()) {
     // Set const as the input node.

@@ -12,7 +12,9 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-#include <iostream>
+#include <cstdint>
+#include <memory>
+#include <utility>
 
 #include "mlir/Dialect/Arith/IR/Arith.h"  // from @llvm-project
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
@@ -25,10 +27,10 @@ limitations under the License.
 #include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"  // from @llvm-project
 #include "mlir/Transforms/Passes.h"  // from @llvm-project
-#include "tensorflow/compiler/mlir/lite/utils/validators.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
 #include "tensorflow/compiler/mlir/tensorflow/transforms/passes.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/verification_utils.h"
+#include "tensorflow/compiler/mlir/utils/validators.h"  // IWYU pragma: keep
 
 namespace mlir {
 namespace TF {
@@ -37,10 +39,10 @@ namespace {
 #include "tensorflow/compiler/mlir/tensorflow/transforms/generated_optimize.inc"
 
 // Returns a TF Constant tensor with the passed in values.
-TF::ConstOp GetI64ConstantTensor(PatternRewriter &rewriter,
+TF::ConstOp GetI64ConstantTensor(PatternRewriter& rewriter,
                                  ArrayRef<int64_t> values, Location location) {
   auto cst_attr = rewriter.getI64TensorAttr(values);
-  return rewriter.create<TF::ConstOp>(location, cst_attr.getType(), cst_attr);
+  return TF::ConstOp::create(rewriter, location, cst_attr.getType(), cst_attr);
 }
 
 // Rewrites broadcast->reshape to a reshape->broadcast that reduces
@@ -49,11 +51,11 @@ class SimplifyBroadcastReshape : public OpRewritePattern<BroadcastToOp> {
   using OpRewritePattern<BroadcastToOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(BroadcastToOp op,
-                                PatternRewriter &rewriter) const override {
+                                PatternRewriter& rewriter) const override {
     // Only rewrite if the Broadcast has only one consumer.
     if (!op.getOutput().hasOneUse()) return failure();
 
-    Operation *user = *op.getOutput().getUsers().begin();
+    Operation* user = *op.getOutput().getUsers().begin();
 
     auto reshape_op = llvm::dyn_cast_or_null<ReshapeOp>(user);
     if (!reshape_op) return failure();
@@ -121,8 +123,8 @@ class SimplifyBroadcastReshape : public OpRewritePattern<BroadcastToOp> {
         rewriter, ArrayRef<int64_t>(new_reshape_dims), op.getLoc());
     auto new_reshape_type = RankedTensorType::get(new_reshape_dims, el_ty);
     ReshapeOp new_reshape =
-        rewriter.create<ReshapeOp>(new_reshape_shape.getLoc(), new_reshape_type,
-                                   op.getInput(), new_reshape_shape);
+        ReshapeOp::create(rewriter, new_reshape_shape.getLoc(),
+                          new_reshape_type, op.getInput(), new_reshape_shape);
     TF::ConstOp new_broadcast_shape =
         GetI64ConstantTensor(rewriter, reshape_shape, op.getLoc());
     rewriter.replaceOpWithNewOp<BroadcastToOp>(
@@ -138,7 +140,7 @@ class SimplifyBroadcastReshape : public OpRewritePattern<BroadcastToOp> {
 // Canonicalize operations in functions.
 struct TensorFlowOptimizePass
     : public impl::TensorFlowOptimizePassBase<TensorFlowOptimizePass> {
-  LogicalResult initialize(MLIRContext *context) override {
+  LogicalResult initialize(MLIRContext* context) override {
     RewritePatternSet pattern_list(context);
     populateWithGenerated(pattern_list);
     pattern_list.add<SimplifyBroadcastReshape>(context);
@@ -148,8 +150,7 @@ struct TensorFlowOptimizePass
 
   void runOnOperation() override {
     auto func = getOperation();
-    if (failed(applyPatternsAndFoldGreedily(func, patterns)))
-      signalPassFailure();
+    if (failed(applyPatternsGreedily(func, patterns))) signalPassFailure();
   }
 
   FrozenRewritePatternSet patterns;
@@ -157,15 +158,16 @@ struct TensorFlowOptimizePass
 
 }  // namespace
 
-void CreateTFStandardPipeline(OpPassManager &pm,
-                              const StandardPipelineOptions &options) {
-  OpPassManager &func_pm = pm.nest<func::FuncOp>();
+void CreateTFStandardPipeline(OpPassManager& pm,
+                              const StandardPipelineOptions& options) {
+  OpPassManager& func_pm = pm.nest<func::FuncOp>();
 
   // First operates on the executor dialect:
   // - remove dead islands.
   // - fuse islands as much as possible.
   // - materialize the eventual "pass-through" ops by inlining their content.
-  func_pm.addPass(tf_executor::CreateTFExecutorGraphPruningPass());
+  func_pm.addPass(
+      tf_executor::CreateTFExecutorGraphPruningPass(options.ops_to_preserve));
   func_pm.addPass(tf_executor::CreateTFExecutorIslandCoarseningPass());
   func_pm.addPass(CreateMaterializePassthroughOpPass());
   if (options.form_clusters) pm.addPass(TFDevice::CreateClusterFormationPass());
@@ -173,7 +175,8 @@ void CreateTFStandardPipeline(OpPassManager &pm,
   // Hopefully there is a single island left, or there wasn't any to begin with.
   // We now run the optimizer which operates mostly inside islands.
   func_pm.addPass(createCanonicalizerPass());
-  pm.addPass(CreateTFShapeInferencePass());
+  pm.addPass(CreateTFShapeInferencePass(
+      {}, options.enable_stablehlo_shape_propagation));
   if (options.enable_inliner) {
     pm.addPass(createInlinerPass());
   }

@@ -24,6 +24,8 @@ limitations under the License.
 namespace tflite {
 constexpr char KernelTestDelegateProviders::kAccelerationTestConfigPath[];
 constexpr char KernelTestDelegateProviders::kUseSimpleAllocator[];
+constexpr char KernelTestDelegateProviders::kAllowFp16PrecisionForFp32[];
+constexpr char KernelTestDelegateProviders::kDumpTFLiteModelDir[];
 
 /*static*/ KernelTestDelegateProviders* KernelTestDelegateProviders::Get() {
   static KernelTestDelegateProviders* const providers =
@@ -37,6 +39,10 @@ KernelTestDelegateProviders::KernelTestDelegateProviders()
   params_.AddParam(kAccelerationTestConfigPath,
                    tools::ToolParam::Create<std::string>(""));
   params_.AddParam(kUseSimpleAllocator, tools::ToolParam::Create<bool>(false));
+  params_.AddParam(kAllowFp16PrecisionForFp32,
+                   tools::ToolParam::Create<bool>(false));
+  params_.AddParam(kDumpTFLiteModelDir,
+                   tools::ToolParam::Create<std::string>(""));
 }
 
 bool KernelTestDelegateProviders::InitFromCmdlineArgs(int* argc,
@@ -56,6 +62,22 @@ bool KernelTestDelegateProviders::InitFromCmdlineArgs(int* argc,
             this->params_.Set<bool>(kUseSimpleAllocator, val, argv_position);
           },
           false, "Use Simple Memory Allocator for SingleOpModel",
+          Flag::kOptional),
+      Flag(
+          kAllowFp16PrecisionForFp32,
+          [this](const bool& val, int argv_position) {  // NOLINT
+            this->params_.Set<bool>(kAllowFp16PrecisionForFp32, val,
+                                    argv_position);
+          },
+          false, "Compare result in fp16 precision for fp32 operations",
+          Flag::kOptional),
+      Flag(
+          kDumpTFLiteModelDir,
+          [this](const std::string& val, int argv_position) {  // NOLINT
+            this->params_.Set<std::string>(kDumpTFLiteModelDir, val,
+                                           argv_position);
+          },
+          "", "Dump TFLite models of all run tests to target directory",
           Flag::kOptional)};
   delegate_list_util_.AppendCmdlineFlags(flags);
 

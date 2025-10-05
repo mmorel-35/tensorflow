@@ -15,7 +15,6 @@ limitations under the License.
 
 #include <memory>
 #include <utility>
-#include <vector>
 
 #include "xla/error_spec.h"
 #include "xla/hlo/ir/hlo_computation.h"
@@ -28,9 +27,10 @@ limitations under the License.
 #include "xla/shape_util.h"
 #include "xla/tests/hlo_test_base.h"
 #include "xla/tests/literal_test_util.h"
+#include "xla/tsl/platform/statusor.h"
+#include "xla/tsl/platform/test.h"
 #include "xla/xla.pb.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/platform/test.h"
 
 namespace xla {
 namespace cpu {
@@ -43,7 +43,7 @@ class CpuFusionTest : public HloTestBase {
   ErrorSpec error_spec_{0.0001, 1e-5};
 
  private:
-  DebugOptions GetDebugOptionsForTest() override {
+  DebugOptions GetDebugOptionsForTest() const override {
     DebugOptions debug_options = HloTestBase::GetDebugOptionsForTest();
     debug_options.add_xla_disable_hlo_passes("layout-assignment");
     return debug_options;
@@ -84,7 +84,7 @@ TEST_F(CpuFusionTest, FuseTwoElementwiseOps) {
   EXPECT_EQ(4, fusion_instruction->fused_instruction_count());
 
   // Compile and execute the computation.
-  auto result = ExecuteAndTransfer(module->Clone(), {});
+  TF_ASSERT_OK_AND_ASSIGN(const Literal result, Execute(std::move(module), {}));
 
   // Check the output correctness.
   LiteralTestUtil::ExpectR1Near<float>({1.0, 40.0, -5.0}, result, error_spec_);
@@ -131,7 +131,7 @@ TEST_F(CpuFusionTest, FuseElementwiseOpChain) {
   EXPECT_EQ(8, fusion_instruction->fused_instruction_count());
 
   // Compile and execute the computation.
-  auto result = ExecuteAndTransfer(module->Clone(), {});
+  TF_ASSERT_OK_AND_ASSIGN(const Literal result, Execute(std::move(module), {}));
 
   // Check the output correctness.
   LiteralTestUtil::ExpectR1Near<float>({14.0, 40.0, 40.0}, result, error_spec_);
@@ -167,15 +167,19 @@ TEST_F(CpuFusionTest, ElementwiseOpChainWithNonfusibleInstruction) {
           HloInstruction::CreateParameter(1, r0f32, "y"))));
   auto add_f32 = module->AddEmbeddedComputation(embedded_builder.Build());
 
+  Window window;
+  WindowDimension* window_dimension = window.add_dimensions();
+  window_dimension->set_size(1);
+  window_dimension->set_stride(1);
+  window_dimension->set_base_dilation(1);
+  window_dimension->set_window_dilation(1);
   // This is a nop reduction.
-  auto reduce = builder.AddInstruction(HloInstruction::CreateReduce(
-      cshape,
-      builder.AddInstruction(HloInstruction::CreateReshape(
-          ShapeUtil::MakeShape(F32, {1, 6}), concatenate)),
+  auto reduce = builder.AddInstruction(HloInstruction::CreateReduceWindow(
+      cshape, concatenate,
       /*init_value=*/
       builder.AddInstruction(
           HloInstruction::CreateConstant(LiteralUtil::CreateR0<float>(0))),
-      /*dimensions_to_reduce=*/{0}, add_f32));
+      window, add_f32));
 
   auto exp = builder.AddInstruction(
       HloInstruction::CreateUnary(cshape, HloOpcode::kExp, reduce));
@@ -209,15 +213,15 @@ TEST_F(CpuFusionTest, ElementwiseOpChainWithNonfusibleInstruction) {
 
   auto fusion_instruction2 = reduce->operand(0);
   EXPECT_EQ(HloOpcode::kFusion, fusion_instruction1->opcode());
-  EXPECT_EQ(HloOpcode::kReshape,
+  EXPECT_EQ(HloOpcode::kConcatenate,
             fusion_instruction2->fused_expression_root()->opcode());
   // There should be 5 fused instructions in the second fusion instruction: 1
-  // parameter, negate, ceil, concat, and reshape.
-  EXPECT_EQ(5, fusion_instruction2->fused_instruction_count())
+  // parameter, negate, ceil and concat.
+  EXPECT_EQ(4, fusion_instruction2->fused_instruction_count())
       << fusion_instruction2->fused_instructions_computation()->ToString();
 
   // Compile and execute the computation.
-  auto result = ExecuteAndTransfer(module->Clone(), {});
+  TF_ASSERT_OK_AND_ASSIGN(const Literal result, Execute(std::move(module), {}));
 
   // Check the output correctness.
   LiteralTestUtil::ExpectR1Near<float>({14.0, 40.0, 40.0, 14.0, 40.0, 40.0},
@@ -276,9 +280,9 @@ TEST_F(CpuFusionTest, TestOperandOrderToAvoidDuplication) {
   EXPECT_EQ(4, fusion1->fused_instruction_count());
   EXPECT_EQ(4, fusion2->fused_instruction_count());
 
-  // The fusion has no parameters, everything is fused including constants.
-  EXPECT_EQ(0, fusion1->operand_count());
-  EXPECT_EQ(0, fusion2->operand_count());
+  // The fusion has a single constant parameter.
+  EXPECT_EQ(1, fusion1->operand_count());
+  EXPECT_EQ(1, fusion2->operand_count());
 }
 
 TEST_F(CpuFusionTest, DoNotDuplicateExpensiveOps) {

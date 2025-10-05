@@ -17,10 +17,11 @@ package(
 cc_library(
     name = "math_util",
     hdrs = ["math_util.h"],
+    visibility = ["//visibility:public"],
     deps = [
         "//tensorflow/core/platform:logging",
         "//tensorflow/core/platform:types",
-        "@local_tsl//tsl/lib/math:math_util",
+        "@local_xla//xla/tsl/lib/math:math_util",
     ],
 )
 
@@ -30,7 +31,7 @@ filegroup(
     srcs = [
         "math_util.h",
     ],
-    visibility = ["//tensorflow/core:__pkg__"],
+    visibility = ["//visibility:public"],
 )
 
 exports_files([

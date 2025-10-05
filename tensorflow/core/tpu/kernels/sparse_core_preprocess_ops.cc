@@ -19,6 +19,7 @@ limitations under the License.
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -27,6 +28,7 @@ limitations under the License.
 #include <vector>
 
 #include "absl/algorithm/container.h"
+#include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
@@ -53,8 +55,9 @@ namespace tensorflow {
 
 bool IsPowerOfTwo(int32_t x) { return x > 0 && (x & (x - 1)) == 0; }
 
-Status ValidateInputs(const Tensor& indices_or_row_splits, const Tensor& values,
-                      const Tensor& weights, int sample_count) {
+absl::Status ValidateInputs(const Tensor& indices_or_row_splits,
+                            const Tensor& values, const Tensor& weights,
+                            int sample_count) {
   if (values.dims() != 1) {
     return absl::InvalidArgumentError(
         absl::StrCat("Values input should have dimension 1. But got dimension ",
@@ -92,7 +95,9 @@ Status ValidateInputs(const Tensor& indices_or_row_splits, const Tensor& values,
     // tensor.
   } else if (indices_or_row_splits.dims() == 2 &&
              indices_or_row_splits.NumElements() >= 0) {
-    // TODO(pineapplejuice233): Add checking logic for sparse tensor input.
+    // NOTE(mrry): Checking logic for SparseTensor inputs is in
+    // `ComputeRowIdsBeforePadding()`, to avoid an extra traversal of the
+    // indices matrix.
   } else if (indices_or_row_splits.dims() == 1 &&
              indices_or_row_splits.NumElements() > 0) {
     // Ragged tensor.
@@ -112,9 +117,11 @@ Status ValidateInputs(const Tensor& indices_or_row_splits, const Tensor& values,
   return absl::OkStatus();
 }
 
-Status ComputeRowIdsBeforePadding(const Tensor& indices_or_row_splits,
-                                  const int32 total_id_count,
-                                  int32* row_ids_before_padding) {
+absl::Status ComputeRowIdsBeforePadding(const Tensor& indices_or_row_splits,
+                                        const int32 total_id_count,
+                                        const int32 sample_count,
+                                        int32* row_ids_before_padding,
+                                        std::vector<int> shape_strides) {
   // The only difference between dense tensor, sparse tensor and ragged tensor
   // is the row ids output.
   if (indices_or_row_splits.NumElements() == 0) {
@@ -134,15 +141,66 @@ Status ComputeRowIdsBeforePadding(const Tensor& indices_or_row_splits,
     // The row ids are just the sample ids which is the first dim of the
     // indices.
     auto indices_matrix = indices_or_row_splits.matrix<int32>();
-    int32 previous_row_id = -1;
-    for (int32 i = 0; i < total_id_count; ++i) {
-      int32 current_row_id = indices_matrix(i, 0);
-      if (current_row_id < previous_row_id) {
-        return absl::InvalidArgumentError(
-            "Invalid indices_or_row_splits input, indices of SparseTensor need "
-            "to be sorted in ascending order.");
+    // TODO(b/432045101): remove this once the bug is fixed.
+    if (indices_matrix.dimension(1) == 2) {
+      int32 previous_row_id = -1;
+      for (int32 i = 0; i < total_id_count; ++i) {
+        int32 current_row_id = indices_matrix(i, 0);
+        if (current_row_id < previous_row_id) {
+          return absl::InvalidArgumentError(
+              "Invalid indices_or_row_splits input, indices of SparseTensor "
+              "need to be sorted in ascending (non-decreasing) order.");
+        }
+        if (current_row_id >= sample_count) {
+          return absl::InvalidArgumentError(absl::StrCat(
+              "Invalid indices_or_row_splits input, indices of SparseTensor "
+              "contained a row_id ",
+              current_row_id, " that was >= the sample count (", sample_count,
+              ")."));
+        }
+        *(row_ids_before_padding + i) = current_row_id;
+        previous_row_id = current_row_id;
       }
-      *(row_ids_before_padding + i) = current_row_id;
+    } else if (indices_matrix.dimension(1) > 2) {
+      if (indices_matrix.dimension(1) != shape_strides.size()) {
+        return absl::InvalidArgumentError(
+            absl::StrCat("Invalid shape_strides input, expected ",
+                         indices_matrix.dimension(1), " rank but got ",
+                         shape_strides.size(), " rank."));
+      }
+      if (shape_strides.empty()) {
+        return absl::InvalidArgumentError(
+            "Invalid shape_strides input, expected non-empty shape_strides for "
+            "SparseTensor with rank > 2.");
+      }
+      int32 previous_row_id = -1;
+      int32_t rank = indices_matrix.dimension(1) - 1;
+      for (int32_t i = 0; i < total_id_count; ++i) {
+        int32_t current_row_id = 0;
+        for (int32_t j = 0; j < indices_matrix.dimension(1) - 1; ++j) {
+          current_row_id += indices_matrix(i, rank - j - 1) * shape_strides[j];
+        }
+        if (current_row_id < previous_row_id) {
+          return absl::InvalidArgumentError(
+              "Invalid indices_or_row_splits input, indices of SparseTensor "
+              "need to be sorted in ascending (non-decreasing) order.");
+        }
+        if (current_row_id >= sample_count) {
+          return absl::InvalidArgumentError(absl::StrCat(
+              "Invalid indices_or_row_splits input, indices of SparseTensor "
+              "contained a row_id ",
+              current_row_id, " that was >= the sample count (", sample_count,
+              ")."));
+        }
+        *(row_ids_before_padding + i) = current_row_id;
+        previous_row_id = current_row_id;
+      }
+    } else {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "Invalid indices_or_row_splits input for SparseTensor, the second "
+          "dimension of the indices of "
+          "SparseTensor should be equal or greater than 2. But got ",
+          indices_matrix.dimension(1), "."));
     }
   } else if (indices_or_row_splits.dims() == 1 &&
              indices_or_row_splits.NumElements() > 0) {
@@ -308,9 +366,9 @@ class ConvertToCooTensorOp : public OpKernel {
 
     auto row_ids_before_dedup = std::make_unique<int32[]>(total_id_count);
 
-    OP_REQUIRES_OK(
-        ctx, ComputeRowIdsBeforePadding(*indices_or_row_splits, total_id_count,
-                                        row_ids_before_dedup.get()));
+    OP_REQUIRES_OK(ctx, ComputeRowIdsBeforePadding(
+                            *indices_or_row_splits, total_id_count,
+                            sample_count_, row_ids_before_dedup.get()));
 
     // Compute the rescaled gains for non-sum combiners.
     std::optional<std::vector<float>> gains_rescale =
@@ -519,9 +577,8 @@ void GetMinibatchesInCsrWithPhysicalReplicaOp::Compute(OpKernelContext* ctx) {
           "The number of minibatches per sparse core is ", num_minibatch_per_sc,
           ". But the max minibatches per sparse core is set to be ",
           max_minibatches_per_sc_, " which is smaller.")));
-  VLOG(2) << "GetMinibatchesInCsrWithPhysicalReplicaOp: "
-          << "program_key = '" << program_key << "'"
-          << ", table_name = '" << table_name_ << "'"
+  VLOG(2) << "GetMinibatchesInCsrWithPhysicalReplicaOp: " << "program_key = '"
+          << program_key << "'" << ", table_name = '" << table_name_ << "'"
           << ", max_ids = " << max_ids_per_partition
           << ", max_uniques = " << max_unique_ids_per_partition
           << ", num_minibatch_per_sc = " << num_minibatch_per_sc;
@@ -1212,9 +1269,9 @@ void ConvertToListOfSparseCoreCooTensorsOp::Compute(OpKernelContext* ctx) {
   auto row_ids_before_dedup = std::unique_ptr<int32[]>(
       new std::remove_extent_t<int32[]>[total_id_count]);
 
-  OP_REQUIRES_OK(
-      ctx, ComputeRowIdsBeforePadding(*indices_or_row_splits, total_id_count,
-                                      row_ids_before_dedup.get()));
+  OP_REQUIRES_OK(ctx, ComputeRowIdsBeforePadding(*indices_or_row_splits,
+                                                 total_id_count, sample_count_,
+                                                 row_ids_before_dedup.get()));
 
   // Compute the rescaled gains for non-sum combiners.
   std::optional<std::vector<float>> gains_rescale =

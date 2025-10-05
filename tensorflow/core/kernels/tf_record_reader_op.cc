@@ -31,12 +31,12 @@ class TFRecordReader : public ReaderBase {
  public:
   TFRecordReader(const string& node_name, const string& compression_type,
                  Env* env)
-      : ReaderBase(strings::StrCat("TFRecordReader '", node_name, "'")),
+      : ReaderBase(absl::StrCat("TFRecordReader '", node_name, "'")),
         env_(env),
         offset_(0),
         compression_type_(compression_type) {}
 
-  Status OnWorkStartedLocked() override {
+  absl::Status OnWorkStartedLocked() override {
     offset_ = 0;
     TF_RETURN_IF_ERROR(env_->NewRandomAccessFile(current_work(), &file_));
 
@@ -46,16 +46,16 @@ class TFRecordReader : public ReaderBase {
     return absl::OkStatus();
   }
 
-  Status OnWorkFinishedLocked() override {
+  absl::Status OnWorkFinishedLocked() override {
     reader_.reset(nullptr);
     file_.reset(nullptr);
     return absl::OkStatus();
   }
 
-  Status ReadLocked(tstring* key, tstring* value, bool* produced,
-                    bool* at_end) override {
-    *key = strings::StrCat(current_work(), ":", offset_);
-    Status status = reader_->ReadRecord(&offset_, value);
+  absl::Status ReadLocked(tstring* key, tstring* value, bool* produced,
+                          bool* at_end) override {
+    *key = absl::StrCat(current_work(), ":", offset_);
+    absl::Status status = reader_->ReadRecord(&offset_, value);
     if (absl::IsOutOfRange(status)) {
       *at_end = true;
       return absl::OkStatus();
@@ -65,7 +65,7 @@ class TFRecordReader : public ReaderBase {
     return absl::OkStatus();
   }
 
-  Status ResetLocked() override {
+  absl::Status ResetLocked() override {
     offset_ = 0;
     reader_.reset(nullptr);
     file_.reset(nullptr);

@@ -221,6 +221,8 @@ void AllocateAndParseFlags() {
   build_ops_flags->tf_xla_check_cluster_output_numerics = false;
   build_ops_flags->tf_xla_disable_constant_folding = false;
   build_ops_flags->tf_xla_disable_full_embedding_pipelining = false;
+  build_ops_flags->tf_xla_disable_full_embedding_pipelining_with_summaries =
+      true;
   build_ops_flags->tf_xla_embedding_parallel_iterations = 0;
 
   mark_for_compilation_flags = new MarkForCompilationPassFlags;
@@ -285,6 +287,7 @@ void AllocateAndParseFlags() {
   bool enable_mlir_composite_tpuexecute_side_effects = false;
   bool enable_mlir_strict_clusters = false;
   bool enable_mlir_multiple_local_cpu_devices = false;
+  bool enable_mlir_debug_info_serialization = true;
   // Dump graphs in TFG dialect.
   bool use_tfg_graph_dumper = false;
   bool enable_tpu_variable_runtime_reformatting_pass = true;
@@ -312,6 +315,11 @@ void AllocateAndParseFlags() {
             &build_ops_flags->tf_xla_disable_full_embedding_pipelining,
             "If true then disables full embedding pipelining and instead use "
             "strict SparseCore / TensorCore sequencing."),
+       Flag("tf_xla_disable_full_embedding_pipelining_with_summaries",
+            &build_ops_flags
+                 ->tf_xla_disable_full_embedding_pipelining_with_summaries,
+            "If true then disables full embedding pipelining when summary ops "
+            "are detected."),
        Flag("tf_xla_embedding_parallel_iterations",
             &build_ops_flags->tf_xla_embedding_parallel_iterations,
             "If >0 then use this many parallel iterations in "
@@ -387,6 +395,9 @@ void AllocateAndParseFlags() {
             "Enable multiple local CPU devices. CPU ops which are outside "
             "compiled inside the tpu cluster will also be replicated across "
             "multiple cpu devices."),
+       Flag("tf_mlir_enable_debug_info_serialization",
+            &enable_mlir_debug_info_serialization,
+            "Enable debug info serialization in MLIR."),
        Flag("tf_dump_graphs_in_tfg", &use_tfg_graph_dumper,
             "When tf_dump_graphs_in_tfg is true, graphs after transformations "
             "are dumped in MLIR TFG dialect and not in GraphDef"),
@@ -421,6 +432,8 @@ void AllocateAndParseFlags() {
       enable_tpu_variable_runtime_reformatting_pass;
   mlir_flags->tf_mlir_enable_multiple_local_cpu_devices =
       enable_mlir_multiple_local_cpu_devices;
+  mlir_flags->tf_mlir_enable_debug_info_serialization =
+      enable_mlir_debug_info_serialization;
 
   if (use_tfg_graph_dumper) {
     UseMlirForGraphDump(MlirDumpConfig{}.elide_large_attributes().emit_dialect(

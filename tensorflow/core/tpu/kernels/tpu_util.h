@@ -20,11 +20,11 @@ limitations under the License.
 #include <vector>
 
 #include "grpcpp/server_builder.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "tensorflow/cc/framework/ops.h"
 #include "tensorflow/compiler/tf2xla/xla_compiler.h"
 #include "xla/client/compile_only_client.h"
-#include "xla/statusor.h"
 #include "tensorflow/core/protobuf/config.pb.h"
 #include "tensorflow/core/tpu/kernels/tpu_compilation_cache_key.h"
 
@@ -50,12 +50,12 @@ BuildAotXlaComputationInstance(
 bool IsTpuCompilationEnabled();
 
 // Converts an int64 host memory `tensor` to a `shape`.
-Status ShapeTensorToTensorShape(const Tensor& tensor, TensorShape* shape);
+absl::Status ShapeTensorToTensorShape(const Tensor& tensor, TensorShape* shape);
 
-Status DynamicShapesToTensorShapes(const OpInputList& dynamic_shapes,
-                                   std::vector<TensorShape>* shapes);
-Status DynamicShapesToTensorShapes(const InputList& dynamic_shapes,
-                                   std::vector<TensorShape>* shapes);
+absl::Status DynamicShapesToTensorShapes(const OpInputList& dynamic_shapes,
+                                         std::vector<TensorShape>* shapes);
+absl::Status DynamicShapesToTensorShapes(const InputList& dynamic_shapes,
+                                         std::vector<TensorShape>* shapes);
 
 // Creates gRPC ServerBuilder.
 absl::StatusOr<std::unique_ptr<::grpc::ServerBuilder>> CreateServerBuilder(

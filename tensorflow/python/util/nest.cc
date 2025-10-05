@@ -14,10 +14,12 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/python/util/nest.h"
 
-#include <utility>
+#include <Python.h>
+
+#include <cstddef>
+#include <string>
 
 #include "tensorflow/core/lib/strings/strcat.h"
-#include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/stringpiece.h"
 #include "tensorflow/python/lib/core/safe_pyobject_ptr.h"
 #include "tensorflow/python/util/util.h"
@@ -41,8 +43,8 @@ std::string PyObject_ToString(PyObject* o, int length = -1) {
   if (length < 0 || str.size() <= length) {
     return str;
   }
-  tensorflow::StringPiece str_piece(str);
-  return tensorflow::strings::StrCat(str_piece.substr(length), "...");
+  absl::string_view str_piece(str);
+  return absl::StrCat(str_piece.substr(length), "...");
 }
 
 // Gets a list of keys from a dict or mapping type object.
@@ -64,9 +66,8 @@ PyObject* GetKeysFromDictOrMapping(PyObject* o) {
     auto* o_type = Py_TYPE(o);
     PyErr_SetString(
         PyExc_TypeError,
-        tensorflow::strings::StrCat(
-            "Expecting a type compatible with dict or mapping, got '",
-            o_type->tp_name, "'")
+        absl::StrCat("Expecting a type compatible with dict or mapping, got '",
+                     o_type->tp_name, "'")
             .c_str());
     return nullptr;
   }
@@ -76,12 +77,12 @@ PyObject* GetKeysFromDictOrMapping(PyObject* o) {
 
 PyObject* FlattenDictItems(PyObject* dict) {
   if (!PyDict_Check(dict) && !swig::IsMapping(dict)) {
-    PyErr_SetString(PyExc_TypeError,
-                    tensorflow::strings::StrCat(
-                        "FlattenDictItems: 'dict' must be a dictionary or ",
-                        "collection.Mapping type object, instead of '",
-                        Py_TYPE(dict)->tp_name, "'.")
-                        .c_str());
+    PyErr_SetString(
+        PyExc_TypeError,
+        absl::StrCat("FlattenDictItems: 'dict' must be a dictionary or ",
+                     "collection.Mapping type object, instead of '",
+                     Py_TYPE(dict)->tp_name, "'.")
+            .c_str());
     return nullptr;
   }
   PyObject* flat_dictionary = PyDict_New();
@@ -115,7 +116,7 @@ PyObject* FlattenDictItems(PyObject* dict) {
         if (PyDict_GetItem(flat_dictionary, flat_key) != nullptr) {
           PyErr_SetString(
               PyExc_ValueError,
-              tensorflow::strings::StrCat(
+              absl::StrCat(
                   "Cannot flatten dict because this key is not unique: ",
                   PyObject_ToString(flat_key))
                   .c_str());
@@ -128,9 +129,8 @@ PyObject* FlattenDictItems(PyObject* dict) {
       if (PyDict_GetItem(flat_dictionary, key) != nullptr) {
         PyErr_SetString(
             PyExc_ValueError,
-            tensorflow::strings::StrCat(
-                "Cannot flatten dict because this key is not unique: ",
-                PyObject_ToString(key))
+            absl::StrCat("Cannot flatten dict because this key is not unique: ",
+                         PyObject_ToString(key))
                 .c_str());
         Py_DecRef(flat_dictionary);
         return nullptr;

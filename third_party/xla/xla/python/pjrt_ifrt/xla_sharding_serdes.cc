@@ -19,16 +19,19 @@ limitations under the License.
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ExtensibleRTTI.h"
 #include "xla/hlo/ir/hlo_sharding.h"
-#include "xla/python/ifrt/device.h"
+#include "xla/python/ifrt/device_list.h"
 #include "xla/python/ifrt/memory.h"
 #include "xla/python/ifrt/serdes.h"
+#include "xla/python/ifrt/serdes_version.h"
+#include "xla/python/ifrt/sharding.h"
 #include "xla/python/pjrt_ifrt/xla_sharding.h"
 #include "xla/python/pjrt_ifrt/xla_sharding.pb.h"
-#include "tsl/platform/statusor.h"
+#include "xla/tsl/platform/statusor.h"
 
 namespace xla {
 namespace ifrt {
@@ -42,10 +45,20 @@ class HloShardingSerDes : public llvm::RTTIExtends<HloSharding, SerDes> {
     return "xla::ifrt::HloSharding";
   }
 
-  absl::StatusOr<std::string> Serialize(Serializable& serializable) override {
+  absl::StatusOr<std::string> Serialize(
+      const Serializable& serializable,
+      std::unique_ptr<SerializeOptions> options) override {
+    const SerDesVersion version = GetRequestedSerDesVersion(options.get());
+    if (version.version_number() < SerDesVersionNumber(0)) {
+      return absl::FailedPreconditionError(
+          absl::StrCat("Unsupported ", version.version_number(),
+                       " for HloSharding serialization"));
+    }
+
     const HloSharding& sharding = llvm::cast<HloSharding>(serializable);
     HloShardingProto proto;
-    *proto.mutable_devices() = sharding.devices().ToProto();
+    proto.set_version_number(SerDesVersionNumber(0).value());
+    *proto.mutable_devices() = sharding.devices()->ToProto(version);
     if (sharding.memory_kind().memory_kind().has_value()) {
       proto.set_memory_kind(std::string(*sharding.memory_kind().memory_kind()));
     }
@@ -64,10 +77,14 @@ class HloShardingSerDes : public llvm::RTTIExtends<HloSharding, SerDes> {
       return absl::InvalidArgumentError(
           "Failed to parse serialized HloSharding");
     }
-    TF_ASSIGN_OR_RETURN(
-        auto devices,
-        DeviceList::FromProto(deserialize_sharding_options->lookup_device,
-                              proto.devices()));
+    const SerDesVersionNumber version_number(proto.version_number());
+    if (version_number != SerDesVersionNumber(0)) {
+      return absl::FailedPreconditionError(absl::StrCat(
+          "Unsupported ", version_number, " for HloSharding deserialization"));
+    }
+    TF_ASSIGN_OR_RETURN(auto devices, DeviceList::FromProto(
+                                          deserialize_sharding_options->client,
+                                          proto.devices()));
     MemoryKind memory_kind;
     if (proto.has_memory_kind()) {
       memory_kind = MemoryKind(proto.memory_kind());

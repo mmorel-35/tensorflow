@@ -1317,7 +1317,7 @@ func.func @testIfRegionElseTerminator(%arg0: tensor<i1>, %arg1: tensor<2xf32>) -
 
 // tf.Region yield number of results should match op number of results
 func.func @testIfRegionThenResultCount(%arg0: tensor<i1>, %arg1: tensor<2xf32>) -> tensor<2xf32> {
-  // expected-error @+1 {{'tf.IfRegion' op  region control flow edge from Region #0 to parent results: source has 2 operands, but target successor needs 1}}
+  // expected-error @+1 {{'tf.IfRegion' op region control flow edge from Region #0 to parent results: source has 2 operands, but target successor needs 1}}
   %0 = "tf.IfRegion"(%arg0) ({
      %t = "tf.Abs"(%arg1) : (tensor<2xf32>) -> tensor<2xf32>
      "tf.Yield"(%t, %t) : (tensor<2xf32>, tensor<2xf32>) -> ()
@@ -1332,7 +1332,7 @@ func.func @testIfRegionThenResultCount(%arg0: tensor<i1>, %arg1: tensor<2xf32>) 
 // -----
 
 func.func @testIfRegionElseResultCount(%arg0: tensor<i1>, %arg1: tensor<2xf32>) -> tensor<2xf32> {
-  // expected-error @+1 {{'tf.IfRegion' op  region control flow edge from Region #1 to parent results: source has 2 operands, but target successor needs 1}}
+  // expected-error @+1 {{'tf.IfRegion' op region control flow edge from Region #1 to parent results: source has 2 operands, but target successor needs 1}}
   %0 = "tf.IfRegion"(%arg0) ({
      %t = "tf.Abs"(%arg1) : (tensor<2xf32>) -> tensor<2xf32>
      "tf.Yield"(%t) : (tensor<2xf32>) -> ()
@@ -3168,8 +3168,16 @@ func.func @testSqueezeOutOfBounds(%arg0: tensor<?x?x10xf32>) -> tensor<?x10xf32>
 
 // -----
 
+func.func @testNullaryEinsum(%arg0: tensor<2x3xf32>){
+  // expected-error @+1 {{op must have 1 or 2 operands}}
+  "tf.Einsum"() {equation = "->"} : () -> (tensor<f32>)
+  func.return
+}
+
+// -----
+
 func.func @testTernaryEinsum(%arg0: tensor<2x3xf32>){
-  // expected-error @+1 {{supports at most two operands}}
+  // expected-error @+1 {{op must have 1 or 2 operands}}
   %0 = "tf.Einsum"(%arg0, %arg0, %arg0) {equation = "ab,cd,ef->"} : (tensor<2x3xf32>, tensor<2x3xf32>, tensor<2x3xf32>) -> (tensor<*xf32>)
   func.return
 }
@@ -4246,6 +4254,15 @@ func.func @testTile(%arg0: tensor<2x3x?xf32>) {
 
 // -----
 
+func.func @testTileFold(%arg0: tensor<2x3x1xf32>, %arg1: tensor<2x3x20xf32>) -> tensor<2x3x20xf32> {
+  %cst = arith.constant dense <[1, 1, 20]> : tensor<3xi32>
+  %0 = "tf.Tile"(%arg0, %cst) : (tensor<2x3x1xf32>, tensor<3xi32>) -> tensor<2x3x20xf32>
+  %1 = "tf.AddV2"(%0, %arg1) {device = ""} : (tensor<2x3x20xf32>, tensor<2x3x20xf32>) -> tensor<2x3x20xf32>
+  func.return %1 : tensor<2x3x20xf32>
+}
+
+// -----
+
 func.func @testTileMultipleNotRank1(%arg0: tensor<2x3xf32>, %arg1: tensor<1x1xi32>) {
   // expected-error @+1 {{expected multiples to be rank 1, got rank = 2}}
   %0 = "tf.Tile"(%arg0, %arg1) : (tensor<2x3xf32>, tensor<1x1xi32>) -> tensor<2x3xf32>
@@ -5117,6 +5134,29 @@ func.func @testUniformQuantizedClipByValue(
   func.return
 }
 
+// -----
+
+// CHECK-LABEL: func @testValidFusedConv2DBiasActivation
+func.func @testValidFusedConv2DBiasActivation(
+    %conv_input: tensor<*xf32>,
+    %filter: tensor<*xf32>,
+    %bias: tensor<*xf32>,
+    %side_input: tensor<*xf32>,
+    %conv_input_scale: tensor<*xf32>,
+    %side_input_scale: tensor<*xf32>) -> tensor<*xf32> {
+  %0 ="tf.FusedConv2DBiasActivation"(%conv_input, %filter, %bias, %side_input, %conv_input_scale, %side_input_scale) {
+    T = f32, Tbias = f32,
+    activation_mode = "Relu",
+    data_format = "NHWC",
+    dilations = [1, 1, 1, 1],
+    filter_format = "HWIO",
+    padding = "SAME",
+    strides = [1, 2, 2, 1]
+  } : (tensor<*xf32>, tensor<*xf32>, tensor<*xf32>, tensor<*xf32>, tensor<*xf32>, tensor<*xf32>) -> (tensor<*xf32>)
+  func.return %0 : tensor<*xf32>
+}
+
+
 // Following tests are for LegacyCall symbol use verifier.
 
 // -----
@@ -5181,6 +5221,7 @@ func.func @test_xla_call_module_with_invalid_symbol() {
   func.return
 }
 
+
 // -----
 
 func.func @init(%arg0: tensor<4xf32>) -> tensor<7xf32> {
@@ -5217,4 +5258,9 @@ func.func @testGeneratorDataset(%arg0: tensor<4xf32>,
               tensor<!tf_type.resource>,
               tensor<2xf32>) -> tensor<!tf_type.variant>
   return %0 : tensor<!tf_type.variant>
+}
+
+func.func @testDebugIdentity(%arg0: tensor<i32>) -> tensor<i32> {
+  %0 = "tf.DebugIdentity"(%arg0) {debug_urls = ["file:///tmp/foo"], device_name = "CPU", tensor_name = "test_tensor"} : (tensor<i32>) -> tensor<i32>
+  func.return %0 : tensor<i32>
 }

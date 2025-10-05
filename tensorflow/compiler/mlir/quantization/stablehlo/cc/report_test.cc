@@ -20,6 +20,7 @@ limitations under the License.
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "absl/status/status.h"
+#include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
@@ -28,8 +29,8 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/quantization/common/test_base.h"
 #include "tensorflow/compiler/mlir/quantization/stablehlo/cc/io.h"
 #include "tensorflow/compiler/mlir/quantization/stablehlo/quantization_config.pb.h"
+#include "xla/tsl/platform/status_matchers.h"
 #include "tsl/platform/protobuf.h"  // IWYU pragma: keep
-#include "tsl/platform/status_matchers.h"
 
 namespace mlir::quant::stablehlo {
 namespace {
@@ -45,7 +46,6 @@ using ::testing::SizeIs;
 using ::testing::StrEq;
 using ::testing::TempDir;
 using ::tsl::protobuf::TextFormat;
-using ::tsl::testing::IsOk;
 
 using QuantizationReportTest = ::mlir::quant::QuantizationTestBase;
 
@@ -178,7 +178,7 @@ TEST_F(QuantizationReportTest, InitializeWithModuleOpWithNonQuantizedOp) {
   constexpr absl::string_view kNonQuantizedDotGeneral = R"mlir(
     func.func @main(%arg0: tensor<1x2xf32>) -> tensor<1x3xf32> {
       %0 = stablehlo.constant dense<3.000000e+0> : tensor<2x3xf32>
-      %1 = "tf.XlaCallModule"(%arg0, %0) {Sout = [#tf_type.shape<1x3>], _entry_function = @composite_dot_general_fn, _original_entry_function = "composite_dot_general_fn", _stablehlo_module_attrs = {}, _tfl_quant_trait = "fully_quantizable",   device = "", dim_args_spec = [], disabled_checks = [], has_token_input_output = false, module = "", platforms = [], version = 5 : i64} : (tensor<1x2xf32>, tensor<2x3xf32>) -> tensor<1x3xf32>
+      %1 = "tf.XlaCallModule"(%arg0, %0) {Sout = [#tf_type.shape<1x3>], _entry_function = @composite_dot_general_fn, _stablehlo_version = "1.0.0", _original_entry_function = "composite_dot_general_fn", _stablehlo_module_attrs = {}, _tfl_quant_trait = "fully_quantizable",   device = "", dim_args_spec = [], disabled_checks = [], has_token_input_output = false, module = "", platforms = [], version = 5 : i64} : (tensor<1x2xf32>, tensor<2x3xf32>) -> tensor<1x3xf32>
       return %1 : tensor<1x3xf32>
     }
 
@@ -212,7 +212,7 @@ TEST_F(QuantizationReportTest,
     func.func @main(%arg0: tensor<1x2xf32>, %arg1: tensor<1x2xf32>) -> tensor<1x3xf32> {
       // Non-quantized dot_general.
       %0 = stablehlo.constant dense<3.000000e+0> : tensor<2x3xf32>
-      %1 = "tf.XlaCallModule"(%arg0, %0) {Sout = [#tf_type.shape<1x3>], _entry_function = @composite_dot_general_fn_1, _original_entry_function = "composite_dot_general_fn_1", _stablehlo_module_attrs = {}, _tfl_quant_trait = "fully_quantizable", device = "", dim_args_spec = [], disabled_checks = [], has_token_input_output = false, module = "", platforms = [], version = 5 : i64} : (tensor<1x2xf32>, tensor<2x3xf32>) -> tensor<1x3xf32>
+      %1 = "tf.XlaCallModule"(%arg0, %0) {Sout = [#tf_type.shape<1x3>], _entry_function = @composite_dot_general_fn_1, _stablehlo_verison = "1.0.0", _original_entry_function = "composite_dot_general_fn_1", _stablehlo_module_attrs = {}, _tfl_quant_trait = "fully_quantizable", device = "", dim_args_spec = [], disabled_checks = [], has_token_input_output = false, module = "", platforms = [], version = 5 : i64} : (tensor<1x2xf32>, tensor<2x3xf32>) -> tensor<1x3xf32>
       // Quantized dot_general.
       %2 = stablehlo.constant() {value = dense<127> : tensor<2x3xi8>} : () -> tensor<2x3x!quant.uniform<i8<-127:127>:f32:1, {1.000000e+0,2.000000e+0,3.000000e+0}>>
       %3 = stablehlo.uniform_quantize %arg1 : (tensor<1x2xf32>) -> tensor<1x2x!quant.uniform<i8:f32, 4.000000e+0>>
@@ -305,10 +305,10 @@ TEST_F(QuantizationReportTest, Save) {
   const std::string dst_file_path =
       absl::StrCat(TempDir(), "/quantization_report.txtpb");
   const absl::Status save_status = report.Save(dst_file_path);
-  ASSERT_THAT(save_status, IsOk());
+  ASSERT_THAT(save_status, absl_testing::IsOk());
 
   const absl::StatusOr<std::string> file_data = ReadFileToString(dst_file_path);
-  ASSERT_THAT(file_data, IsOk());
+  ASSERT_THAT(file_data, absl_testing::IsOk());
 
   // Test that the file data can be parsed as `QuantizationResults`.
   QuantizationResults results{};

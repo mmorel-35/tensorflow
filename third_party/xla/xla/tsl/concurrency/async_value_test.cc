@@ -21,7 +21,8 @@ limitations under the License.
 
 #include "absl/status/status.h"
 #include "xla/tsl/concurrency/async_value_ref.h"
-#include "tsl/platform/test.h"
+#include "xla/tsl/platform/test.h"
+#include "xla/tsl/platform/test_benchmark.h"
 
 namespace tsl {
 
@@ -104,7 +105,7 @@ TEST(AsyncValueTest, AddAndDropRef) {
 TEST(AsyncValueTest, KeepPayloadOnError) {
   int payload_value = 0;
 
-  struct Payload : internal::KeepAsyncValuePayloadOnError {
+  struct Payload : AsyncPayload::KeepOnError {
     explicit Payload(int* value) : value{value} { *value = 1; }
     ~Payload() { *value = 2; }
 
@@ -132,7 +133,7 @@ TEST(AsyncValueTest, KeepPayloadOnError) {
 
     EXPECT_TRUE(!value.IsError());
 
-    value.SetError("error");
+    value.SetError(absl::InternalError("error"));
 
     EXPECT_EQ(1, *value->value);
     EXPECT_TRUE(value.IsError());
@@ -180,5 +181,33 @@ TEST(AsyncValueTest, StackAllocatedAsyncValue) {
   std::make_unique<AsyncValueOwningRef<Payload>>(std::move(owner));
   EXPECT_EQ(2, counter);
 }
+
+TEST(AsyncValueTest, MoveOnlyCallback) {
+  struct MoveOnlyCb {
+    void operator()() && {}
+  };
+  auto value = MakeConstructedAsyncValueRef<int32_t>(123);
+  value.AndThen(MoveOnlyCb());
+  value.SetStateConcrete();
+}
+
+//===----------------------------------------------------------------------===//
+// Performance benchmarks below
+//===----------------------------------------------------------------------===//
+
+static void BM_AddAndThenCallback(benchmark::State& state) {
+  for (auto _ : state) {
+    internal::AsyncValueStorage<int32_t> storage;
+
+    AsyncValueOwningRef<int32_t> owner =
+        MakeConstructedAsyncValueRef<int32_t>(storage, 42);
+    AsyncValuePtr<int32_t> ptr = owner.AsPtr();
+
+    ptr.AndThen([] {});
+    ptr.SetStateConcrete();
+  }
+}
+
+BENCHMARK(BM_AddAndThenCallback);
 
 }  // namespace tsl

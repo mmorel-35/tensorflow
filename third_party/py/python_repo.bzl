@@ -2,7 +2,6 @@
 Repository rule to manage hermetic Python interpreter under Bazel.
 
 Version can be set via build parameter "--repo_env=HERMETIC_PYTHON_VERSION=3.11"
-Defaults to 3.11.
 
 To set wheel name, add "--repo_env=WHEEL_NAME=tensorflow_cpu"
 """
@@ -10,19 +9,31 @@ To set wheel name, add "--repo_env=WHEEL_NAME=tensorflow_cpu"
 DEFAULT_VERSION = "3.11"
 
 def _python_repository_impl(ctx):
-    version = _get_python_version(ctx)
+    version, py_kind = _get_python_version(ctx)
+    version_and_kind = "%s-%s" % (version, py_kind) if py_kind else version
 
     ctx.file("BUILD", "")
     wheel_name = ctx.os.environ.get("WHEEL_NAME", "tensorflow")
     wheel_collab = ctx.os.environ.get("WHEEL_COLLAB", False)
+    macos_deployment_target = ctx.os.environ.get("MACOSX_DEPLOYMENT_TARGET", "")
+    hermetic_url = ctx.os.environ.get("HERMETIC_PYTHON_URL", "")
+    hermetic_sha256 = ctx.os.environ.get("HERMETIC_PYTHON_SHA256", "")
+    hermetic_prefix = ctx.os.environ.get("HERMETIC_PYTHON_PREFIX", "python")
+    custom_requirements = ctx.os.environ.get("HERMETIC_REQUIREMENTS_LOCK", None)
 
+    if not (hermetic_url + hermetic_sha256) and (hermetic_url or hermetic_sha256):
+        fail("""
+Please either specify both HERMETIC_PYTHON_URL and HERMETIC_PYTHON_SHA256
+to set up a custom python interpreter, or none of them to rely on default ones.
+""")
     requirements = None
-    for i in range(0, len(ctx.attr.requirements_locks)):
-        if ctx.attr.requirements_versions[i] == version:
-            requirements = ctx.attr.requirements_locks[i]
-            break
-
     if not requirements:
+        for i in range(0, len(ctx.attr.requirements_locks)):
+            if ctx.attr.requirements_versions[i] == version_and_kind:
+                requirements = ctx.attr.requirements_locks[i]
+                break
+
+    if not requirements and not custom_requirements:
         fail("""
 Could not find requirements_lock.txt file matching specified Python version.
 Specified python version: {version}
@@ -33,43 +44,92 @@ Please check python_init_repositories() in your WORKSPACE file.
             versions = ", ".join(ctx.attr.requirements_versions),
         ))
 
-    requirements_with_local_wheels = str(requirements)
-
-    local_wheels_dir = ctx.os.environ.get("LOCAL_WHEELS_DIR", "")
-    if ctx.attr.local_wheel_workspaces or local_wheels_dir:
+    if custom_requirements:
+        custom_requirements_path = ctx.path(custom_requirements)
+        requirements_with_local_wheels = "@{repo}//:{label}".format(
+            repo = ctx.name,
+            label = custom_requirements_path.basename,
+        )
+        ctx.file(
+            custom_requirements_path.basename,
+            ctx.read(custom_requirements_path),
+        )
+    elif ctx.attr.local_wheel_workspaces:
+        base_requirements = ctx.read(requirements)
         local_wheel_requirements = _get_injected_local_wheels(
             ctx,
             version,
             ctx.attr.local_wheel_workspaces,
-            local_wheels_dir,
+            base_requirements,
         )
-        requirements_content = [ctx.read(requirements)] + local_wheel_requirements
+        requirements_content = [base_requirements] + local_wheel_requirements
         merged_requirements_content = "\n".join(requirements_content)
-        requirements_with_local_wheels = requirements_with_local_wheels.replace(
-            "@" + requirements.repo_name,
-            "@" + ctx.name,
-        )
 
+        requirements_with_local_wheels = "@{repo}//:{label}".format(
+            repo = ctx.name,
+            label = requirements.name,
+        )
         ctx.file(
             requirements.name,
             merged_requirements_content,
         )
+    else:
+        requirements_with_local_wheels = str(requirements)
+
+    use_pywrap_rules = bool(
+        ctx.os.environ.get("USE_PYWRAP_RULES", False),
+    )
+
+    if use_pywrap_rules:
+        print("!!!Using pywrap rules instead of directly creating .so objects!!!")  # buildifier: disable=print
+
+    interpreter_type = "\"default\" (provided by rules_python)"
+    if hermetic_url:
+        interpreter_type = "\"custom\" (pulled from %s)" % hermetic_url
+    print(
+        """
+=============================
+Hermetic Python configuration:
+Version: "{version}"
+Kind: "{py_kind}"
+Interpreter: {interpreter_type}
+Requirements_lock label: "{requirements_lock_label}"
+=====================================
+""".format(
+            version = version,
+            py_kind = py_kind,
+            interpreter_type = interpreter_type,
+            requirements_lock_label = requirements_with_local_wheels,
+        ),
+    )  # buildifier: disable=print
 
     ctx.file(
         "py_version.bzl",
         """
 TF_PYTHON_VERSION = "{version}"
 HERMETIC_PYTHON_VERSION = "{version}"
+HERMETIC_PYTHON_VERSION_KIND = "{py_kind}"
 WHEEL_NAME = "{wheel_name}"
 WHEEL_COLLAB = "{wheel_collab}"
 REQUIREMENTS = "{requirements}"
 REQUIREMENTS_WITH_LOCAL_WHEELS = "{requirements_with_local_wheels}"
+USE_PYWRAP_RULES = {use_pywrap_rules}
+MACOSX_DEPLOYMENT_TARGET = "{macos_deployment_target}"
+HERMETIC_PYTHON_URL = "{hermetic_url}"
+HERMETIC_PYTHON_SHA256 = "{hermetic_sha256}"
+HERMETIC_PYTHON_PREFIX = "{hermetic_prefix}"
 """.format(
             version = version,
+            py_kind = py_kind,
             wheel_name = wheel_name,
             wheel_collab = wheel_collab,
             requirements = str(requirements),
             requirements_with_local_wheels = requirements_with_local_wheels,
+            use_pywrap_rules = use_pywrap_rules,
+            macos_deployment_target = macos_deployment_target,
+            hermetic_url = hermetic_url,
+            hermetic_sha256 = hermetic_sha256,
+            hermetic_prefix = hermetic_prefix,
         ),
     )
 
@@ -92,7 +152,7 @@ System Python was not found.""")
         else:
             version = ctx.attr.default_python_version
 
-    version = _parse_python_version(version)
+    version, kind = _parse_python_version(version)
 
     if print_warning:
         print("""
@@ -105,23 +165,28 @@ OR pass it as an argument to bazel command directly or inside your .bazelrc
 file:
   --repo_env=HERMETIC_PYTHON_VERSION=3.12
 """.format(version))  # buildifier: disable=print
-
-    print("Using hermetic Python %s" % version)  # buildifier: disable=print
-    return version
+    return version, kind
 
 def _parse_python_version(version_str):
     if version_str.startswith("Python "):
         py_ver_chunks = version_str[7:].split(".")
-        return "%s.%s" % (py_ver_chunks[0], py_ver_chunks[1])
-    return version_str
+        return "%s.%s" % (py_ver_chunks[0], py_ver_chunks[1]), ""
+    elif "-" in version_str:
+        return version_str.split("-")
+    return version_str, ""
 
 def _get_injected_local_wheels(
         ctx,
         py_version,
         local_wheel_workspaces,
-        local_wheels_dir):
+        base_requirements):
+    os_name = ctx.os.name
+    is_windows = "windows" in os_name.lower()
+    local_file_path_prefix = "file:" if is_windows else "file://"
+
     local_wheel_requirements = []
     py_ver_marker = "-cp%s-" % py_version.replace(".", "")
+    py_major_ver_marker = "-py%s-" % py_version.split(".")[0]
     wheels = {}
 
     if local_wheel_workspaces:
@@ -131,17 +196,28 @@ def _get_injected_local_wheels(
             dist_folder_path = local_wheel_workspace_path.dirname.get_child(dist_folder)
             if dist_folder_path.exists:
                 dist_wheels = dist_folder_path.readdir()
-                _process_dist_wheels(dist_wheels, wheels, py_ver_marker)
-    if local_wheels_dir:
-        dist_folder_path = ctx.path(local_wheels_dir)
-        if dist_folder_path.exists:
-            dist_wheels = dist_folder_path.readdir()
-            _process_dist_wheels(dist_wheels, wheels, py_ver_marker)
+                _process_dist_wheels(
+                    dist_wheels,
+                    wheels,
+                    py_ver_marker,
+                    py_major_ver_marker,
+                    ctx.attr.local_wheel_inclusion_list,
+                    ctx.attr.local_wheel_exclusion_list,
+                )
 
     for wheel_name, wheel_path in wheels.items():
+        # Normalize `foo_bar` to `foo-bar`. We assume that, if `foo_bar`
+        # isn't present in requirements, it must be named `foo-bar`. The
+        # exact same distribution name needs to be used to ensure it is
+        # correctly overridden.
+        if "_" in wheel_name and wheel_name not in base_requirements:
+            local_package_name = wheel_name.replace("_", "-")
+        else:
+            local_package_name = wheel_name
         local_wheel_requirements.append(
-            "{wheel_name} @ file://{wheel_path}".format(
-                wheel_name = wheel_name,
+            "{pypi_package_name} @ {local_file_path_prefix}{wheel_path}".format(
+                local_file_path_prefix = local_file_path_prefix,
+                pypi_package_name = local_package_name,
                 wheel_path = wheel_path.realpath,
             ),
         )
@@ -171,19 +247,44 @@ python_repository = repository_rule(
             mandatory = False,
             default = DEFAULT_VERSION,
         ),
+        "local_wheel_inclusion_list": attr.string_list(
+            mandatory = False,
+            default = ["*"],
+        ),
+        "local_wheel_exclusion_list": attr.string_list(
+            mandatory = False,
+            default = [],
+        ),
     },
     environ = [
         "TF_PYTHON_VERSION",
         "HERMETIC_PYTHON_VERSION",
+        "HERMETIC_PYTHON_URL",
+        "HERMETIC_PYTHON_SHA256",
+        "HERMETIC_REQUIREMENTS_LOCK",
+        "HERMETIC_PYTHON_PREFIX",
         "WHEEL_NAME",
         "WHEEL_COLLAB",
+        "USE_PYWRAP_RULES",
+        "MACOSX_DEPLOYMENT_TARGET",
     ],
+    local = True,
 )
 
-def _process_dist_wheels(dist_wheels, wheels, py_ver_marker):
+def _process_dist_wheels(
+        dist_wheels,
+        wheels,
+        py_ver_marker,
+        py_major_ver_marker,
+        local_wheel_inclusion_list,
+        local_wheel_exclusion_list):
     for wheel in dist_wheels:
         bn = wheel.basename
-        if not bn.endswith(".whl") or bn.find(py_ver_marker) < 0:
+        if not bn.endswith(".whl") or (bn.find(py_ver_marker) < 0 and bn.find(py_major_ver_marker) < 0):
+            continue
+        if not _basic_wildcard_match(bn, local_wheel_inclusion_list, True, False):
+            continue
+        if not _basic_wildcard_match(bn, local_wheel_exclusion_list, False, True):
             continue
 
         name_components = bn.split("-")
@@ -198,10 +299,35 @@ def _process_dist_wheels(dist_wheels, wheels, py_ver_marker):
         if not latest_wheel or latest_wheel.basename < wheel.basename:
             wheels[package_name] = wheel
 
+def _basic_wildcard_match(name, patterns, expected_match_result, match_all):
+    match = False
+    for pattern in patterns:
+        match = False
+        if pattern.startswith("*") and pattern.endswith("*"):
+            match = name.find(pattern[1:-1]) >= 0
+        elif pattern.startswith("*"):
+            match = name.endswith(pattern[1:])
+        elif pattern.endswith("*"):
+            match = name.startswith(pattern[:-1])
+        else:
+            match = name == pattern
+
+        if match_all:
+            if match != expected_match_result:
+                return False
+        elif match == expected_match_result:
+            return True
+
+    return match == expected_match_result
+
 def _custom_python_interpreter_impl(ctx):
     version = ctx.attr.version
-    strip_prefix = ctx.attr.strip_prefix.format(version = version)
-    urls = [url.format(version = version) for url in ctx.attr.urls]
+    version_variant = ctx.attr.version_variant
+    strip_prefix = ctx.attr.strip_prefix.format(
+        version = version,
+        version_variant = version_variant,
+    )
+    urls = [url.format(version = version, version_variant = version_variant) for url in ctx.attr.urls]
     binary_name = ctx.attr.binary_name
     if not binary_name:
         ver_chunks = version.split(".")
@@ -217,13 +343,12 @@ def _custom_python_interpreter_impl(ctx):
         output = srcs_dir,
     )
 
-    configure_params = []
+    configure_params = list(ctx.attr.configure_params)
     if "CC" in ctx.os.environ:
         configure_params.append("CC={}".format(ctx.os.environ["CC"]))
     if "CXX" in ctx.os.environ:
         configure_params.append("CXX={}".format(ctx.os.environ["CXX"]))
 
-    configure_params.append("--enable-optimizations")
     configure_params.append("--prefix=%s" % install_path.realpath)
     _exec_and_check(
         ctx,
@@ -306,6 +431,11 @@ custom_python_interpreter = repository_rule(
         "strip_prefix": attr.string(),
         "binary_name": attr.string(mandatory = False),
         "version": attr.string(),
+        "version_variant": attr.string(),
+        "configure_params": attr.string_list(
+            mandatory = False,
+            default = ["--enable-optimizations"],
+        ),
     },
 )
 

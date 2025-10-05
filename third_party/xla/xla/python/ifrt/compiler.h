@@ -17,10 +17,14 @@ limitations under the License.
 #define XLA_PYTHON_IFRT_COMPILER_H_
 
 #include <memory>
+#include <string>
+#include <utility>
 
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "llvm/Support/ExtensibleRTTI.h"
+#include "xla/python/ifrt/device_list.h"
 #include "xla/python/ifrt/executable.h"
 #include "xla/python/ifrt/executable_serdes.h"
 #include "xla/python/ifrt/program.h"
@@ -52,15 +56,27 @@ struct CompileOptions : llvm::RTTIExtends<CompileOptions, Serializable> {
 // deserialization.
 class Compiler : public llvm::RTTIExtends<Compiler, llvm::RTTIRoot> {
  public:
-  // Compiles `mlir_module` and returns a `LoadedExecutable`.
   // TODO(hyeontaek): Move executable loading to `Client`.
-  virtual absl::StatusOr<std::unique_ptr<LoadedExecutable>> Compile(
+  absl::StatusOr<ExecutableRef> Compile(
+      std::unique_ptr<Program> program,
+      std::unique_ptr<CompileOptions> options) {
+    return absl::UnimplementedError(
+        "Compile returning ExecutableRef is not implemented.");
+  }
+
+  virtual absl::StatusOr<ExecutableRef> Compile(
+      std::unique_ptr<Program> program, const Topology& topology,
+      std::unique_ptr<CompileOptions> options) = 0;
+
+  virtual absl::StatusOr<LoadedExecutableRef> CompileAndLoad(
       std::unique_ptr<Program> program,
       std::unique_ptr<CompileOptions> options) = 0;
 
-  virtual absl::StatusOr<std::unique_ptr<Executable>> Compile(
-      std::unique_ptr<Program> program, const Topology& topology,
-      std::unique_ptr<CompileOptions> options) = 0;
+  // Checks if an executable version is compatible if the executable would be
+  // loaded onto specified `devices`.
+  virtual absl::Status IsExecutableVersionCompatible(
+      const ExecutableVersion& executable_version,
+      const DeviceListRef& devices) const = 0;
 
   // Deserializes a serialized executable as produced by
   // `LoadedExecutable::Serialize()`. The compatibility of `serialized` is
@@ -68,8 +84,7 @@ class Compiler : public llvm::RTTIExtends<Compiler, llvm::RTTIRoot> {
   // TODO(hyeontaek): Move executable loading to `Client`. Then, the user can
   // use standard IFRT deserialization instead of this custom deserialization
   // function.
-  virtual absl::StatusOr<std::unique_ptr<LoadedExecutable>>
-  DeserializeLoadedExecutable(
+  virtual absl::StatusOr<LoadedExecutableRef> DeserializeLoadedExecutable(
       absl::string_view serialized,
       std::unique_ptr<DeserializeExecutableOptions> options) = 0;
 

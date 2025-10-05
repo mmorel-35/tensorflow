@@ -34,6 +34,8 @@ limitations under the License.
 #include "absl/log/log.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
+#include "xla/backends/gpu/codegen/triton/support.h"
+#include "xla/backends/gpu/codegen/triton/support_legacy.h"
 #include "xla/hlo/ir/hlo_casting_utils.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_instructions.h"
@@ -41,7 +43,6 @@ limitations under the License.
 #include "xla/hlo/utils/hlo_query.h"
 #include "xla/layout.h"
 #include "xla/permutation_util.h"
-#include "xla/service/gpu/triton_support.h"
 #include "xla/service/instruction_fusion.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
@@ -127,7 +128,8 @@ std::string TensorIterationSpec::IterationSpecFragment::ToString() const {
   return absl::StrCat("{stride=", stride, ", count=", count,
                       ", slice_start=", slice_start,
                       ", sliced_count=", sliced_count, ", subfragments=[",
-                      absl::StrJoin(subfragments, ", "), "]}");
+                      absl::StrJoin(subfragments, ", "),
+                      "], broadcast_size=", broadcast_multiplier, "}");
 }
 
 std::string TensorIterationSpec::ToString() const {
@@ -155,7 +157,7 @@ using FragmentOrders = DimensionOrder::FragmentOrders;
 /*static*/ DimensionOrder DimensionOrder::FromDotOperandOrOutput(
     const HloInstruction& hlo, const int split_k_dimension_index) {
   DimensionOrder dim_order;
-  dim_order.tensor_fragments_order_.reserve(hlo.shape().rank());
+  dim_order.tensor_fragments_order_.reserve(hlo.shape().dimensions().size());
   for (const int i : hlo.shape().layout().minor_to_major()) {
     int target_dim_number = i;
     if (i == split_k_dimension_index) {
@@ -173,21 +175,11 @@ using FragmentOrders = DimensionOrder::FragmentOrders;
   return dim_order;
 }
 
-/*static*/ DimensionOrder DimensionOrder::FromSoftmaxRoot(
-    const HloInstruction& hlo) {
-  DimensionOrder dim_order;
-  dim_order.tensor_fragments_order_.reserve(hlo.shape().rank());
-  dim_order.dim_fragments_orders_[kSoftmaxReductionDimension].push_back(
-      dim_order.tensor_fragments_order_.size());
-  dim_order.tensor_fragments_order_.push_back(
-      Fragment{kSoftmaxReductionDimension, hlo.shape().dimensions_minor(0)});
-  for (int i = 1; i < hlo.shape().rank(); ++i) {
-    dim_order.dim_fragments_orders_[kSoftmaxBatchDimension].push_back(
-        dim_order.tensor_fragments_order_.size());
-    dim_order.tensor_fragments_order_.push_back(
-        Fragment{kSoftmaxBatchDimension, hlo.shape().dimensions_minor(i)});
-  }
-  return dim_order;
+std::string DimensionOrder::Fragment::ToLongString() const {
+  return absl::StrCat("Dst Dim Number: ", dst_dim_number_, " Count:", count_,
+                      " Slice Start:", slice_start_,
+                      " Sliced Count:", sliced_count_,
+                      " Broadcast Size:", broadcast_multiplier_);
 }
 
 std::string DimensionOrder::Fragment::ToString() const {
@@ -205,6 +197,16 @@ std::string DimensionOrder::ToString() const {
     absl::StrAppend(&ret, dim, ":", absl::StrJoin(fragments, ","), " ");
   }
   return ret;
+}
+
+std::string DimensionOrder::ToLongString() const {
+  std::vector<std::string> result = {"Dimension Order Fragments: ["};
+
+  for (auto& fragment : tensor_fragments_order_) {
+    result.push_back(absl::StrCat(fragment.ToLongString(), ","));
+  }
+  result.push_back("]");
+  return absl::StrJoin(result, "\n");
 }
 
 TensorIterationSpec DimensionOrder::ToTensorIterationSpec() const {
@@ -244,7 +246,8 @@ TensorIterationSpec DimensionOrder::ToTensorIterationSpec() const {
           fragment.full_count(),
           fragment.slice_start(),
           fragment.sliced_count(),
-          {fragment.sliced_count()}});
+          {fragment.sliced_count()},
+          fragment.broadcast_multiplier()});
     }
 
     accumulated_stride *= fragment.full_count();
@@ -300,11 +303,17 @@ Int64OrError CombineSplitDimMajorPartSizeReqs(int64_t a, int64_t b) {
   if (a == kNoSplitRequirement) {
     return b;
   }
-  return FusionDecision("Conflicting splits of splittable dimension");
+  return FusionDecision::Forbid("Conflicting splits of splittable dimension");
 }
 
-RequirementsOrError CombineDotRequirements(DotRequirements a,
-                                           DotRequirements b) {
+}  // namespace
+
+DotRequirementsOrError CombineDotRequirements(
+    DotRequirements a, DotRequirementsOrError b_or_error) {
+  if (std::holds_alternative<FusionDecision>(b_or_error)) {
+    return b_or_error;
+  }
+  const DotRequirements& b = std::get<DotRequirements>(b_or_error);
   Int64OrError combined_size_req =
       CombineSplitDimMajorPartSizeReqs(a.splittable_dimension_major_part_size,
                                        b.splittable_dimension_major_part_size);
@@ -313,37 +322,14 @@ RequirementsOrError CombineDotRequirements(DotRequirements a,
   }
   return DotRequirements(std::get<int64_t>(combined_size_req));
 }
-
-RequirementsOrError CombineSoftmaxRequirements(SoftmaxRequirements a,
-                                               SoftmaxRequirements b) {
-  // SoftmaxRequirements is an empty class for now.
-  return a;
-}
-
-}  // namespace
-
-RequirementsOrError CombineRequirements(Requirements a,
-                                        RequirementsOrError b_or_error) {
-  if (std::holds_alternative<FusionDecision>(b_or_error)) {
-    return b_or_error;
-  }
-  const Requirements& b = std::get<Requirements>(b_or_error);
-  if (std::holds_alternative<DotRequirements>(b)) {
-    return CombineDotRequirements(std::get<DotRequirements>(a),
-                                  std::get<DotRequirements>(b));
-  }
-  return CombineSoftmaxRequirements(std::get<SoftmaxRequirements>(a),
-                                    std::get<SoftmaxRequirements>(b));
-}
-
 namespace {
 
 // If the dimension order is supported by the triton emitters, this returns
 // which requirements does this order impose on the fusion.
 //
 // All subdimensions within a dimension have to be ordered.
-RequirementsOrError GetRequirementsIfSupportedOrder(
-    const DimensionOrder& order, const HeroProperties& properties) {
+DotRequirementsOrError GetRequirementsIfSupportedOrder(
+    const DimensionOrder& order, const DotProperties& properties) {
   VLOG(8) << order.ToString();
   int64_t split_dim_major_part = kNoSplitRequirement;
   const Fragments& tensor_dim_fragments = order.TensorFragmentsOrder();
@@ -351,7 +337,7 @@ RequirementsOrError GetRequirementsIfSupportedOrder(
     CHECK(!dim_fragments.empty());
     for (int i = 0; i < dim_fragments.size() - 1; ++i) {
       if (tensor_dim_fragments[dim_fragments[i]].is_sliced()) {
-        return "Sliced non-major-most fragment.";
+        return FusionDecision::Forbid("Sliced non-major-most fragment.");
       }
     }
     int group_counter = 0;
@@ -375,31 +361,30 @@ RequirementsOrError GetRequirementsIfSupportedOrder(
       }
 
       if (last_seen_group_last_fragment_index > *fragment_it) {
-        return "Transpose within a dimension.";
+        return FusionDecision::Forbid("Transpose within a dimension.");
       }
 
       ++group_counter;
       if (group_counter > 1) {
-        if (!std::holds_alternative<DotProperties>(properties)) {
-          return "Splitting a dimension is not supported for Softmax.";
-        }
         // Only the dimension indicated by `splittable_dimension_index` (if any)
         // can be split physically once by other dimensions. Other ones can be
         // only split logically.
         const int splittable_dimension_index =
-            std::get<DotProperties>(properties).splittable_dimension_index;
+            properties.splittable_dimension_index;
         if (dim_index == splittable_dimension_index) {
           if (group_counter == 2) {
             if (split_dim_major_part != kNoSplitRequirement &&
                 split_dim_major_part != grouped_size) {
-              return "Conflicting splits of splittable dimension";
+              return FusionDecision::Forbid(
+                  "Conflicting splits of splittable dimension");
             }
             split_dim_major_part = grouped_size;
           } else if (group_counter > 2) {
-            return "2nd split of a splittable dimension.";
+            return FusionDecision::Forbid(
+                "2nd split of a splittable dimension.");
           }
         } else {
-          return "Unsupported split of a dimension.";
+          return FusionDecision::Forbid("Unsupported split of a dimension.");
         }
       }
 
@@ -408,40 +393,34 @@ RequirementsOrError GetRequirementsIfSupportedOrder(
     }
   }
 
-  if (std::holds_alternative<DotProperties>(properties)) {
-    return DotRequirements(split_dim_major_part);
-  }
-  return SoftmaxRequirements{};
+  return DotRequirements(split_dim_major_part);
 }
 
 // Apply GetRequirementsIfSupportedOrder() to all known
 // dimension orders around `hlo` and combine the result.
-RequirementsOrError GetRequirementsIfSupportedOrders(
+DotRequirementsOrError GetRequirementsIfSupportedOrders(
     const HloInstruction& hlo, const DimOrderMap& dim_orders,
-    const HeroProperties& properties) {
-  const Requirements empty_requirements =
-      std::holds_alternative<DotProperties>(properties)
-          ? Requirements(DotRequirements(kNoSplitRequirement))
-          : Requirements(SoftmaxRequirements{});
+    const DotProperties& properties) {
+  const DotRequirements empty_requirements(kNoSplitRequirement);
   auto get_requirements =
-      [&](const HloInstruction& instr) -> RequirementsOrError {
+      [&](const HloInstruction& instr) -> DotRequirementsOrError {
     if (auto it = dim_orders.find(&instr); it != dim_orders.end()) {
       return GetRequirementsIfSupportedOrder(it->second, properties);
     }
     return empty_requirements;
   };
 
-  Requirements requirements = empty_requirements;
+  DotRequirements requirements = empty_requirements;
   for (const HloInstruction* operand : hlo.operands()) {
-    RequirementsOrError requirements_or_error =
-        CombineRequirements(requirements, get_requirements(*operand));
+    DotRequirementsOrError requirements_or_error =
+        CombineDotRequirements(requirements, get_requirements(*operand));
     if (std::holds_alternative<FusionDecision>(requirements_or_error)) {
       return requirements_or_error;
     }
-    requirements = std::get<Requirements>(requirements_or_error);
+    requirements = std::get<DotRequirements>(requirements_or_error);
   }
 
-  return CombineRequirements(requirements, get_requirements(hlo));
+  return CombineDotRequirements(requirements, get_requirements(hlo));
 }
 
 DimOrderMap GetPropagatedDimOrdersForElementwise(
@@ -496,7 +475,7 @@ const HloInstruction& GetDestHlo(const HloInstruction& hlo,
 
 DimOrderMapOrError GetPropagatedDimOrdersForBitcast(
     const HloInstruction& hlo, const TransformDirection direction,
-    const DimensionOrder& src_dim_order, const HeroProperties& properties) {
+    const DimensionOrder& src_dim_order, const DotProperties& properties) {
   const HloInstruction& dst = GetDestHlo(hlo, direction);
   const Shape& dst_shape = dst.shape();
   const Fragments& src_fragments_order = src_dim_order.TensorFragmentsOrder();
@@ -504,7 +483,6 @@ DimOrderMapOrError GetPropagatedDimOrdersForBitcast(
   DimensionOrder& dst_dim_order =
       dst_dim_orders.insert({&dst, DimensionOrder()}).first->second;
   Fragments& dst_fragments_order = dst_dim_order.TensorFragmentsOrder();
-  bool dst_remainder_comes_from_reduce_dim = false;
   // Size of not yet assigned part of current target dimension.
   int64_t dst_remaining_size = 1;
   // Track destination fragments created from a source one.
@@ -520,41 +498,9 @@ DimOrderMapOrError GetPropagatedDimOrdersForBitcast(
       dst_fragments_order.push_back(fragment);
       src_to_dst[&*src_dim].push_back(dst_fragments_order.size() - 1);
     };
-    if (std::holds_alternative<SoftmaxProperties>(properties) &&
-        src_dim->dst_dim_number() ==
-            std::get<SoftmaxProperties>(properties).softmax_batch_dimension) {
-      // Special handling for softmax batch dimension: allow arbitrary reshapes
-      // on it because it's guaranteed by the construction of the fusion to have
-      // no physical alterations like transposes.
-      // Find a continuous group of fragments corresponding to this dimension in
-      // the source and assign the corresponding size in fragments of the
-      // destination ignoring the source ones.
-
-      // If there is dst_remaining_size leftover from our previous src_dim,
-      // and it came from a reduce dim, we cannot tile it in a batch dim.
-      if (dst_remainder_comes_from_reduce_dim) {
-        return R"(Unsupported bitcast splits dimension between batch and
-                  reduction dimensions in softmax)";
-      }
-
-      dst_remaining_size = src_dim->full_count();
-      while (src_dim + 1 != src_fragments_order.cend() &&
-             (src_dim + 1)->dst_dim_number() == src_dim->dst_dim_number()) {
-        ++src_dim;
-        dst_remaining_size *= src_dim->full_count();
-      }
-      while (dst_remaining_size > 1) {
-        CHECK(dst_dim_it != dst_dim_end);
-        add_new_fragment(Fragment{src_dim->dst_dim_number(),
-                                  dst_shape.dimensions(*dst_dim_it)});
-        dst_remaining_size /= dst_shape.dimensions(*dst_dim_it);
-        ++dst_dim_it;
-      }
-      continue;
-    }
     if (dst_remaining_size >= src_dim->full_count()) {
       if (dst_remaining_size % src_dim->full_count()) {
-        return "Unsupported bitcast";
+        return FusionDecision::Forbid("Unsupported bitcast");
       }
       // Source dimension fragment completely fits into the destination one:
       // just copy it as is.
@@ -572,10 +518,10 @@ DimOrderMapOrError GetPropagatedDimOrdersForBitcast(
         // If there is a remaining fragment of a previous destination dimension
         // assign it first.
         if (src_remaining_size % dst_remaining_size || (src_dim->is_sliced())) {
-          return "Unsupported bitcast";
+          return FusionDecision::Forbid("Unsupported bitcast");
         }
-        add_new_fragment(
-            Fragment{src_dim->dst_dim_number(), dst_remaining_size});
+        add_new_fragment(Fragment{src_dim->dst_dim_number(), dst_remaining_size,
+                                  src_dim->broadcast_multiplier()});
         // Update the size of the fragment remaining to assign.
         src_remaining_size /= dst_remaining_size;
         dst_remaining_size = 1;
@@ -590,30 +536,20 @@ DimOrderMapOrError GetPropagatedDimOrdersForBitcast(
           // size assign the remainder of the source and carry over the
           // remainder of the destination.
           if (dst_dim_size % src_remaining_size) {
-            return "Unsupported bitcast";
+            return FusionDecision::Forbid("Unsupported bitcast");
           }
           dst_remaining_size = dst_dim_size / src_remaining_size;
           new_fragment_size = src_remaining_size;
         }
         if (src_dim->is_sliced()) {
-          return "Unsupported bitcast";
+          return FusionDecision::Forbid("Unsupported bitcast");
         }
-        add_new_fragment(
-            Fragment{src_dim->dst_dim_number(), new_fragment_size});
+        add_new_fragment(Fragment{src_dim->dst_dim_number(), new_fragment_size,
+                                  src_dim->broadcast_multiplier()});
         src_remaining_size /= new_fragment_size;
         ++dst_dim_it;
       }
     }
-
-    // We cannot tile a single dim with fragments across both reduce and batch
-    // dimensions. As such, if we have a dst remainder leftover from tiling a
-    // src fragment on the reduce dimension in softmax, we must only tile it
-    // with other src_dim fragments on the reduce dimension.
-    dst_remainder_comes_from_reduce_dim =
-        (dst_remaining_size > 1 &&
-         std::holds_alternative<SoftmaxProperties>(properties) &&
-         src_dim->dst_dim_number() == std::get<SoftmaxProperties>(properties)
-                                          .softmax_reduction_dimension);
   }
   CHECK_EQ(dst_remaining_size, 1);
 
@@ -622,11 +558,11 @@ DimOrderMapOrError GetPropagatedDimOrdersForBitcast(
   // give up.
   while (dst_dim_it != dst_dim_end) {
     if (dst_shape.dimensions(*dst_dim_it) != 1) {
-      return "Unsupported bitcast";
+      return FusionDecision::Forbid("Unsupported bitcast");
     }
     if (!dst_fragments_order.empty()) {
-      dst_fragments_order.push_back(
-          Fragment{dst_fragments_order.back().dst_dim_number(), 1});
+      auto fragment = Fragment{dst_fragments_order.back().dst_dim_number(), 1};
+      dst_fragments_order.push_back(fragment);
       src_to_dst[&src_fragments_order.back()].push_back(
           dst_fragments_order.size() - 1);
     }
@@ -653,7 +589,7 @@ DimOrderMapOrError GetPropagatedDimOrdersForBitcast(
 // and the way to handle layouts.
 DimOrderMapOrError GetPropagatedDimOrdersForDimAlteringOp(
     const HloInstruction& hlo, const TransformDirection direction,
-    const DimensionOrder& src_dim_order, const HeroProperties& properties) {
+    const DimensionOrder& src_dim_order, const DotProperties& properties) {
   // Temporary storage for new fragments local to this function.
   // Please keep this as the first local variable of this function, with type
   // std::list to make sure that all pointers to elements of this remain valid
@@ -667,7 +603,7 @@ DimOrderMapOrError GetPropagatedDimOrdersForDimAlteringOp(
   Fragments src_fragments_order = src_dim_order.TensorFragmentsOrder();
   if (hlo.opcode() == HloOpcode::kSlice &&
       ShapeUtil::IsEffectiveScalar(hlo.shape())) {
-    return FusionDecision("Slice to scalar is not implemented yet.");
+    return FusionDecision::Forbid("Slice to scalar is not implemented yet.");
   }
   // Every HLO dimension can correspond to a group of subdimensions in
   // dim_order_. For the easier handling of permutations: group dim_order_ by
@@ -675,12 +611,13 @@ DimOrderMapOrError GetPropagatedDimOrdersForDimAlteringOp(
   // Group subdimensions by iterating over them in the same order as over
   // full dimensions and matching by total size.
   std::vector<std::vector<Fragment*>> src_physical;
-  src_physical.reserve(src.shape().rank());
-  if (src_fragments_order.size() < src.shape().rank()) {
+  src_physical.reserve(src.shape().dimensions().size());
+  if (src_fragments_order.size() < src.shape().dimensions().size()) {
     // It's not supported currently to further propagate dimensions after
     // reaching a trivial sized tensor. We could probably support it, but now we
     // just prevent crashing here.
-    return FusionDecision("Cannot propagate further from trivial sized tensor");
+    return FusionDecision::Forbid(
+        "Cannot propagate further from trivial sized tensor");
   }
   auto src_fragment_it = src_fragments_order.begin();
   for (int64_t dim_index : src.shape().layout().minor_to_major()) {
@@ -737,34 +674,22 @@ DimOrderMapOrError GetPropagatedDimOrdersForDimAlteringOp(
       dst_logical.resize(src_logical.size() + reduce->dimensions().size());
 
       if (reduce->dimensions().size() != 1) {
-        return FusionDecision("Unsupported reduction.");
+        return FusionDecision::Forbid("Unsupported reduction.");
       } else if (reduce->dimensions().front() !=
-                 reduce->operand(0)->shape().rank() - 1) {
-        return FusionDecision("Only row reductions are supported.");
-      }
-      for (int i = 0; i < dst_logical.size(); ++i) {
-        if (i == reduce->dimensions().front()) {
-          // This way to assign the reduction dimension will only work for
-          // softmax fusions with known patterns for now. Generally a reduction
-          // should create a new tiled dimension.
-          dst_logical[i] = {&new_fragments.emplace_back(
-              std::get<SoftmaxProperties>(properties)
-                  .softmax_reduction_dimension,
-              reduce->operand(0)->shape().dimensions(i))};
-        } else {
-          dst_logical[i] = src_logical[i];
-        }
+                 reduce->operand(0)->shape().dimensions().size() - 1) {
+        return FusionDecision::Forbid("Only row reductions are supported.");
       }
     } else if (hlo.opcode() == HloOpcode::kConcatenate) {
       dst_logical.resize(src_logical.size());
       for (int i = 0; i < src_logical.size(); ++i) {
         if (i == hlo.concatenate_dimension()) {
           if (src_logical[i].size() != 1 || src_logical[i][0]->is_sliced()) {
-            return FusionDecision("Unsupported concatenation.");
+            return FusionDecision::Forbid("Unsupported concatenation.");
           }
           const Fragment& src_fragment = *src_logical[i][0];
           Fragment& dst_fragment = new_fragments.emplace_back(
-              src_fragment.dst_dim_number(), dst->shape().dimensions(i));
+              src_fragment.dst_dim_number(), dst->shape().dimensions(i),
+              src_fragment.broadcast_multiplier());
           dst_fragment.set_slice(-concat_accumulated_size,
                                  dst->shape().dimensions(i));
           concat_accumulated_size += dst->shape().dimensions(i);
@@ -831,7 +756,7 @@ DimOrderMapOrError GetPropagatedDimOrdersForDimAlteringOp(
         if (slice->slice_limits(dim) - slice->slice_starts(dim) !=
             dst->shape().dimensions(dim)) {
           if (dst_logical[dim].size() > 1) {
-            return FusionDecision("Slicing of fragmented dimension.");
+            return FusionDecision::Forbid("Slicing of fragmented dimension.");
           }
           auto fragment = dst_logical[dim].front();
           fragment->set_count(dst->shape().dimensions(dim));
@@ -853,7 +778,7 @@ DimOrderMapOrError GetPropagatedDimOrdersForDimAlteringOp(
         dst_logical[dim] = src_logical[dim];
         if (dynamic_slice->slice_sizes(dim) != dst->shape().dimensions(dim)) {
           if (dst_logical[dim].size() > 1) {
-            return FusionDecision("Slicing of fragmented dimension.");
+            return FusionDecision::Forbid("Slicing of fragmented dimension.");
           }
           auto fragment = dst_logical[dim].front();
           fragment->set_count(dst->shape().dimensions(dim));
@@ -865,7 +790,7 @@ DimOrderMapOrError GetPropagatedDimOrdersForDimAlteringOp(
         }
       }
     } else {
-      return FusionDecision("Function called on a wrong instruction.");
+      return FusionDecision::Forbid("Function called on a wrong instruction.");
     }
     // Destination logical -> destination physical and ungroup subdimensions.
     // Map original fragments to the resulting ones to derive their new
@@ -874,29 +799,60 @@ DimOrderMapOrError GetPropagatedDimOrdersForDimAlteringOp(
     Fragments& dst_fragments_order = dst_dim_order.TensorFragmentsOrder();
     FragmentOrders& dst_dim_fragments_order =
         dst_dim_order.DimFragmentsOrders();
-    // Remember which dimensions are present before a broadcast;
-    // skip cases when already present dimension is being expanded.
-    absl::flat_hash_set<int> dim_numbers_present_in_dst;
+    // Remember which nontrivial dimensions are present before a broadcast to
+    // skip cases expanding already present nontrivial dimensions.
+    absl::flat_hash_set<int> nontrivial_dim_numbers_present_in_dst;
     for (const int64_t dim_idx : dst->shape().layout().minor_to_major()) {
       for (const Fragment* subdim : dst_logical[dim_idx]) {
         dst_fragments_order.push_back(*subdim);
         src_to_dst[subdim] = dst_fragments_order.size() - 1;
-        dim_numbers_present_in_dst.insert(subdim->dst_dim_number());
+        if (subdim->full_count() > 1) {
+          nontrivial_dim_numbers_present_in_dst.insert(
+              subdim->dst_dim_number());
+        }
       }
     }
+    const bool enable_subchannel_dequantisation_fusion =
+        hlo.GetModule() != nullptr &&
+        hlo.GetModule()
+            ->config()
+            .debug_options()
+            .xla_gpu_experimental_enable_subchannel_dequantisation_fusion();
     for (const auto& [dim_index, dim_sequence] :
          src_dim_order.DimFragmentsOrders()) {
+      std::vector<Fragment*> alive_dst_fragments;
+      int64_t broadcast_multiplier = 1;
       for (const int fragment_number : dim_sequence) {
-        const auto it = src_to_dst.find(&src_fragments_order[fragment_number]);
+        auto& fragment = src_fragments_order[fragment_number];
+        const auto it = src_to_dst.find(&fragment);
         if (it == src_to_dst.cend()) {
           if (hlo.opcode() == HloOpcode::kBroadcast &&
-              src_fragments_order[fragment_number].full_count() > 1 &&
-              dim_numbers_present_in_dst.contains(dim_index)) {
-            return FusionDecision("Unsupported broadcast");
+              fragment.full_count() > 1 &&
+              nontrivial_dim_numbers_present_in_dst.contains(dim_index)) {
+            if (!enable_subchannel_dequantisation_fusion) {
+              return FusionDecision::Forbid("Unsupported broadcast");
+            }
+            // We found a dimension that is missing in the src_to_dst map.
+            // This means that the dimension was collapsed by the follow up
+            // bitcast. I.e. the broadcasted dimension was merged with another
+            // dimension.
+            // I.e. [x,z]param -> [x,y,z]broadcast -> [x,y*z]bitcast.
+            // We need to remember the size of the broadcast to adjust the
+            // stride and the advancement of the pointer. There could be more
+            // than one such dimension.
+            broadcast_multiplier *= fragment.full_count();
           }
           continue;
+        } else {
+          Fragment& fragment = dst_fragments_order[it->second];
+          alive_dst_fragments.push_back(&fragment);
         }
         dst_dim_fragments_order[dim_index].push_back(it->second);
+      }
+      for (auto* alive_fragment : alive_dst_fragments) {
+        int old_multiplier = alive_fragment->broadcast_multiplier();
+        alive_fragment->set_broadcast_multiplier(broadcast_multiplier *
+                                                 old_multiplier);
       }
     }
   }
@@ -908,7 +864,7 @@ DimOrderMapOrError GetPropagatedDimOrdersForDimAlteringOp(
 DimOrderMapOrError GetPropagatedDimOrders(const HloInstruction& hlo,
                                           const TransformDirection direction,
                                           const DimensionOrder& src_dim_order,
-                                          const HeroProperties& properties) {
+                                          const DotProperties& properties) {
   VLOG(7) << "Analyzing " << hlo.ToString();
   if (hlo.opcode() != HloOpcode::kParameter &&
       direction == TransformDirection::kOutputToInput &&
@@ -916,7 +872,8 @@ DimOrderMapOrError GetPropagatedDimOrders(const HloInstruction& hlo,
         return (user->opcode() == HloOpcode::kConcatenate ||
                 user->opcode() == HloOpcode::kDynamicSlice);
       })) {
-    return "No fusion into concatenations or dynamic slice.";
+    return FusionDecision::Forbid(
+        "No fusion into concatenations or dynamic slice.");
   }
   if (hlo.opcode() == HloOpcode::kParameter ||
       hlo_query::IsScalarConstant(&hlo)) {
@@ -928,31 +885,20 @@ DimOrderMapOrError GetPropagatedDimOrders(const HloInstruction& hlo,
                                                   properties);
   } else if (hlo.opcode() == HloOpcode::kBroadcast) {
     if (direction != TransformDirection::kOutputToInput) {
-      return "Unsupported broadcast direction.";
-    }
-    return GetPropagatedDimOrdersForDimAlteringOp(hlo, direction, src_dim_order,
-                                                  properties);
-  } else if (hlo.opcode() == HloOpcode::kReduce) {
-    if (!std::holds_alternative<SoftmaxProperties>(properties)) {
-      return "Reductions are not supported in GEMM fusions yet.";
-    }
-    if (direction != TransformDirection::kOutputToInput) {
-      return "Unsupported direction of reduction.";
+      return FusionDecision::Forbid("Unsupported broadcast direction.");
     }
     return GetPropagatedDimOrdersForDimAlteringOp(hlo, direction, src_dim_order,
                                                   properties);
   } else if (hlo.opcode() == HloOpcode::kPad) {
-    if (std::holds_alternative<SoftmaxProperties>(properties)) {
-      return "Pad ops are only supported when they are generated as part of "
-             "the split-k transform of dot fusions.";
-    }
+    // Pad ops are only supported when they are generated as part of the split-k
+    // transform of dot fusions.
     if (direction != TransformDirection::kOutputToInput) {
-      return "Unsupported pad direction.";
+      return FusionDecision::Forbid("Unsupported pad direction.");
     }
     return GetPropagatedDimOrdersForDimAlteringOp(hlo, direction, src_dim_order,
                                                   properties);
   } else if (hlo.operand_count() > 0 &&
-             IsTritonSupportedElementwise(
+             legacy_triton::IsTritonSupportedElementwiseUpToFloatNormalization(
                  hlo.opcode(), hlo.operand(0)->shape().element_type())) {
     return GetPropagatedDimOrdersForElementwise(hlo, direction, src_dim_order);
   } else if (hlo.opcode() == HloOpcode::kBitcast) {
@@ -960,24 +906,15 @@ DimOrderMapOrError GetPropagatedDimOrders(const HloInstruction& hlo,
                                             properties);
   } else if (hlo.opcode() == HloOpcode::kSlice) {
     // TODO(b/316637896) Add support for slices in softmax.
-    if (std::holds_alternative<SoftmaxProperties>(properties)) {
-      return "Slices are not supported in Softmax fusions yet.";
-    }
     if (direction != TransformDirection::kOutputToInput) {
-      return "Unsupported slice direction.";
+      return FusionDecision::Forbid("Unsupported slice direction.");
     }
 
     return GetPropagatedDimOrdersForDimAlteringOp(hlo, direction, src_dim_order,
                                                   properties);
   } else if (hlo.opcode() == HloOpcode::kDynamicSlice &&
              direction == TransformDirection::kOutputToInput) {
-    // We handle the dynamic slice within EmitTensorPointer, which is only
-    // used for GEMM fusions.
-    if (!std::holds_alternative<DotProperties>(properties)) {
-      return "Dynamic slices for now are only supported in GEMM fusions.";
-    }
-
-    if (CodegenDecision decision = IsTritonSupportedDynamicSlice(
+    if (CodegenDecision decision = legacy_triton::IsTritonSupportedDynamicSlice(
             *Cast<HloDynamicSliceInstruction>(&hlo));
         !decision.CanFuse()) {
       // CodegenDecision is actually the same type as FusionDecision.
@@ -988,18 +925,13 @@ DimOrderMapOrError GetPropagatedDimOrders(const HloInstruction& hlo,
                                                   properties);
   } else if (hlo.opcode() == HloOpcode::kReshape) {
     if (!ShapeUtil::ReshapeIsBitcast(hlo.operand(0)->shape(), hlo.shape())) {
-      return "Non-bitcast reshape.";
+      return FusionDecision::Forbid("Non-bitcast reshape.");
     }
     return GetPropagatedDimOrdersForBitcast(hlo, direction, src_dim_order,
                                             properties);
   } else if (hlo.opcode() == HloOpcode::kConcatenate &&
              direction == TransformDirection::kOutputToInput) {
-    if (!std::holds_alternative<DotProperties>(properties)) {
-      return "Concatenations for now are only supported in GEMM fusions.";
-    }
-
-    int64_t noncontracting_dim_label =
-        std::get<DotProperties>(properties).noncontracting_dimension;
+    int64_t noncontracting_dim_label = properties.noncontracting_dimension;
     const FragmentOrders& src_dim_fragments_orders =
         src_dim_order.DimFragmentsOrders();
 
@@ -1008,15 +940,16 @@ DimOrderMapOrError GetPropagatedDimOrders(const HloInstruction& hlo,
     if (noncontracting_dim_fragment_order_it !=
         src_dim_fragments_orders.end()) {
       if (noncontracting_dim_fragment_order_it->second.size() > 1) {
-        return "Concatenations on split non-contracting dimensions are "
-               "unsupported.";
+        return FusionDecision::Forbid(
+            "Concatenations on split non-contracting dimensions are "
+            "unsupported.");
       }
     }
 
     auto dim = LogicalIndexOfLabeledDimension(hlo.shape(), src_dim_order,
                                               noncontracting_dim_label);
     if (!dim.has_value() || dim.value() != hlo.concatenate_dimension()) {
-      return "Unsupported concatenation.";
+      return FusionDecision::Forbid("Unsupported concatenation.");
     }
     if (absl::c_any_of(hlo.operands(), [&hlo](const HloInstruction* operand) {
           // In the current simple implementation of concatenation the size of
@@ -1025,26 +958,28 @@ DimOrderMapOrError GetPropagatedDimOrders(const HloInstruction& hlo,
           // with any operand not divisible by kMinConcatFragmentSize will not
           // be fused; tiling configurations with tile size for this dimension
           // larger than kMinConcatFragmentSize will not be emitted.
-          constexpr int kMinConcatFragmentSize = 128;
+          constexpr int kMinConcatFragmentSize = 64;
           return operand->shape().dimensions(hlo.concatenate_dimension()) %
                      kMinConcatFragmentSize !=
                  0;
         })) {
-      return FusionDecision(
+      return FusionDecision::Forbid(
           "At least one operand of concatenation can not be perfectly tiled.");
     }
     return GetPropagatedDimOrdersForDimAlteringOp(hlo, direction, src_dim_order,
                                                   properties);
   }
-  return "Unimplemented instruction.";
+  return FusionDecision::Forbid("Unimplemented instruction.");
 }
 
 // Difference of input and output data volumes of an instruction.
-int64_t InputMinusOutputBytes(const HloInstruction& hlo) {
+std::optional<int64_t> InputMinusOutputBytes(const HloInstruction& hlo) {
   CHECK(!hlo.shape().IsTuple());
   int64_t input_size = 0;
   for (const HloInstruction* operand : hlo.operands()) {
-    CHECK(!operand->shape().IsTuple());
+    if (operand->shape().IsTuple()) {
+      return std::nullopt;
+    }
     input_size += ShapeUtil::ByteSizeOf(operand->shape());
   }
   return input_size - ShapeUtil::ByteSizeOf(hlo.shape());
@@ -1062,7 +997,11 @@ constexpr int kIoToleranceBytes = 1024;
 
 // Tells that fusing an instruction as an input is efficient.
 bool IsInputWorthFusing(const HloInstruction& hlo) {
-  if (InputMinusOutputBytes(hlo) <= kIoToleranceBytes) {
+  std::optional<int64_t> input_minus_output_bytes = InputMinusOutputBytes(hlo);
+  if (!input_minus_output_bytes.has_value()) {
+    return false;
+  }
+  if (input_minus_output_bytes.value() <= kIoToleranceBytes) {
     return true;
   }
   if (hlo.user_count() > 1) {
@@ -1072,13 +1011,28 @@ bool IsInputWorthFusing(const HloInstruction& hlo) {
       hlo_query::AllOperandsAreParametersOrConstants(hlo)) {
     return true;
   }
+  const bool enable_subchannel_dequantisation_fusion =
+      hlo.GetModule()
+          ->config()
+          .debug_options()
+          .xla_gpu_experimental_enable_subchannel_dequantisation_fusion();
+  if (hlo.opcode() == HloOpcode::kMultiply) {
+    return enable_subchannel_dequantisation_fusion &&
+           IsInputWorthFusing(*hlo.operand(0)) &&
+           IsInputWorthFusing(*hlo.operand(1));
+  }
   return hlo_query::AllOperandsAreParametersOrConstantsWithSingleUser(hlo);
 }
 
 // Tells that fusing an instruction as an output is efficient.
 bool IsOutputWorthFusing(const HloInstruction& hlo) {
+  std::optional<int64_t> input_minus_output_bytes = InputMinusOutputBytes(hlo);
+  if (!input_minus_output_bytes.has_value()) {
+    return false;
+  }
+
   return CanNotBeFusedIntoAUser(hlo) ||
-         InputMinusOutputBytes(hlo) >= -kIoToleranceBytes;
+         input_minus_output_bytes.value() >= -kIoToleranceBytes;
 }
 
 FusionDecision IsConversionWorthFusing(const HloInstruction& input,
@@ -1089,16 +1043,16 @@ FusionDecision IsConversionWorthFusing(const HloInstruction& input,
   // output fusion - then it should be fused here anyway!
   if (ShapeUtil::ByteSizeOf(input.operand(0)->shape()) >
       ShapeUtil::ByteSizeOf(input.shape())) {
-    return "Narrowing conversion.";
+    return FusionDecision::Forbid("Narrowing conversion.");
   }
-  return FusionDecision{};
+  return FusionDecision::Allow();
 }
 
 }  // namespace
 
 DimOrdersAndReqsOrError GetPropagatedDimOrdersAndRequirements(
     const HloInstruction& hlo, const DimensionOrder& src_dim_order,
-    TransformDirection direction, const HeroProperties& properties) {
+    TransformDirection direction, const DotProperties& properties) {
   DimOrderMapOrError propagated_dim_orders_or_error =
       GetPropagatedDimOrders(hlo, direction, src_dim_order, properties);
   if (std::holds_alternative<FusionDecision>(propagated_dim_orders_or_error)) {
@@ -1106,13 +1060,13 @@ DimOrdersAndReqsOrError GetPropagatedDimOrdersAndRequirements(
   }
   DimOrderMap propagated_dim_orders =
       std::move(std::get<DimOrderMap>(propagated_dim_orders_or_error));
-  RequirementsOrError requirements_or_error =
+  DotRequirementsOrError requirements_or_error =
       GetRequirementsIfSupportedOrders(hlo, propagated_dim_orders, properties);
   if (std::holds_alternative<FusionDecision>(requirements_or_error)) {
     return std::get<FusionDecision>(requirements_or_error);
   }
   return DimOrdersAndReqs{propagated_dim_orders,
-                          std::get<Requirements>(requirements_or_error)};
+                          std::get<DotRequirements>(requirements_or_error)};
 }
 
 DimOrdersAndReqsOrError
@@ -1121,98 +1075,99 @@ GetPropagatedDimOrdersAndRequirementsIfProfitablyFusible(
     const std::optional<int>& src_operand_index,
     const DimensionOrder& src_dim_order,
     const se::GpuComputeCapability& gpu_version,
-    const HeroProperties& properties) {
+    const DotProperties& properties) {
   CHECK_EQ(transform_direction == TransformDirection::kInputToOutput,
            src_operand_index.has_value());
 
   if (hlo.opcode() == HloOpcode::kTuple ||
       hlo.opcode() == HloOpcode::kGetTupleElement) {
-    return "Unsupported instruction.";
+    return FusionDecision::Forbid("Unsupported instruction.");
   }
-  if (hlo.opcode() == HloOpcode::kReduce) {
-    return "Reductions are not fused yet.";
+  if (hlo.opcode() == HloOpcode::kReduce ||
+      hlo.opcode() == HloOpcode::kAllReduce ||
+      hlo.opcode() == HloOpcode::kAllReduceStart ||
+      hlo.opcode() == HloOpcode::kAllReduceDone) {
+    return FusionDecision::Forbid("Reductions are not fused yet.");
   }
   if (hlo.opcode() == HloOpcode::kPad) {
-    return "Pads are not fused yet.";
+    return FusionDecision::Forbid("Pads are not fused yet.");
   }
-  for (const HloInstruction* operand : hlo.operands()) {
-    if (!IsTritonSupportedDataType(operand->shape().element_type(),
-                                   gpu_version)) {
-      return "Unsupported input data type.";
-    }
+  if (hlo.opcode() == HloOpcode::kPower && hlo.user_count() > 1) {
+    // The check is placed specifically above the binary elementwise ops with
+    // broadcast operands to prohibit fusing even with broadcast inputs.
+    return FusionDecision::Forbid(
+        "Not fusing power with multiple users because it may result in "
+        "expensive op duplication.");
   }
-  if (!IsTritonSupportedDataType(hlo.shape().element_type(), gpu_version)) {
-    return "Unsupported output data type.";
+  if (auto decision =
+          legacy_triton::IsTritonSupportedInstruction(hlo, gpu_version);
+      !decision.CanFuse()) {
+    return decision;
   }
   DimOrdersAndReqsOrError result_or_error =
       GetPropagatedDimOrdersAndRequirements(hlo, src_dim_order,
                                             transform_direction, properties);
-  if (!std::holds_alternative<DimOrdersAndReqs>(result_or_error)) {
+  if (std::holds_alternative<FusionDecision>(result_or_error)) {
+    VLOG(5) << "Not fusing " << hlo.ToString()
+            << " to the output due to the decision: "
+            << std::get<FusionDecision>(result_or_error).Explain();
     return result_or_error;
   }
   DimOrdersAndReqs dim_orders_and_requirements =
       std::move(std::get<DimOrdersAndReqs>(result_or_error));
-  int fusion_level =
-      hlo.GetModule()->config().debug_options().xla_gpu_triton_fusion_level();
   // TODO(ROCm): Check fusion level for ROCm.
   if (transform_direction == TransformDirection::kOutputToInput) {
-    if (fusion_level < 2) {
-      if (hlo.opcode() == HloOpcode::kConvert) {
-        if (FusionDecision decision = IsConversionWorthFusing(hlo, gpu_version);
-            !decision) {
-          return decision;
-        }
-      } else if (hlo.IsElementwise() && hlo.opcode() != HloOpcode::kCopy) {
-        return "Ignored elementwise operation";
-      }
-    } else {
-      // Exception for binary elementwise operations: in most cases these are
-      // not trivial to fuse because they increase DRAM traffic but if one
-      // of the inputs is for example a broadcast that can be fused too it
-      // becomes worth fusing. Look ahead and analyze operands here.
-      bool accepted = false;
-      if (hlo.IsElementwise() && hlo.operand_count() == 2) {
-        for (const HloInstruction* operand : hlo.operands()) {
-          if (operand->opcode() == HloOpcode::kBroadcast &&
-              (operand->operand(0)->opcode() == HloOpcode::kParameter ||
-               operand->operand(0)->opcode() == HloOpcode::kConstant) &&
-              std::holds_alternative<DimOrdersAndReqs>(
-                  GetPropagatedDimOrdersAndRequirementsIfProfitablyFusible(
-                      *operand, TransformDirection::kOutputToInput,
-                      /*src_operand_index=*/std::nullopt,
-                      /*src_dim_order=*/
-                      dim_orders_and_requirements.dim_orders.at(operand),
-                      gpu_version, properties))) {
-            accepted = true;
-            break;
-          }
+    // Exception for binary elementwise operations: in most cases these are
+    // not trivial to fuse because they increase DRAM traffic but if one
+    // of the inputs is for example a broadcast that can be fused too it
+    // becomes worth fusing. Look ahead and analyze operands here.
+    bool accepted = false;
+    if (hlo.IsElementwise() && hlo.operand_count() == 2) {
+      for (const HloInstruction* operand : hlo.operands()) {
+        if (operand->opcode() == HloOpcode::kBroadcast &&
+            (operand->operand(0)->opcode() == HloOpcode::kParameter ||
+             operand->operand(0)->opcode() == HloOpcode::kConstant) &&
+            std::holds_alternative<DimOrdersAndReqs>(
+                GetPropagatedDimOrdersAndRequirementsIfProfitablyFusible(
+                    *operand, TransformDirection::kOutputToInput,
+                    /*src_operand_index=*/std::nullopt,
+                    /*src_dim_order=*/
+                    dim_orders_and_requirements.dim_orders.at(operand),
+                    gpu_version, properties))) {
+          accepted = true;
+          break;
         }
       }
-      if (!accepted && !IsInputWorthFusing(hlo)) {
-        return "Not obviously profitable to fuse as input.";
-      }
+    }
+    if (!accepted && !IsInputWorthFusing(hlo)) {
+      return FusionDecision::Forbid(
+          "Not obviously profitable to fuse as input.");
     }
   } else {
-    if (fusion_level < 2) {
-      return "Skipping fusing outputs at low fusion levels.";
-    }
     for (int i = 0; i < hlo.operand_count(); ++i) {
       const HloInstruction* operand = hlo.operand(i);
       // Skip source operand.
       if (i == *src_operand_index) {
         continue;
       }
-      // Currently only broadcasts of scalar constants or parameters
-      // are accepted as other inputs of non-unary operations
-      // in the output fusion.
-      if (hlo_query::IsBroadcastOfScalarConstant(*operand) ||
-          operand->opcode() == HloOpcode::kParameter) {
+      // Currently only
+      //  - effective parameters
+      //  - broadcasts of effective parameters
+      //  - broadcasts of scalars
+      // are accepted as other inputs of non-unary operations in
+      // the output fusion.
+      if ((operand->opcode() == HloOpcode::kBroadcast &&
+           (ShapeUtil::IsScalar(operand->operand(0)->shape()) ||
+            hlo_query::IsEffectiveParameter(*operand->operand(0)))) ||
+          hlo_query::IsEffectiveParameter(*operand)) {
         continue;
       }
-      return "Has multiple inputs - not properly analyzed yet.";
+      return FusionDecision::Forbid(
+          "Has multiple inputs - not properly analyzed yet.");
     }
     if (!IsOutputWorthFusing(hlo)) {
-      return "Not obviously profitable to fuse as output.";
+      return FusionDecision::Forbid(
+          "Not obviously profitable to fuse as output.");
     }
   }
   return dim_orders_and_requirements;

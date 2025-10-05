@@ -10,11 +10,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <optional>
-#include <stdexcept>
-#include <string>
 #include <type_traits>
 
 #include "llvm/ADT/STLExtras.h"
@@ -90,12 +88,13 @@ LogicalResult ReplacePartitionedOp(IntegerAttr num_cores_per_replica, T op) {
     auto pi = builder.create<TF::TPUPartitionedInputV2Op>(
         op.getLoc(), op.getType(), op.getOperands(),
         builder.getI64ArrayAttr(partition_dims), builder.getBoolAttr(false),
-        op.get_XlaShardingAttr());
+        op.get_XlaShardingAttr(), op.get_XlaShardingV2Attr());
     op->replaceAllUsesWith(pi);
   } else {
     auto po = builder.create<TF::TPUPartitionedOutputV2Op>(
         op.getLoc(), op.getResultTypes(), op.getOperand(),
-        builder.getI64ArrayAttr(partition_dims), op.get_XlaShardingAttr());
+        builder.getI64ArrayAttr(partition_dims), op.get_XlaShardingAttr(),
+        op.get_XlaShardingV2Attr());
     op->replaceAllUsesWith(po);
   }
 
