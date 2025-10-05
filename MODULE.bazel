@@ -1,0 +1,37 @@
+# TensorFlow Bazel Module (bzlmod support)
+module(
+    name = "org_tensorflow",
+    version = "2.18.0",
+    repo_name = "org_tensorflow",
+)
+
+# Core Bazel dependencies
+bazel_dep(name = "bazel_skylib", version = "1.7.1")
+bazel_dep(name = "rules_license", version = "1.0.0")
+bazel_dep(name = "rules_pkg", version = "1.0.1")
+bazel_dep(name = "bazel_features", version = "1.25.0")
+bazel_dep(name = "platforms", version = "0.0.11")
+
+# Build rules
+bazel_dep(name = "rules_jvm_external", version = "6.8")
+bazel_dep(name = "rules_proto", version = "7.1.0")
+bazel_dep(name = "rules_shell", version = "0.4.1")
+
+# Maven dependencies
+maven = use_extension("@rules_jvm_external//:extensions.bzl", "maven")
+maven.install(
+    artifacts = [
+        "com.google.code.findbugs:jsr305:3.0.2",
+        "com.google.code.gson:gson:2.8.9",
+        "com.google.errorprone:error_prone_annotations:2.11.0",
+        "com.google.guava:guava:31.1-jre",
+        "com.google.protobuf:protobuf-java:3.21.9",
+        "junit:junit:4.13.2",
+        "org.checkerframework:checker-qual:3.12.0",
+    ],
+    repositories = [
+        "https://repo1.maven.org/maven2",
+    ],
+    fetch_sources = True,
+)
+use_repo(maven, "maven")
