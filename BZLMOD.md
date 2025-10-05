@@ -40,11 +40,14 @@ The MODULE.bazel file provides a foundation for future migration, declaring core
 
 The MODULE.bazel file includes the following key dependencies synchronized with WORKSPACE versions:
 
+**Core Bazel Dependencies:**
 - **bazel_skylib**: 1.7.1 (same as WORKSPACE)
 - **rules_license**: 1.0.0 (updated from WORKSPACE 0.0.7)
 - **rules_pkg**: 1.0.1 (updated from WORKSPACE 0.7.1)
 - **bazel_features**: 1.25.0 (same as WORKSPACE)
 - **platforms**: 0.0.11 (same as WORKSPACE)
+
+**Build Rules:**
 - **rules_cc**: 0.2.9 (latest stable for C++ builds)
 - **rules_python**: 1.6.3 (latest stable for Python builds)
 - **rules_jvm_external**: 6.8 (updated from WORKSPACE 4.3 for bzlmod compatibility)
@@ -52,6 +55,16 @@ The MODULE.bazel file includes the following key dependencies synchronized with 
 - **rules_shell**: 0.4.1 (same as WORKSPACE)
 - **protobuf**: 32.1 (latest stable for protocol buffers)
 - **apple_support**: 1.23.1 (for macOS/iOS builds)
+
+**Third-Party Dependencies (from BCR):**
+- **abseil-cpp**: 20240116.1 (replaces WORKSPACE @com_google_absl)
+- **googletest**: 1.17.0 (replaces WORKSPACE @com_google_googletest)
+- **re2**: 2024-07-02 (replaces WORKSPACE @com_googlesource_code_re2)
+- **zlib**: 1.3.1.bcr.7 (replaces WORKSPACE third_party/zlib)
+- **boringssl**: 0.20251002.0 (replaces WORKSPACE third_party/boringssl)
+- **nlohmann_json**: 3.11.3 (replaces WORKSPACE third_party/nlohmann_json)
+
+These third-party dependencies are now sourced from the Bazel Central Registry (BCR) instead of being vendored in third_party/, providing better version management and compatibility with the bzlmod ecosystem.
 
 ## Local Vendored Repositories
 
@@ -72,10 +85,27 @@ An empty `WORKSPACE.bzlmod` file is present at the root of the repository. This 
 
 Some dependencies have been updated to newer versions that are available in the Bazel Central Registry (BCR):
 
+**Rule Updates:**
 - `rules_license` was updated from 0.0.7 to 1.0.0 (0.0.7 not available in BCR)
 - `rules_pkg` was updated from 0.7.1 to 1.0.1 (0.7.1 not available in BCR)
 - `rules_jvm_external` was updated from 4.3 to 6.8 (4.3 not available in BCR)
 - `rules_proto` was updated to 7.1.0 (using versioned release instead of commit hash)
+
+**Third-Party Dependencies from BCR:**
+
+The following dependencies are now sourced from the Bazel Central Registry instead of vendored copies:
+- `abseil-cpp` 20240116.1 - Replaces `@com_google_absl` from WORKSPACE
+- `googletest` 1.17.0 - Replaces `@com_google_googletest` from WORKSPACE  
+- `re2` 2024-07-02 - Replaces `@com_googlesource_code_re2` from WORKSPACE
+- `zlib` 1.3.1.bcr.7 - Replaces vendored `third_party/zlib`
+- `boringssl` 0.20251002.0 - Replaces vendored `third_party/boringssl`
+- `nlohmann_json` 3.11.3 - Replaces vendored `third_party/nlohmann_json`
+
+These BCR dependencies provide:
+- **Better version management**: Clear semantic versioning
+- **Automatic updates**: Easy to upgrade to newer compatible versions
+- **Reduced maintenance**: No need to vendor and patch third-party code
+- **Improved compatibility**: Standard module names recognized by the Bazel ecosystem
 
 These updates maintain backward compatibility while enabling bzlmod support.
 
