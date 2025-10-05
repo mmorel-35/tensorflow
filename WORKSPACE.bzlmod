@@ -1,0 +1,3 @@
+# This file is intentionally empty.
+# It allows bzlmod to be enabled while still having access to WORKSPACE repositories
+# through the compatibility layer.

@@ -6,6 +6,7 @@ node_modules
 /xla_configure.bazelrc
 /bazel-*
 /bazel_pip
+MODULE.bazel.lock
 /tools/python_bin_path.sh
 /tensorflow/tools/git/gen
 /pip_test
